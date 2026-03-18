@@ -121,17 +121,17 @@ training = []
 
 ```toml
 [dependencies]
-bevy = "0.15"
-bevy_rapier3d = "0.28"
+bevy = "0.18"
+bevy_rapier3d = "0.33"
 ron = "0.8"
 serde = { version = "1", features = ["derive"] }
 
 [dependencies.bevy_egui]
-version = "0.31"
+version = "0.39"
 optional = true
 
 [dependencies.burn]
-version = "0.16"
+version = "0.20"
 optional = true   # pulled in by the `training` feature
 
 [features]

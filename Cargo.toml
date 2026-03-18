@@ -5,13 +5,13 @@ edition = "2021"
 
 [features]
 default = ["visual"]
-visual = ["bevy/default", "bevy_egui"]
+visual = ["bevy/default", "bevy_egui", "bevy_rapier3d/debug-render-3d"]
 training = ["burn"]
 
 [dependencies]
-bevy = { version = "0.15", default-features = false }
-bevy_rapier3d = "0.28"
+bevy = { version = "0.18", default-features = false }
+bevy_rapier3d = { version = "0.33", default-features = false, features = ["dim3"] }
 ron = "0.8"
 serde = { version = "1", features = ["derive"] }
-bevy_egui = { version = "0.31", optional = true }
-burn = { version = "0.16", optional = true }
+bevy_egui = { version = "0.39", optional = true }
+burn = { version = "0.20", optional = true }
