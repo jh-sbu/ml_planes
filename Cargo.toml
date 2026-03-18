@@ -1,6 +1,17 @@
 [package]
 name = "ml_planes"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+
+[features]
+default = ["visual"]
+visual = ["bevy/default", "bevy_egui"]
+training = ["burn"]
 
 [dependencies]
+bevy = { version = "0.15", default-features = false }
+bevy_rapier3d = "0.28"
+ron = "0.8"
+serde = { version = "1", features = ["derive"] }
+bevy_egui = { version = "0.31", optional = true }
+burn = { version = "0.16", optional = true }
