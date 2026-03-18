@@ -140,6 +140,13 @@ visual = ["bevy/default", "bevy_egui"]
 training = ["burn"]
 ```
 
+> **Bevy feature flag note:** `default-features = false` disables only the
+> *optional* subsystems (render, audio, UI, windowing). The core sub-crates
+> (`bevy_ecs`, `bevy_app`, `bevy_math`, `bevy_reflect`, `bevy_transform`,
+> `bevy_time`, `bevy_asset`, `bevy_hierarchy`) are **non-optional** dependencies
+> of the meta-crate and are always present. Do not add them as explicit features
+> — they are not optional feature flags and cargo will reject them.
+
 ---
 
 ## 6. Test Strategy

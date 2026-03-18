@@ -9,14 +9,22 @@
  loops come after this phase, but every interface they will use must be defined here cleanly.
 
  ---
- Milestone 0 — Cargo.toml fixup
+ Milestone 0 — Cargo.toml fixup [COMPLETE]
 
- File: Cargo.toml
+ All three build modes verified passing. No Cargo.toml changes were needed beyond
+ the initial skeleton.
 
- The current bevy = { version = "0.15", default-features = false } enables zero Bevy features. Fix this by adding always-on features (bevy_asset, bevy_ecs, bevy_math, bevy_reflect,
- bevy_transform, bevy_time, bevy_app, bevy_hierarchy) and letting the visual feature pull in bevy/default.
+ Key insight: `bevy = { version = "0.18", default-features = false }` already
+ includes all core sub-crates (bevy_ecs, bevy_app, bevy_math, bevy_reflect,
+ bevy_transform, bevy_time, bevy_asset, bevy_hierarchy) — these are non-optional
+ dependencies of the meta-crate. `default-features = false` only disables the
+ heavy optional subsystems (rendering, audio, UI, windowing). Do NOT attempt to
+ list those crate names as features; they are not optional feature flags.
 
- Also add bevy_rapier3d feature flags: dim3 is required; optionally debug-render-3d during dev. Consider bevy_common_assets or a custom AssetLoader for RON (see M5 note below).
+ Verified:
+   cargo check --no-default-features                    ✓
+   cargo check --no-default-features --features training ✓
+   cargo check                                          ✓
 
  ---
  Milestone 1 — plane/ core types
