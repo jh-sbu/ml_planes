@@ -168,3 +168,9 @@ training = ["burn"]
 - `PlaneConfig` is loaded at runtime via Bevy's asset server — no compile-time plane data.
 - All physics runs at Rapier's fixed timestep; rendering interpolates between steps.
 - The ground is a flat infinite collider acting as a death plane — no terrain, no landing.
+
+---
+
+## 8. Implementation Roadmap
+
+> Full plan: `plans/roadmap.md`
