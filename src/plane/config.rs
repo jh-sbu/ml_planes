@@ -4,8 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// Runtime-loaded plane configuration asset.
 /// Field names must exactly match `assets/planes/*.plane.ron`.
-#[cfg_attr(feature = "visual", derive(bevy::asset::Asset))]
-#[derive(Reflect, Serialize, Deserialize, Debug, Clone)]
+#[derive(bevy::asset::Asset, Reflect, Serialize, Deserialize, Debug, Clone)]
 pub struct PlaneConfig {
     // Geometry
     pub wing_area: f32,       // S  [m²]

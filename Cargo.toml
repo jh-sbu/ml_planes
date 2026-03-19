@@ -9,7 +9,7 @@ visual = ["bevy/default", "bevy_egui", "bevy_rapier3d/debug-render-3d"]
 training = ["burn"]
 
 [dependencies]
-bevy = { version = "0.18", default-features = false }
+bevy = { version = "0.18", default-features = false, features = ["bevy_asset"] }
 bevy_rapier3d = { version = "0.33", default-features = false, features = ["dim3"] }
 ron = "0.8"
 serde = { version = "1", features = ["derive"] }

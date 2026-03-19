@@ -14,12 +14,15 @@
  All three build modes verified passing. No Cargo.toml changes were needed beyond
  the initial skeleton.
 
- Key insight: `bevy = { version = "0.18", default-features = false }` already
- includes all core sub-crates (bevy_ecs, bevy_app, bevy_math, bevy_reflect,
- bevy_transform, bevy_time, bevy_asset, bevy_hierarchy) — these are non-optional
- dependencies of the meta-crate. `default-features = false` only disables the
- heavy optional subsystems (rendering, audio, UI, windowing). Do NOT attempt to
- list those crate names as features; they are not optional feature flags.
+ Key insight: `bevy_asset` IS an optional feature of the `bevy` meta-crate.
+ Always use `bevy = { version = "0.18", default-features = false, features = ["bevy_asset"] }`.
+ Without `bevy_asset`, the `bevy::asset` module is absent and asset-related
+ types (`Handle`, `Assets`, `AssetLoader`) are unavailable — even in headless
+ builds that don't render.
+
+ Other core sub-crates (`bevy_ecs`, `bevy_app`, `bevy_math`, `bevy_reflect`,
+ `bevy_transform`, `bevy_time`, `bevy_hierarchy`) are non-optional and always
+ present; do not list them as explicit features.
 
  Verified:
    cargo check --no-default-features                    ✓
@@ -149,15 +152,22 @@
 
  run_flight_controllers: Reads FlightState, calls controller.0.update(state, dt), writes ControlInputs, calls inputs.clamp(). Uses Time<Fixed> for dt.
 
- apply_aerodynamic_forces: Reads FlightState + ControlInputs + Handle<PlaneConfig>, calls compute_aero_forces, rotates body→world via state.attitude.mul_vec3(...), writes ExternalForce.
- Note: ExternalForce is not auto-cleared by Rapier — overwriting it each frame is correct.
+ apply_aerodynamic_forces: Reads FlightState + ControlInputs + PlaneConfigHandle,
+ looks up PlaneConfig via `plane_configs.get(&handle.0)`, calls compute_aero_forces,
+ rotates body→world via state.attitude.mul_vec3(...), writes ExternalForce.
+ Note: `Handle<T>` is NOT a Component in Bevy 0.18 — use the `PlaneConfigHandle`
+ newtype wrapper instead. Note: ExternalForce is not auto-cleared by Rapier —
+ overwriting it each frame is correct.
 
  PlanePlugin (plugin.rs):
  - app.init_asset::<PlaneConfig>()
  - app.register_type::<PlaneConfig>()
  - Custom AssetLoader for .plane.ron: implements bevy::asset::AssetLoader, deserializes with ron::de::from_bytes, registered with app.init_asset_loader::<PlaneConfigLoader>(). Extensions:
  ["plane.ron"].
- - Adds the three systems as .chain() in FixedUpdate.
+ - Adds the three systems as .into_configs().chain() in FixedUpdate.
+   Note: In Bevy 0.18, `.chain()` on a tuple of systems is ambiguous because
+   `bevy::prelude::Curve` also defines a `chain` method. Use `.into_configs().chain()`
+   — `into_configs()` is unambiguously from `IntoScheduleConfigs`.
 
  Scheduling note: Systems run in FixedUpdate before Rapier's PhysicsSet::StepSimulation. Forces applied via ExternalForce are consumed in that step. Verify ordering with bevy_rapier3d 0.28's
   PhysicsSet schedule documentation.
@@ -171,7 +181,7 @@
 
  spawner.rs — spawn_plane(commands, params, cfg) -> Entity:
  Spawns entity with RigidBody::Dynamic, a Collider::cuboid (rough fuselage), Velocity { linvel, angvel } (angvel converted body→world), ExternalForce::default(),
- AdditionalMassProperties::MassProperties { mass, principal_inertia: cfg.inertia, .. }, FlightState::default(), ControlInputs::default(), ActiveController(controller), Handle<PlaneConfig>,
+ AdditionalMassProperties::MassProperties { mass, principal_inertia: cfg.inertia, .. }, FlightState::default(), ControlInputs::default(), ActiveController(controller), PlaneConfigHandle(server.load("planes/generic_jet.plane.ron")),
  and Transform. Mesh/material components added only under #[cfg(feature = "visual")].
 
  Default spawn position: Vec3::new(0.0, 500.0, 0.0), default velocity: Vec3::new(100.0, 0.0, 0.0).

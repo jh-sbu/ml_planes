@@ -40,6 +40,7 @@ src/
 | `FlightController` | trait | `fn update(&mut self, state: &FlightState, dt: f32) -> ControlInputs` |
 | `PidController<T>` | generic struct | PID with integral wind-up clamp and output limits |
 | `TrainingEnv` | trait | `reset()`, `step(action) -> (obs, reward, done, info)` |
+| `PlaneConfigHandle` | ECS component | Newtype wrapping `Handle<PlaneConfig>` — required because `Handle<T>` is not a `Component` in Bevy 0.18 |
 
 ### Physics Layering
 
@@ -121,7 +122,7 @@ training = []
 
 ```toml
 [dependencies]
-bevy = "0.18"
+bevy = { version = "0.18", default-features = false, features = ["bevy_asset"] }
 bevy_rapier3d = "0.33"
 ron = "0.8"
 serde = { version = "1", features = ["derive"] }
@@ -140,12 +141,12 @@ visual = ["bevy/default", "bevy_egui"]
 training = ["burn"]
 ```
 
-> **Bevy feature flag note:** `default-features = false` disables only the
-> *optional* subsystems (render, audio, UI, windowing). The core sub-crates
-> (`bevy_ecs`, `bevy_app`, `bevy_math`, `bevy_reflect`, `bevy_transform`,
-> `bevy_time`, `bevy_asset`, `bevy_hierarchy`) are **non-optional** dependencies
-> of the meta-crate and are always present. Do not add them as explicit features
-> — they are not optional feature flags and cargo will reject them.
+> **Bevy feature flag note:** `default-features = false` disables all optional
+> subsystems. `bevy_asset` **is** an optional feature of the `bevy` meta-crate
+> and must be explicitly enabled — it is NOT automatically present. Always include
+> `features = ["bevy_asset"]` in the bevy dependency so asset loading works in
+> headless and training builds. Do not list rendering/audio/UI crates as features
+> unless you intend to enable them.
 
 ---
 
