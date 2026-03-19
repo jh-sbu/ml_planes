@@ -2,11 +2,7 @@
 
  Context
 
- The project is currently empty scaffolding: main.rs is a Hello World, Cargo.toml has the dependency skeleton, and assets/planes/generic_jet.plane.ron is a stub with placeholder
- coefficients. Nothing compiles as a simulation yet.
-
- This plan covers everything needed to get a physically simulated, flyable plane running — the environment phase. Flight maneuver controllers (LevelHold, formation, etc.) and ML training
- loops come after this phase, but every interface they will use must be defined here cleanly.
+ Milestones 0–5 are fully implemented and passing tests. The core types (plane/, aerodynamics/, controllers/, training/) and the plane physics systems/plugin are all complete. The project is now in the environment phase: M6 (environment/ module), M7 (camera/ + ui/), M8 (main.rs app assembly), and M9 (integration tests) remain.
 
  ---
  Milestone 0 — Cargo.toml fixup [COMPLETE]
@@ -30,7 +26,7 @@
    cargo check                                          ✓
 
  ---
- Milestone 1 — plane/ core types
+ Milestone 1 — plane/ core types [COMPLETE]
 
  Files: src/plane/{mod,config,state,inputs}.rs
 
@@ -50,7 +46,7 @@
  - Near-zero airspeed → no NaN, α=β=0
 
  ---
- Milestone 2 — aerodynamics/ model
+ Milestone 2 — aerodynamics/ model [COMPLETE]
 
  Files: src/aerodynamics/{mod,model}.rs
 
@@ -88,7 +84,7 @@
  - cm_q_damping_sign — positive q → negative Cm contribution (cm_q = -8.0)
 
  ---
- Milestone 3 — controllers/ trait + PID + Manual
+ Milestone 3 — controllers/ trait + PID + Manual [COMPLETE]
 
  Files: src/controllers/{mod,traits,pid,manual,component}.rs
 
@@ -118,7 +114,7 @@
  - reset_clears_state
 
  ---
- Milestone 4 — training/ interface
+ Milestone 4 — training/ interface [COMPLETE]
 
  Files: src/training/{mod,env}.rs
 
@@ -141,7 +137,7 @@
  No tests this milestone.
 
  ---
- Milestone 5 — plane/ systems + plugin
+ Milestone 5 — plane/ systems + plugin [COMPLETE]
 
  Files: src/plane/{systems,plugin}.rs
 
