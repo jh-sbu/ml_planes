@@ -1,4 +1,5 @@
 mod aerodynamics;
+mod controllers;
 mod plane;
 
 fn main() {
