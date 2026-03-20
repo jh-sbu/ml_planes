@@ -8,11 +8,7 @@
 
     // --- Mass / Inertia ---
     mass: 5000.0,           // [kg]
-    inertia: (              // Ixx, Iyy, Izz [kg·m²]
-        x: 10000.0,
-        y: 40000.0,
-        z: 45000.0,
-    ),
+    inertia: (10000.0, 40000.0, 45000.0), // Ixx, Iyy, Izz [kg·m²]
 
     // --- Longitudinal Aerodynamic Coefficients ---
     cl0: 0.1,               // lift at zero α
