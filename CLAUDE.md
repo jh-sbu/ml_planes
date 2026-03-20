@@ -186,6 +186,18 @@ use bevy::pbr::{DistanceFog, FogFalloff};
 commands.spawn(DistanceFog { color: …, falloff: FogFalloff::Linear { start, end }, ..default() });
 ```
 
+**Mouse input — `AccumulatedMouseMotion`, not `EventReader`:**
+- `EventReader` does not exist in 0.18 — even for engine/built-in events like `MouseMotion`.
+- Mouse delta per frame: `Res<AccumulatedMouseMotion>` (from `bevy::input::mouse`).
+  Access via `accumulated.delta: Vec2`.
+- Mouse button state: `Res<ButtonInput<MouseButton>>` (unchanged).
+
+**`EguiContexts::ctx_mut()` returns `Result`:**
+```rust
+let Ok(ctx) = contexts.ctx_mut() else { return };
+// ctx is &mut egui::Context
+```
+
 ---
 
 ## 6. Test Strategy

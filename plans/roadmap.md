@@ -2,7 +2,7 @@
 
  Context
 
- Milestones 0–5 are fully implemented and passing tests. The core types (plane/, aerodynamics/, controllers/, training/) and the plane physics systems/plugin are all complete. The project is now in the environment phase: M6 (environment/ module), M7 (camera/ + ui/), M8 (main.rs app assembly), and M9 (integration tests) remain.
+ Milestones 0–7 are fully implemented and passing tests. The core types (plane/, aerodynamics/, controllers/, training/), the plane physics systems/plugin, the environment module, and the camera/ui modules are all complete. M8 (main.rs app assembly) and M9 (integration tests) remain.
 
  ---
  Milestone 0 — Cargo.toml fixup [COMPLETE]
@@ -212,7 +212,7 @@
  Custom WGSL grid shader can be added later.
 
  ---
- Milestone 7 — camera/ + ui/ (visual only)
+ Milestone 7 — camera/ + ui/ (visual only) [COMPLETE]
 
  Files: src/camera/{mod,mode,systems,plugin}.rs, src/ui/{mod,hud,plugin}.rs
 
@@ -230,6 +230,13 @@
  name. Targets the Follow entity if set, otherwise first plane.
 
  No tests for camera/UI.
+
+ API discoveries (M7):
+ - EventReader does NOT exist in Bevy 0.18 — even for built-in engine events like MouseMotion.
+   Mouse delta per frame: Res<AccumulatedMouseMotion> (bevy::input::mouse), .delta: Vec2.
+   The M7 plan note "EventReader is valid for engine events" was incorrect.
+ - EguiContexts::ctx_mut() returns Result<&mut Context, QuerySingleError>, not &mut Context.
+   Must unwrap: let Ok(ctx) = contexts.ctx_mut() else { return };
 
  ---
  Milestone 8 — main.rs app assembly
