@@ -169,30 +169,47 @@
   PhysicsSet schedule documentation.
 
  ---
- Milestone 6 — environment/ module
+ Milestone 6 — environment/ module [COMPLETE]
 
  Files: src/environment/{mod,ground,spawner,plugin}.rs + visual.rs (cfg visual)
 
- ground.rs: Spawns Collider::halfspace(Vec3::Y) with RigidBody::Fixed at Y=0 — the death plane.
+ ground.rs: Spawns Collider::halfspace(Vec3::Y).unwrap() with RigidBody::Fixed at Y=0 — the death
+ plane. Note: Collider::halfspace returns Option<Self>, not Self — always call .unwrap() (Vec3::Y is
+ always a valid halfspace normal).
 
  spawner.rs — spawn_plane(commands, params, cfg) -> Entity:
  Spawns entity with RigidBody::Dynamic, a Collider::cuboid (rough fuselage), Velocity { linvel, angvel } (angvel converted body→world), ExternalForce::default(),
- AdditionalMassProperties::MassProperties { mass, principal_inertia: cfg.inertia, .. }, FlightState::default(), ControlInputs::default(), ActiveController(controller), PlaneConfigHandle(server.load("planes/generic_jet.plane.ron")),
+ AdditionalMassProperties::MassProperties(MassProperties {
+     local_center_of_mass: Vec3::ZERO,
+     mass: cfg.mass,
+     principal_inertia: cfg.inertia,
+     principal_inertia_local_frame: Quat::IDENTITY,   // required — four fields, not three
+ }),
+ FlightState::default(), ControlInputs::default(), ActiveController(controller), PlaneConfigHandle(server.load("planes/generic_jet.plane.ron")),
  and Transform. Mesh/material components added only under #[cfg(feature = "visual")].
 
  Default spawn position: Vec3::new(0.0, 500.0, 0.0), default velocity: Vec3::new(100.0, 0.0, 0.0).
 
- Death detection (spawner.rs or ground.rs):
+ Death detection (spawner.rs or ground.rs) — uses observer pattern (Bevy 0.18):
  fn detect_ground_contact(
      query: Query<Entity, With<FlightState>>,
-     rapier_context: Res<RapierContext>,
+     rapier_context: ReadRapierContext,              // NOT Res<RapierContext>
      ground_query: Query<Entity, (With<Collider>, Without<FlightState>)>,
-     mut events: EventWriter<PlaneGroundContactEvent>,
- )
+     mut commands: Commands,
+ ) {
+     let Ok(ctx) = rapier_context.single() else { return };
+     // ... check ctx.contact_pair(plane, ground) ...
+     commands.trigger(PlaneGroundContactEvent(entity));
+ }
 
- EnvironmentPlugin: Adds spawn_ground and (cfg visual) spawn_visual_ground in Startup; registers PlaneGroundContactEvent.
+ EnvironmentPlugin: Adds spawn_ground and (cfg visual) spawn_visual_ground in Startup;
+ adds observer via app.add_observer(...) — no App::add_event / EventWriter needed (Bevy 0.18).
 
- visual.rs (cfg visual only): Spawns a large Plane3d mesh (5000m×5000m) at Y=-0.01 with a green StandardMaterial. Add FogSettings for depth cue. Custom WGSL grid shader can be added later.
+ visual.rs (cfg visual only): Spawns a large Plane3d mesh (5000m×5000m) at Y=-0.01 with a green
+ StandardMaterial. Fog uses DistanceFog (not FogSettings):
+   use bevy::pbr::{DistanceFog, FogFalloff};
+   commands.spawn(DistanceFog { color: …, falloff: FogFalloff::Linear { start, end }, ..default() });
+ Custom WGSL grid shader can be added later.
 
  ---
  Milestone 7 — camera/ + ui/ (visual only)
@@ -273,7 +290,16 @@
  - Velocity.angvel is world-frame in bevy_rapier3d — always rotate to body before storing in FlightState.
  - ExternalForce is not auto-cleared — overwriting it each FixedUpdate tick is correct and intentional.
  - Feature flag discipline — core types compile in all configurations; only rendering code is behind #[cfg(feature = "visual")].
- - RON asset loader — if Bevy 0.15 doesn't provide a first-party RON loader for non-Scene assets, implement a custom AssetLoader (~20 lines using ron::de::from_bytes).
+ - RON asset loader — Bevy 0.18 does not provide a first-party RON loader for non-Scene assets; implement a custom AssetLoader (~20 lines using ron::de::from_bytes).
+ - Bevy 0.18 event system is observer-based: use commands.trigger(MyEvent(…)) to fire and
+   app.add_observer(|on: On<MyEvent>| …) to listen. EventWriter, EventReader, and App::add_event
+   do NOT exist. No registration step needed.
+ - Collider::halfspace returns Option<Self> — always .unwrap() (valid normals never return None).
+ - RapierContext access: system param is ReadRapierContext; obtain context via rapier_context.single()
+   which returns Result<_> — use `let Ok(ctx) = … else { return }`.
+ - MassProperties (dim3) requires four fields: mass, local_center_of_mass, principal_inertia, AND
+   principal_inertia_local_frame: Quat::IDENTITY.
+ - Fog in Bevy 0.18 is DistanceFog (bevy::pbr::DistanceFog), not FogSettings.
 
  Verification
 

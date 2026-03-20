@@ -148,6 +148,44 @@ training = ["burn"]
 > headless and training builds. Do not list rendering/audio/UI crates as features
 > unless you intend to enable them.
 
+### Bevy 0.18 API Notes (confirmed against installed crates)
+
+**Event system — observer-based, no EventWriter/EventReader:**
+- `#[derive(Event)]` still derives events.
+- Fire: `commands.trigger(MyEvent(data))` — no `App::add_event` needed.
+- Listen: `app.add_observer(|on: On<MyEvent>| { … })`.
+- `EventWriter`, `EventReader`, and `App::add_event` do **not** exist in 0.18.
+
+**Collider::halfspace returns Option:**
+```rust
+Collider::halfspace(Vec3::Y).unwrap()  // Vec3::Y is always valid
+```
+
+**RapierContext access:**
+```rust
+// System param (not Res<RapierContext>):
+rapier_context: ReadRapierContext,
+// Usage:
+let Ok(ctx) = rapier_context.single() else { return };
+ctx.contact_pair(e1, e2)
+```
+
+**MassProperties (dim3) — four fields required:**
+```rust
+MassProperties {
+    local_center_of_mass: Vec3::ZERO,
+    mass: cfg.mass,
+    principal_inertia: cfg.inertia,
+    principal_inertia_local_frame: Quat::IDENTITY,
+}
+```
+
+**Fog — `DistanceFog`, not `FogSettings`:**
+```rust
+use bevy::pbr::{DistanceFog, FogFalloff};
+commands.spawn(DistanceFog { color: …, falloff: FogFalloff::Linear { start, end }, ..default() });
+```
+
 ---
 
 ## 6. Test Strategy
