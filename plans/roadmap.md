@@ -2,7 +2,7 @@
 
  Context
 
- Milestones 0–7 are fully implemented and passing tests. The core types (plane/, aerodynamics/, controllers/, training/), the plane physics systems/plugin, the environment module, and the camera/ui modules are all complete. M8 (main.rs app assembly) and M9 (integration tests) remain.
+ Milestones 0–8 are fully implemented and passing tests. The core types (plane/, aerodynamics/, controllers/, training/), the plane physics systems/plugin, the environment module, the camera/ui modules, and the main.rs app assembly are all complete. M9 (integration tests) remains.
 
  ---
  Milestone 0 — Cargo.toml fixup [COMPLETE]
@@ -239,20 +239,35 @@
    Must unwrap: let Ok(ctx) = contexts.ctx_mut() else { return };
 
  ---
- Milestone 8 — main.rs app assembly
+ Milestone 8 — main.rs app assembly [COMPLETE]
 
- Thin wiring. Pattern:
+ Files: src/main.rs, src/controllers/traits.rs, src/controllers/manual.rs
+
+ App assembly pattern implemented:
  #[cfg(feature = "visual")] app.add_plugins(DefaultPlugins);
  #[cfg(not(feature = "visual"))] app.add_plugins(MinimalPlugins);
  app.add_plugins(RapierPhysicsPlugin::<NoUserData>::default());
  app.add_plugins(PlanePlugin).add_plugins(EnvironmentPlugin);
  #[cfg(feature = "visual")]
- app.add_plugins(EguiPlugin).add_plugins(CameraPlugin).add_plugins(UiPlugin);
+ app.add_plugins(EguiPlugin::default()).add_plugins(CameraPlugin).add_plugins(UiPlugin);
 
- setup system: loads "planes/generic_jet.plane.ron" via AssetServer, spawns ground, spawns one plane with ManualController. Asset loading is async — apply_aerodynamic_forces silently skips
- until PlaneConfig is ready (guarded by plane_configs.get(handle)). Add a SimState (Loading/Running) state machine if needed.
+ Key decisions:
+ - PlanePlugin + EnvironmentPlugin added unconditionally — both work headless (no rendering
+   dependencies). Only EguiPlugin, CameraPlugin, and UiPlugin are visual-gated.
+ - poll_input default method added to FlightController trait (visual-gated no-op stub) so all
+   existing controllers compile unchanged under --no-default-features.
+ - ManualController::poll_input delegates to existing read_keyboard, bridging trait call to the
+   keyboard-reading logic without duplication.
+ - setup inlines mass/inertia matching generic_jet.plane.ron because asset loading is async at
+   Startup — the loaded PlaneConfigHandle drives aero once the asset is ready; the inline values
+   are used only for Rapier's AdditionalMassProperties on spawn.
 
- ManualController::read_keyboard runs in Update (before FixedUpdate systems), writing to controller.0's internal current: ControlInputs.
+ API discoveries (M8):
+ - EguiPlugin struct initializer is broken/deprecated across patch versions — use
+   EguiPlugin::default() exclusively. Struct literal form (with enable_multipass_for_primary_context
+   or other fields) fails to compile as fields change between releases.
+ - environment::spawner and environment::plugin are private modules — use the public re-exports
+   from environment:: directly (EnvironmentPlugin, spawn_plane). Do not path into the submodules.
 
  ---
  Milestone 9 — Integration tests

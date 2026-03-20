@@ -41,4 +41,13 @@ impl FlightController for ManualController {
     }
 
     fn name(&self) -> &'static str { "Manual" }
+
+    #[cfg(feature = "visual")]
+    fn poll_input(
+        &mut self,
+        keys: &bevy::input::ButtonInput<bevy::prelude::KeyCode>,
+        dt: f32,
+    ) {
+        self.read_keyboard(keys, dt);
+    }
 }

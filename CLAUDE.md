@@ -198,6 +198,14 @@ let Ok(ctx) = contexts.ctx_mut() else { return };
 // ctx is &mut egui::Context
 ```
 
+**`EguiPlugin` — use `::default()`, not struct literal:**
+```rust
+// Correct — struct fields change between patch versions, default() is stable
+app.add_plugins(EguiPlugin::default());
+// Wrong — struct initializer requires all fields and some are deprecated
+app.add_plugins(EguiPlugin { enable_multipass_for_primary_context: false });
+```
+
 ---
 
 ## 6. Test Strategy
@@ -232,3 +240,5 @@ let Ok(ctx) = contexts.ctx_mut() else { return };
 ## 8. Implementation Roadmap
 
 > Full plan: `plans/roadmap.md`
+
+M0–M8 (environment phase) are complete. M9 (integration tests) is next.
