@@ -270,24 +270,53 @@
    from environment:: directly (EnvironmentPlugin, spawn_plane). Do not path into the submodules.
 
  ---
- Milestone 9 — Integration tests
+ Milestone 9 — Integration tests [COMPLETE]
 
- Location: tests/; all pass with cargo test --no-default-features.
+Files created: src/lib.rs (new), src/main.rs (updated), tests/common/mod.rs,
+               tests/aero_physics.rs, tests/pid_convergence.rs, tests/spawn_reset.rs
 
- Helper (tests/common/mod.rs):
- fn build_headless_app() -> App {
-     let mut app = App::new();
-     app.add_plugins(MinimalPlugins)
-        .add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
-        .add_plugins(PlanePlugin);
-     app
- }
+Result: 18 unit tests + 3 integration tests pass. All three build modes compile.
 
- tests/aero_physics.rs: Spawn plane at 500m, trim velocity. Run app.update() N times. Assert altitude stays within ±50m (energy not exploding). Validates full aero→Rapier pipeline.
+src/lib.rs — required addition (not in original plan):
+Integration tests in tests/ can only import from a library crate. Added src/lib.rs with
+pub mod declarations for all modules. Updated src/main.rs to use `use ml_planes::*`.
 
- tests/pid_convergence.rs: No Bevy needed. Simulate PidController<f32> against a first-order plant over N steps. Assert error < tolerance.
+tests/common/mod.rs — actual build_headless_app():
+fn build_headless_app() -> App {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+       .add_plugins(bevy::transform::TransformPlugin)   // required — Rapier needs StaticTransformOptimizations
+       .add_plugins(bevy::asset::AssetPlugin::default()) // required — for Assets<PlaneConfig>
+       .add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
+       .add_plugins(PlanePlugin);
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(1.0 / 60.0)));
+    app.finish();  // required when using app.update() manually instead of app.run()
+    app
+}
 
- tests/spawn_reset.rs: Call spawn_plane with a specific SpawnSpec. Run one sync_flight_state tick. Assert FlightState fields match spec values.
+tests/aero_physics.rs — energy conservation / no-blowup test:
+300 updates × 1/60 s = 5 simulated seconds. Assert altitude is finite, between 200m and
+600m (not ±50m as originally planned — zero-throttle plane falls ~116m under gravity).
+Query uses .single().expect("...") — Bevy 0.18 Query::single() returns Result.
+
+tests/pid_convergence.rs — pure PID closed-loop test:
+5000 steps at dt=0.01 (not 200 — kd=0.1 with discrete dt means 10× amplification → slow
+convergence). Runs in ~0ms. Uses RunSystemOnce trait from bevy::ecs::system.
+
+tests/spawn_reset.rs — spawn → sync_flight_state → FlightState match:
+- Entity spawned via world.run_system_once(...) (not add_systems(Startup, ...)) because
+  systems added after app.finish() are ignored by the scheduler.
+- Two app.update() calls required: FixedUpdate does not fire on the first call (fixed
+  timestep accumulator starts empty on frame 0).
+- RunSystemOnce trait imported from bevy::ecs::system::RunSystemOnce.
+
+Key API discoveries (M9):
+- TransformPlugin lives at bevy::transform::TransformPlugin (not bevy::app::).
+- AssetPlugin lives at bevy::asset::AssetPlugin.
+- RunSystemOnce trait (bevy::ecs::system) implements fn run_system_once() -> Result<Out, RunSystemError> on &mut World.
+- Bevy's default fixed timestep is 64 Hz (not 60 Hz); ManualDuration(1/60 s) accumulates enough
+  for one fixed step per update() call, but only starting from the SECOND call.
+- MinimalPlugins does NOT include TransformPlugin — it must be added manually in headless tests.
 
  ---
  Critical Files

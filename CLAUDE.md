@@ -241,4 +241,4 @@ app.add_plugins(EguiPlugin { enable_multipass_for_primary_context: false });
 
 > Full plan: `plans/roadmap.md`
 
-M0–M8 (environment phase) are complete. M9 (integration tests) is next.
+M0–M9 (environment phase + integration tests) are complete. M10 (level hold maneuver) is next.

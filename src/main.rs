@@ -1,28 +1,17 @@
-mod aerodynamics;
-#[cfg(feature = "visual")]
-mod camera;
-mod controllers;
-mod environment;
-mod plane;
-mod training;
-#[cfg(feature = "visual")]
-mod ui;
-
 use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
 
-use controllers::{ActiveController, ManualController};
-use environment::{spawn_plane, EnvironmentPlugin};
-use plane::config::PlaneConfig;
-use plane::{FlightState, PlanePlugin};
-use training::SpawnSpec;
+use ml_planes::controllers::{ActiveController, ManualController};
+use ml_planes::environment::{EnvironmentPlugin, spawn_plane};
+use ml_planes::plane::{config::PlaneConfig, FlightState, PlanePlugin};
+use ml_planes::training::SpawnSpec;
 
 #[cfg(feature = "visual")]
 use bevy_egui::EguiPlugin;
 #[cfg(feature = "visual")]
-use camera::CameraPlugin;
+use ml_planes::camera::CameraPlugin;
 #[cfg(feature = "visual")]
-use ui::UiPlugin;
+use ml_planes::ui::UiPlugin;
 
 fn main() {
     let mut app = App::new();
