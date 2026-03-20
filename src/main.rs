@@ -28,6 +28,7 @@ fn main() {
     #[cfg(feature = "visual")]
     {
         app.add_plugins(EguiPlugin::default());
+        app.add_plugins(RapierDebugRenderPlugin::default());
         app.add_plugins(CameraPlugin);
         app.add_plugins(UiPlugin);
     }
