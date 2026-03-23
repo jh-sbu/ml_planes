@@ -10,6 +10,7 @@ pub fn draw_flight_hud(
     mode: Res<CameraMode>,
     mut contexts: EguiContexts,
     plane_query: Query<(&FlightState, &ControlInputs, &ActiveController)>,
+    all_planes: Query<Entity, With<FlightState>>,
 ) {
     // Determine which entity to display
     let result = match *mode {
@@ -21,10 +22,22 @@ pub fn draw_flight_hud(
 
     let Ok(ctx) = contexts.ctx_mut() else { return };
 
+    let mut sorted_planes: Vec<Entity> = all_planes.iter().collect();
+    sorted_planes.sort();
+    let camera_label = match *mode {
+        CameraMode::FreeLook => "Camera: Free Look".to_string(),
+        CameraMode::Follow(entity) => {
+            let n = sorted_planes.iter().position(|&e| e == entity).map(|i| i + 1).unwrap_or(0);
+            format!("Camera: Follow Plane {}", n)
+        }
+    };
+
     egui::Window::new("Flight Data")
         .anchor(egui::Align2::LEFT_TOP, egui::vec2(10.0, 10.0))
         .collapsible(false)
         .show(ctx, |ui| {
+            ui.label(&camera_label);
+            ui.separator();
             let knots = state.airspeed * 1.944;
             ui.label(format!("Airspeed:  {:.1} m/s  ({:.0} kts)", state.airspeed, knots));
             ui.label(format!("Altitude:  {:.1} m", state.altitude));
