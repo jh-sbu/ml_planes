@@ -23,7 +23,8 @@ pub fn spawn_plane(
     cfg: &PlaneConfig,
 ) -> Entity {
     let position = spec.position.unwrap_or(Vec3::new(0.0, 500.0, 0.0));
-    let attitude = spec.attitude.unwrap_or(Quat::IDENTITY);
+    // -π/2 around X maps body +Z (cockpit up) → world +Y (up).
+    let attitude = spec.attitude.unwrap_or(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2));
     let linvel = spec.velocity.unwrap_or(Vec3::new(100.0, 0.0, 0.0));
     let angvel_body = spec.angular_velocity.unwrap_or(Vec3::ZERO);
     // Body-frame angular velocity → world frame for Rapier.
