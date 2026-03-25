@@ -55,10 +55,18 @@ pub fn compute_aero_forces(
     let drag   = q_bar * cfg.wing_area * cd;
     let thrust = inputs.throttle * cfg.thrust_max;
 
+    // Rotate from wind axes (aligned with velocity) to body axes using alpha.
+    // For small alpha this is approximately (thrust-drag, 0, lift), but at large
+    // alpha (steep dive) the correction is critical: without it, negative CL at
+    // large negative alpha produces a downward force that grows as V² and causes
+    // finite-time blow-up to infinity → NaN.
+    let fx_wind = thrust - drag;
+    let fz_wind = lift;
+    let (sin_a, cos_a) = alpha.sin_cos();
     let force_body = Vec3::new(
-        thrust - drag,
+        fx_wind * cos_a + fz_wind * sin_a,
         0.0,
-        lift,
+        -fx_wind * sin_a + fz_wind * cos_a,
     );
 
     // --- Moment coefficients ---
@@ -215,17 +223,36 @@ mod tests {
     #[test]
     fn cl_clamped_at_cl_max() {
         // α = 1.0 rad → CL_raw = 0.1 + 4.5 = 4.6 → clamped to 1.4
-        // lift = 0.5 * 1.225 * 2500 * 20 * 1.4 = 1531.25 * 20 * 1.4 = 42875 N
+        // Wind-frame lift = q_bar * S * CL_max = 1531.25 * 20 * 1.4 = 42875 N
+        // Body-frame Fz = -Fx_wind*sin(α) + lift*cos(α)  (wind-to-body rotation)
+        // We verify the body-frame Fz is consistent with the clamped CL (not the
+        // unclamped 4.6), i.e. force_body.z is strictly less than it would be with
+        // CL_raw = 4.6 applied without clamping.
         let cfg = jet_config();
         let mut state = zero_state();
         state.airspeed = 50.0;
         state.alpha    = 1.0;
 
-        let forces = compute_aero_forces(&state, &zero_inputs(), &cfg);
-        let expected_lift = 0.5 * AIR_DENSITY * 50.0f32 * 50.0 * cfg.wing_area * cfg.cl_max;
-        assert_eq!(
-            forces.force_body.z, expected_lift,
-            "lift should equal clamped-CL value exactly"
+        let forces       = compute_aero_forces(&state, &zero_inputs(), &cfg);
+        let q_bar        = 0.5 * AIR_DENSITY * 50.0f32 * 50.0;
+        let lift_clamped = q_bar * cfg.wing_area * cfg.cl_max;          // CL = 1.4
+        let lift_raw     = q_bar * cfg.wing_area * (cfg.cl0 + cfg.cl_alpha * 1.0); // CL = 4.6
+        // After the wind-to-body rotation the z-component scales with cos(alpha),
+        // so clamping should result in a smaller Fz than if CL_raw were used.
+        let drag = q_bar * cfg.wing_area * (cfg.cd0 + cfg.cd_induced * cfg.cl_max * cfg.cl_max);
+        let expected_fz = lift_clamped * 1.0f32.cos() + drag * 1.0f32.sin();
+        let unclamped_fz = lift_raw * 1.0f32.cos()
+            + q_bar * cfg.wing_area * (cfg.cd0 + cfg.cd_induced * (cfg.cl0 + cfg.cl_alpha * 1.0).powi(2))
+            * 1.0f32.sin();
+        assert!(
+            forces.force_body.z < unclamped_fz,
+            "clamped Fz={:.1} should be less than unclamped {:.1}",
+            forces.force_body.z, unclamped_fz
+        );
+        assert!(
+            (forces.force_body.z - expected_fz).abs() < 1.0,
+            "Fz={:.1} should match expected {:.1} (wind-to-body rotation of clamped lift)",
+            forces.force_body.z, expected_fz
         );
     }
 
