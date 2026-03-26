@@ -20,7 +20,7 @@
     cd_induced: 0.05,       // CDi (Oswald factor baked in: k = 1/(π·e·AR))
 
     cm0: -0.02,             // pitching moment at zero α
-    cm_alpha: -0.6,         // dCm/dα  [1/rad]
+    cm_alpha: 0.6,          // dCm/dα  [1/rad]  positive = nose-down restoring moment (standard positive alpha convention)
     cm_q: -8.0,             // pitch damping derivative [1/rad]
     cm_delta_e: -1.2,       // dCm/dδe [1/rad]
 

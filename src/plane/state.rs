@@ -40,7 +40,7 @@ impl FlightState {
         // Rotate velocity from world frame into body frame.
         let v_body = self.attitude.conjugate().mul_vec3(self.velocity);
 
-        self.alpha = v_body.z.atan2(v_body.x);
+        self.alpha = (-v_body.z).atan2(v_body.x);
         self.beta = (v_body.y / self.airspeed).asin();
     }
 }
@@ -70,9 +70,9 @@ mod tests {
     #[test]
     fn ten_deg_nose_up() {
         let angle = 10.0_f32 * PI / 180.0; // 0.17453 rad
-        // velocity in XZ plane tilted 10° above X axis
+        // velocity in XZ plane tilted 10° below X axis — nose 10° above velocity vector (standard positive AoA)
         let mut s = default_state();
-        s.velocity = Vec3::new(angle.cos(), 0.0, angle.sin()) * 100.0;
+        s.velocity = Vec3::new(angle.cos(), 0.0, -angle.sin()) * 100.0;
         s.update_air_data();
         assert!(
             (s.alpha - angle).abs() < 1e-4,

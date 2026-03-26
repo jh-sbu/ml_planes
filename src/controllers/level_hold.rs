@@ -80,13 +80,12 @@ impl FlightController for LevelHoldController {
     fn update(&mut self, state: &FlightState, dt: f32) -> ControlInputs {
         // Altitude cascade: altitude error → α_target → elevator.
         //
-        // Sign note: positive elevator → nose-UP → alpha DECREASES (body +Z = world up;
-        // nose rising means velocity has less +Z body component).  So to INCREASE alpha
-        // (gain lift) we need NEGATIVE elevator.  The inner loop error is therefore
-        // (state.alpha - alpha_target): when alpha < alpha_target the error is negative,
-        // the PID outputs negative elevator, which pitches nose down and raises alpha.
+        // Sign note: positive elevator → nose-UP → alpha INCREASES (standard convention:
+        // nose rising means velocity appears further below nose in body frame, increasing α).
+        // Inner loop error is (alpha_target − state.alpha): positive error → positive elevator
+        // → nose up → alpha increases toward target.
         let alpha_target = self.altitude_pid.update(self.target_altitude - state.altitude, dt);
-        let elevator     = self.alpha_pid.update(state.alpha - alpha_target, dt);
+        let elevator     = self.alpha_pid.update(alpha_target - state.alpha, dt);
 
         // Airspeed: error → throttle (integral holds trim value).
         let throttle = self.airspeed_pid.update(self.target_airspeed - state.airspeed, dt);
@@ -161,23 +160,23 @@ mod tests {
         assert!(roll.abs() > 0.3, "roll={roll} expected |roll|>0.3 for banked attitude");
     }
 
-    // Positive elevator → nose-up → alpha decreases (less lift, plane falls).
-    // To gain altitude, the controller must pitch nose DOWN (negative elevator) so
+    // Positive elevator → nose-up → alpha increases (more lift, plane climbs).
+    // To gain altitude, the controller pitches nose UP (positive elevator) so
     // alpha increases, lift exceeds weight, and altitude rises.
     #[test]
-    fn altitude_below_target_gives_negative_elevator() {
+    fn altitude_below_target_gives_positive_elevator() {
         let mut ctrl = LevelHoldController::new(1000.0, 80.0);
         let state    = level_state(900.0, 80.0); // 100 m below target
         let inputs   = ctrl.update(&state, 1.0 / 60.0);
-        assert!(inputs.elevator < 0.0, "elevator={}", inputs.elevator);
+        assert!(inputs.elevator > 0.0, "elevator={}", inputs.elevator);
     }
 
     #[test]
-    fn altitude_above_target_gives_positive_elevator() {
+    fn altitude_above_target_gives_negative_elevator() {
         let mut ctrl = LevelHoldController::new(1000.0, 80.0);
         let state    = level_state(1100.0, 80.0); // 100 m above target
         let inputs   = ctrl.update(&state, 1.0 / 60.0);
-        assert!(inputs.elevator > 0.0, "elevator={}", inputs.elevator);
+        assert!(inputs.elevator < 0.0, "elevator={}", inputs.elevator);
     }
 
     #[test]
