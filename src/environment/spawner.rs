@@ -35,7 +35,7 @@ pub fn spawn_plane(
     commands
         .spawn((
             RigidBody::Dynamic,
-            Collider::cuboid(1.0, 0.5, 3.0),
+            Collider::cuboid(3.0, 0.5, 1.0),
             Velocity {
                 linvel,
                 angvel: angvel_world,
