@@ -54,6 +54,12 @@ pub struct LevelHoldController {
 }
 
 impl LevelHoldController {
+    /// Create a controller whose targets are captured from the given flight state.
+    /// Use this when switching from another controller to avoid a sudden command jolt.
+    pub fn from_state(state: &FlightState) -> Self {
+        Self::new(state.altitude, state.airspeed)
+    }
+
     /// Create a controller with default gains for the generic jet.
     pub fn new(target_altitude: f32, target_airspeed: f32) -> Self {
         Self {

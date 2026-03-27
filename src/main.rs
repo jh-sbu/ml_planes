@@ -1,9 +1,14 @@
 use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
 
-use ml_planes::controllers::{ActiveController, ManualController};
+use ml_planes::controllers::{ControllerKind, ManualController};
 use ml_planes::environment::{EnvironmentPlugin, spawn_plane};
-use ml_planes::plane::{config::PlaneConfig, FlightState, PlanePlugin};
+use ml_planes::plane::{config::PlaneConfig, PlanePlugin};
+
+#[cfg(feature = "visual")]
+use ml_planes::controllers::ActiveController;
+#[cfg(feature = "visual")]
+use ml_planes::plane::FlightState;
 use ml_planes::training::SpawnSpec;
 
 #[cfg(feature = "visual")]
@@ -36,7 +41,10 @@ fn main() {
     app.add_systems(Startup, setup);
 
     #[cfg(feature = "visual")]
-    app.add_systems(Update, poll_controller_inputs);
+    app.add_systems(Update, (poll_controller_inputs, switch_controller));
+
+    #[cfg(feature = "visual")]
+    app.add_systems(PostUpdate, apply_controller_switch);
 
     app.run();
 }
@@ -62,6 +70,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         &asset_server,
         &SpawnSpec::default(),
         Box::new(ManualController::new()),
+        ControllerKind::Manual,
         &cfg,
     );
 }
@@ -75,5 +84,31 @@ fn poll_controller_inputs(
     let dt = time.delta_secs();
     for mut controller in query.iter_mut() {
         controller.0.poll_input(&keys, dt);
+    }
+}
+
+/// C key: cycle through available controller kinds for every plane.
+#[cfg(feature = "visual")]
+fn switch_controller(
+    mut query: Query<&mut ControllerKind, With<FlightState>>,
+    keys: Res<ButtonInput<KeyCode>>,
+) {
+    if keys.just_pressed(KeyCode::KeyC) {
+        for mut kind in query.iter_mut() {
+            let next = kind.next();
+            kind.set_if_neq(next);
+        }
+    }
+}
+
+/// Rebuild `ActiveController` whenever `ControllerKind` changes (key press or HUD dropdown).
+/// Runs in `PostUpdate` so both `switch_controller` (Update) and `draw_flight_hud` (Update)
+/// have already written their changes before this system fires.
+#[cfg(feature = "visual")]
+fn apply_controller_switch(
+    mut query: Query<(&FlightState, &mut ActiveController, &ControllerKind), Changed<ControllerKind>>,
+) {
+    for (state, mut controller, &kind) in query.iter_mut() {
+        controller.0 = kind.build(state);
     }
 }

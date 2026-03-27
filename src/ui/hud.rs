@@ -3,22 +3,22 @@ use bevy_egui::{egui, EguiContexts};
 use std::f32::consts::PI;
 
 use crate::camera::CameraMode;
-use crate::controllers::ActiveController;
+use crate::controllers::ControllerKind;
 use crate::plane::{ControlInputs, FlightState};
 
 pub fn draw_flight_hud(
     mode: Res<CameraMode>,
     mut contexts: EguiContexts,
-    plane_query: Query<(&FlightState, &ControlInputs, &ActiveController)>,
+    mut plane_query: Query<(&FlightState, &ControlInputs, &mut ControllerKind)>,
     all_planes: Query<Entity, With<FlightState>>,
 ) {
     // Determine which entity to display
     let result = match *mode {
-        CameraMode::Follow(entity) => plane_query.get(entity).ok(),
-        CameraMode::FreeLook => plane_query.iter().next(),
+        CameraMode::Follow(entity) => plane_query.get_mut(entity).ok(),
+        CameraMode::FreeLook => plane_query.iter_mut().next(),
     };
 
-    let Some((state, inputs, controller)) = result else { return };
+    let Some((state, inputs, mut kind)) = result else { return };
 
     let Ok(ctx) = contexts.ctx_mut() else { return };
 
@@ -62,7 +62,19 @@ pub fn draw_flight_hud(
             add_surface_bar(ui, "Throttle", inputs.throttle, 0.0..=1.0);
 
             ui.separator();
-            ui.label(format!("Controller: {}", controller.0.name()));
+            let current = *kind;
+            let mut selected = current;
+            egui::ComboBox::from_label("Controller")
+                .selected_text(selected.name())
+                .show_ui(ui, |ui| {
+                    for &k in ControllerKind::ALL {
+                        ui.selectable_value(&mut selected, k, k.name());
+                    }
+                });
+            if selected != current {
+                *kind = selected;
+            }
+            ui.label("(C to cycle)");
         });
 }
 

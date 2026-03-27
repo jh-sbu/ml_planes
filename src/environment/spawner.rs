@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
 
-use crate::controllers::{ActiveController, FlightController};
+use crate::controllers::{ActiveController, ControllerKind, FlightController};
 use crate::plane::{ControlInputs, FlightState, PlaneConfig, PlaneConfigHandle};
 use crate::training::SpawnSpec;
 
@@ -20,6 +20,7 @@ pub fn spawn_plane(
     asset_server: &AssetServer,
     spec: &SpawnSpec,
     controller: Box<dyn FlightController>,
+    kind: ControllerKind,
     cfg: &PlaneConfig,
 ) -> Entity {
     let position = spec.position.unwrap_or(Vec3::new(0.0, 500.0, 0.0));
@@ -50,6 +51,7 @@ pub fn spawn_plane(
             FlightState::default(),
             ControlInputs::default(),
             ActiveController(controller),
+            kind,
             PlaneConfigHandle(handle),
             Transform::from_translation(position).with_rotation(attitude),
         ))

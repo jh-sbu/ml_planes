@@ -3,7 +3,7 @@ mod common;
 use bevy::ecs::system::RunSystemOnce;
 use bevy::prelude::*;
 
-use ml_planes::controllers::ManualController;
+use ml_planes::controllers::{ControllerKind, ManualController};
 use ml_planes::environment::spawn_plane;
 use ml_planes::plane::FlightState;
 use ml_planes::training::SpawnSpec;
@@ -38,6 +38,7 @@ fn spawn_then_sync_flight_state() {
                     &asset_server,
                     &spec,
                     Box::new(ManualController::new()),
+                    ControllerKind::Manual,
                     &cfg,
                 );
             },
