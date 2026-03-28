@@ -42,15 +42,15 @@ pub struct LevelHoldController {
     /// Target airspeed [m/s].
     pub target_airspeed: f32,
     /// Outer altitude loop: altitude error [m] → α_target [rad], clamped ±0.3 rad.
-    altitude_pid: PidController,
+    pub altitude_pid: PidController,
     /// Inner alpha loop: α error [rad] → elevator [-1, 1].
-    alpha_pid: PidController,
+    pub alpha_pid: PidController,
     /// Airspeed loop: airspeed error [m/s] → throttle [0, 1].
-    airspeed_pid: PidController,
+    pub airspeed_pid: PidController,
     /// Wings-level loop: roll angle [rad] → aileron [-1, 1].
-    roll_pid: PidController,
+    pub roll_pid: PidController,
     /// Heading/sideslip loop: β [rad] → rudder [-1, 1].
-    beta_pid: PidController,
+    pub beta_pid: PidController,
 }
 
 impl LevelHoldController {

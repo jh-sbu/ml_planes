@@ -8,6 +8,15 @@
 //!   --steps N          Total simulation steps at 60 Hz (default: 600 = 10 s)
 //!   --controller NAME  level_hold (default) | manual (zero inputs)
 //!   --interval N       Print every Nth step (default: 10)
+//!   --altitude F       Target altitude [m] and spawn altitude (default: 500)
+//!   --airspeed F       Target airspeed [m/s] (default: 100)
+//!   --alt-kp F         Altitude outer loop Kp (default: 0.003)
+//!   --alt-ki F         Altitude outer loop Ki (default: 0.0002)
+//!   --alt-kd F         Altitude outer loop Kd (default: 0.0)
+//!   --alpha-kp F       Alpha inner loop Kp (default: 1.0)
+//!   --alpha-kd F       Alpha inner loop Kd (default: 0.5)
+//!   --spd-kp F         Airspeed loop Kp (default: 0.01)
+//!   --spd-ki F         Airspeed loop Ki (default: 0.001)
 
 use std::f32::consts::FRAC_PI_2;
 use std::time::Duration;
@@ -22,7 +31,7 @@ use ml_planes::{
 };
 
 fn main() {
-    let (steps, controller_name, interval) = parse_args();
+    let args = parse_args();
 
     println!("step,time_s,altitude_m,airspeed_ms,alpha_deg,beta_deg,pitch_rate,roll_rate,yaw_rate,elevator,throttle,aileron,rudder");
 
@@ -48,19 +57,29 @@ fn main() {
         .resource_mut::<Assets<PlaneConfig>>()
         .add(cfg.clone());
 
-    let controller: Box<dyn FlightController> = match controller_name.as_str() {
-        "level_hold" => Box::new(LevelHoldController::new(500.0, 100.0)),
+    let controller: Box<dyn FlightController> = match args.controller.as_str() {
+        "level_hold" => {
+            let mut ctrl = LevelHoldController::new(args.altitude, args.airspeed);
+            if let Some(v) = args.alt_kp   { ctrl.altitude_pid.kp = v; }
+            if let Some(v) = args.alt_ki   { ctrl.altitude_pid.ki = v; }
+            if let Some(v) = args.alt_kd   { ctrl.altitude_pid.kd = v; }
+            if let Some(v) = args.alpha_kp { ctrl.alpha_pid.kp    = v; }
+            if let Some(v) = args.alpha_kd { ctrl.alpha_pid.kd    = v; }
+            if let Some(v) = args.spd_kp   { ctrl.airspeed_pid.kp = v; }
+            if let Some(v) = args.spd_ki   { ctrl.airspeed_pid.ki = v; }
+            Box::new(ctrl)
+        }
         _ => Box::new(ManualController::new()),
     };
 
-    // Spawn at 500 m altitude, 100 m/s forward, level attitude.
+    // Spawn at target altitude, target airspeed forward, level attitude.
     // Body +Z (cockpit up) → world +Y (up): Quat::from_rotation_x(-π/2).
     let attitude = Quat::from_rotation_x(-FRAC_PI_2);
     app.world_mut().spawn((
         RigidBody::Dynamic,
         Collider::cuboid(1.0, 0.5, 3.0),
         Velocity {
-            linvel: Vec3::new(100.0, 0.0, 0.0),
+            linvel: Vec3::new(args.airspeed, 0.0, 0.0),
             angvel: Vec3::ZERO,
         },
         ExternalForce::default(),
@@ -74,13 +93,13 @@ fn main() {
         ControlInputs::default(),
         ActiveController(controller),
         PlaneConfigHandle(handle),
-        Transform::from_translation(Vec3::new(0.0, 500.0, 0.0)).with_rotation(attitude),
+        Transform::from_translation(Vec3::new(0.0, args.altitude, 0.0)).with_rotation(attitude),
     ));
 
-    for step in 0..steps {
+    for step in 0..args.steps {
         app.update();
 
-        if step % interval == 0 {
+        if step % args.interval == 0 {
             // Query via a temporary QueryState; copy f32/Vec3 values (all Copy) to escape
             // the world borrow before the next app.update() call.
             let mut q = app.world_mut().query::<(&FlightState, &ControlInputs)>();
@@ -121,17 +140,37 @@ fn main() {
 // CLI helpers
 // ---------------------------------------------------------------------------
 
-fn parse_args() -> (usize, String, usize) {
+struct Args {
+    steps: usize,
+    controller: String,
+    interval: usize,
+    altitude: f32,
+    airspeed: f32,
+    alt_kp: Option<f32>,
+    alt_ki: Option<f32>,
+    alt_kd: Option<f32>,
+    alpha_kp: Option<f32>,
+    alpha_kd: Option<f32>,
+    spd_kp: Option<f32>,
+    spd_ki: Option<f32>,
+}
+
+fn parse_args() -> Args {
     let args: Vec<String> = std::env::args().collect();
-    let steps = get_arg(&args, "--steps")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(600usize);
-    let controller = get_arg(&args, "--controller")
-        .unwrap_or_else(|| "level_hold".to_string());
-    let interval = get_arg(&args, "--interval")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(10usize);
-    (steps, controller, interval)
+    Args {
+        steps:      get_arg(&args, "--steps")    .and_then(|v| v.parse().ok()).unwrap_or(600),
+        controller: get_arg(&args, "--controller").unwrap_or_else(|| "level_hold".to_string()),
+        interval:   get_arg(&args, "--interval") .and_then(|v| v.parse().ok()).unwrap_or(10),
+        altitude:   get_arg(&args, "--altitude") .and_then(|v| v.parse().ok()).unwrap_or(500.0),
+        airspeed:   get_arg(&args, "--airspeed") .and_then(|v| v.parse().ok()).unwrap_or(100.0),
+        alt_kp:     get_arg(&args, "--alt-kp")   .and_then(|v| v.parse().ok()),
+        alt_ki:     get_arg(&args, "--alt-ki")   .and_then(|v| v.parse().ok()),
+        alt_kd:     get_arg(&args, "--alt-kd")   .and_then(|v| v.parse().ok()),
+        alpha_kp:   get_arg(&args, "--alpha-kp") .and_then(|v| v.parse().ok()),
+        alpha_kd:   get_arg(&args, "--alpha-kd") .and_then(|v| v.parse().ok()),
+        spd_kp:     get_arg(&args, "--spd-kp")   .and_then(|v| v.parse().ok()),
+        spd_ki:     get_arg(&args, "--spd-ki")   .and_then(|v| v.parse().ok()),
+    }
 }
 
 fn get_arg(args: &[String], flag: &str) -> Option<String> {
