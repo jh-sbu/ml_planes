@@ -35,7 +35,7 @@ fn roll_angle(attitude: Quat) -> f32 {
 
 /// Cascade PID controller for level altitude and airspeed hold.
 ///
-/// Default gains are tuned for `generic_jet.plane.ron` at ~80 m/s.
+/// Default gains are tuned for `generic_jet.plane.ron` at 100 m/s.
 pub struct LevelHoldController {
     /// Target altitude [m].
     pub target_altitude: f32,
@@ -60,20 +60,28 @@ impl LevelHoldController {
         Self::new(state.altitude, state.airspeed)
     }
 
-    /// Create a controller with default gains for the generic jet.
+    /// Create a controller with default gains for the generic jet at 100 m/s.
     pub fn new(target_altitude: f32, target_airspeed: f32) -> Self {
         Self {
             target_altitude,
             target_airspeed,
-            // Outer altitude loop: error [m] → α_target [rad].
-            // Small kp keeps α_target within ±0.3 rad; small ki handles trim offset.
-            altitude_pid: PidController::new(0.003, 0.0002, 0.0, 1.0, -0.3, 0.3),
+            // Outer altitude loop: error [m] → α_target [rad], output clamped ±0.3 rad.
+            //
+            // ki=0.12 with integral_clamp=1.0 means max integral contribution = 0.12 rad.
+            // At steady state the integral provides the trim α_target offset needed by the
+            // inner loop to produce the non-zero trim elevator (~0.046 normalised).
+            // kd=0.02 damps the phugoid by reacting to altitude rate: when climbing,
+            // α_target is reduced proportionally, attenuating the phugoid's altitude
+            // oscillation without adding a separate rate-hold loop.
+            altitude_pid: PidController::new(0.001, 0.12,  0.02, 1.0, -0.3, 0.3),
             // Inner alpha loop: error [rad] → elevator [-1, 1].
             // No integral (outer loop provides steady-state correction).
             // kd=0.5 gives ~50° phase margin on the pitch double-integrator plant.
             alpha_pid:    PidController::new(1.0,   0.0,    0.5,  0.0, -1.0, 1.0),
             // Airspeed loop: integral holds throttle at trim without steady-state error.
-            airspeed_pid: PidController::new(0.01,  0.001,  0.0,  1.0,  0.0, 1.0),
+            // ki=0.06 with integral_clamp=1.0 → max throttle from integral = 0.06,
+            // which covers the ~0.058 trim throttle at 100 m/s cruise.
+            airspeed_pid: PidController::new(0.01,  0.06,   0.0,  1.0,  0.0, 1.0),
             // Wings-level: Cl_p roll damping already provides ~53° PM; conservative kp/kd.
             roll_pid:     PidController::new(0.5,   0.0,    0.3,  0.0, -1.0, 1.0),
             // Sideslip: weathercock (Cn_β) provides natural yaw stiffness.

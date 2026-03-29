@@ -197,7 +197,7 @@ fn generic_jet_config() -> PlaneConfig {
         cd0: 0.02,
         cd_induced: 0.05,
         cm0: -0.02,
-        cm_alpha: -0.6,
+        cm_alpha: 0.6,
         cm_q: -8.0,
         cm_delta_e: -1.2,
         cl_beta: -0.08,
