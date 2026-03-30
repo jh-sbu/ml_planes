@@ -5,6 +5,7 @@
 //!   cargo run --example observe_state --no-default-features -- [OPTIONS]
 //!
 //! Options:
+//!   --plane PATH       Path to a .plane.ron config file (default: built-in generic_jet)
 //!   --steps N          Total simulation steps at 60 Hz (default: 600 = 10 s)
 //!   --controller NAME  level_hold (default) | manual (zero inputs)
 //!   --interval N       Print every Nth step (default: 10)
@@ -51,7 +52,10 @@ fn main() {
 
     // Insert PlaneConfig synchronously so aero forces are available from step 0.
     // (Mirrors the pattern in tests/common/mod.rs — bypasses async asset loading.)
-    let cfg = generic_jet_config();
+    let cfg = match &args.plane {
+        Some(path) => load_plane_config(path),
+        None       => generic_jet_config(),
+    };
     let handle = app
         .world_mut()
         .resource_mut::<Assets<PlaneConfig>>()
@@ -141,6 +145,7 @@ fn main() {
 // ---------------------------------------------------------------------------
 
 struct Args {
+    plane: Option<String>,
     steps: usize,
     controller: String,
     interval: usize,
@@ -158,6 +163,7 @@ struct Args {
 fn parse_args() -> Args {
     let args: Vec<String> = std::env::args().collect();
     Args {
+        plane:      get_arg(&args, "--plane"),
         steps:      get_arg(&args, "--steps")    .and_then(|v| v.parse().ok()).unwrap_or(600),
         controller: get_arg(&args, "--controller").unwrap_or_else(|| "level_hold".to_string()),
         interval:   get_arg(&args, "--interval") .and_then(|v| v.parse().ok()).unwrap_or(10),
@@ -180,9 +186,17 @@ fn get_arg(args: &[String], flag: &str) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
-// Inline config (matches assets/planes/generic_jet.plane.ron exactly)
+// Config loading
 // ---------------------------------------------------------------------------
 
+fn load_plane_config(path: &str) -> PlaneConfig {
+    let bytes = std::fs::read(path)
+        .unwrap_or_else(|e| panic!("Cannot read plane config '{path}': {e}"));
+    ron::de::from_bytes(&bytes)
+        .unwrap_or_else(|e| panic!("Cannot parse plane config '{path}': {e}"))
+}
+
+/// Fallback config matching `assets/planes/generic_jet.plane.ron` exactly.
 fn generic_jet_config() -> PlaneConfig {
     PlaneConfig {
         wing_area: 20.0,
