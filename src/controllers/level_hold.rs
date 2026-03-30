@@ -2,7 +2,7 @@
 //!
 //! Loops:
 //!   altitude  → [outer PID] → α_target → [inner PID] → elevator
-//!   airspeed  → [PID] → throttle
+//!   airspeed  → [PID] → throttle (+ feedforward from α_target)
 //!   roll angle → [PID] → aileron
 //!   sideslip β → [PID] → rudder
 
@@ -51,6 +51,12 @@ pub struct LevelHoldController {
     pub roll_pid: PidController,
     /// Heading/sideslip loop: β [rad] → rudder [-1, 1].
     pub beta_pid: PidController,
+    /// Throttle feedforward gain: scales α_target [rad] into a throttle increment.
+    ///
+    /// At α_target = 0.3 rad (max climb command), induced drag is ~6× cruise drag;
+    /// the extra drag force (~12 800 N) divided by thrust_max (60 000 N) ≈ 0.21,
+    /// giving a natural gain of 0.21/0.3 ≈ 0.7.
+    pub throttle_ff_gain: f32,
 }
 
 impl LevelHoldController {
@@ -90,6 +96,9 @@ impl LevelHoldController {
             roll_pid:     PidController::new(0.5,   0.0,    0.3,  0.0, -1.0, 1.0),
             // Sideslip: weathercock (Cn_β) provides natural yaw stiffness.
             beta_pid:     PidController::new(0.5,   0.0,    0.1,  0.0, -1.0, 1.0),
+            // Feedforward gain: proactively adds throttle proportional to the pitch
+            // command so the airspeed loop does not have to react to speed loss first.
+            throttle_ff_gain: 0.7,
         }
     }
 }
@@ -105,8 +114,15 @@ impl FlightController for LevelHoldController {
         let alpha_target = self.altitude_pid.update(self.target_altitude - state.altitude, dt);
         let elevator     = self.alpha_pid.update(alpha_target - state.alpha, dt);
 
-        // Airspeed: error → throttle (integral holds trim value).
-        let throttle = self.airspeed_pid.update(self.target_airspeed - state.airspeed, dt);
+        // Airspeed: feedback from speed error + feedforward from pitch command.
+        //
+        // When alpha_target > 0 (climb demanded), induced drag rises sharply (∝ CL²)
+        // and thrust tilts away from the flight path.  The feedforward adds throttle
+        // proportional to alpha_target so the airspeed loop does not have to react
+        // to a speed drop first.  At steady level flight alpha_target → 0, so the
+        // feedforward is zero and the integral holds trim throttle unchanged.
+        let throttle_fb = self.airspeed_pid.update(self.target_airspeed - state.airspeed, dt);
+        let throttle    = (throttle_fb + alpha_target * self.throttle_ff_gain).clamp(0.0, 1.0);
 
         // Wings level: drive roll to zero.
         let roll    = roll_angle(state.attitude);

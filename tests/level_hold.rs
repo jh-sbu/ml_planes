@@ -113,6 +113,50 @@ fn altitude_hold_prevents_crash() {
     );
 }
 
+/// Large-offset robustness: spawning 500 m below target should not stall or crash
+/// the plane.  Without throttle feedforward the controller pitches hard nose-up,
+/// induced drag spikes ~6×, and the airspeed PID cannot compensate fast enough —
+/// the plane stalls.  With feedforward, extra thrust is added as soon as the climb
+/// command is issued.
+#[test]
+fn large_altitude_offset_does_not_stall() {
+    let target_alt = 1000.0_f32;
+    let target_spd =   80.0_f32;
+    let spawn_alt  =  500.0_f32; // 500 m below target
+
+    let mut app = common::build_headless_app();
+    let ctrl = LevelHoldController::new(target_alt, target_spd);
+    spawn_plane(
+        &mut app,
+        Vec3::new(0.0, spawn_alt, 0.0),
+        Vec3::new(target_spd, 0.0, 0.0),
+        ctrl,
+    );
+
+    // 1 800 updates × 1/60 s = 30 simulated seconds.
+    for _ in 0..1800 {
+        app.update();
+    }
+
+    let state = read_state(&mut app);
+
+    assert!(
+        state.altitude.is_finite(),
+        "altitude became non-finite: {}",
+        state.altitude
+    );
+    assert!(
+        state.altitude > 50.0,
+        "plane crashed — altitude={}",
+        state.altitude
+    );
+    assert!(
+        state.airspeed.is_finite() && state.airspeed > 30.0,
+        "plane stalled — airspeed={}",
+        state.airspeed
+    );
+}
+
 /// Airspeed hold: the controller should keep airspeed from falling off
 /// completely over 30 simulated seconds.
 #[test]
