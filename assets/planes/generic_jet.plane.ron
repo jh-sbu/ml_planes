@@ -21,7 +21,7 @@
 
     cm0: -0.02,             // pitching moment at zero α
     cm_alpha: 0.6,          // dCm/dα  [1/rad]  positive = nose-down restoring moment (standard positive alpha convention)
-    cm_q: -8.0,             // pitch damping derivative [1/rad]
+    cm_q: -14.0,            // pitch damping derivative [1/rad]; increased from -8 to halve pitch decay time (~2 s → ~1.2 s) and reduce elevator saturation during transients
     cm_delta_e: -1.2,       // dCm/dδe [1/rad]
 
     // --- Lateral-Directional Coefficients ---

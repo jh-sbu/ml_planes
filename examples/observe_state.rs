@@ -11,13 +11,13 @@
 //!   --interval N       Print every Nth step (default: 10)
 //!   --altitude F       Target altitude [m] and spawn altitude (default: 500)
 //!   --airspeed F       Target airspeed [m/s] (default: 100)
-//!   --alt-kp F         Altitude outer loop Kp (default: 0.003)
-//!   --alt-ki F         Altitude outer loop Ki (default: 0.0002)
-//!   --alt-kd F         Altitude outer loop Kd (default: 0.0)
+//!   --alt-kp F         Altitude outer loop Kp (default: 0.01)
+//!   --alt-ki F         Altitude outer loop Ki (default: 0.12)
+//!   --alt-kd F         Altitude outer loop Kd (default: 0.04)
 //!   --alpha-kp F       Alpha inner loop Kp (default: 1.0)
 //!   --alpha-kd F       Alpha inner loop Kd (default: 0.5)
 //!   --spd-kp F         Airspeed loop Kp (default: 0.01)
-//!   --spd-ki F         Airspeed loop Ki (default: 0.001)
+//!   --spd-ki F         Airspeed loop Ki (default: 0.06)
 
 use std::f32::consts::FRAC_PI_2;
 use std::time::Duration;
