@@ -118,11 +118,14 @@ impl FlightController for LevelHoldController {
         //
         // When alpha_target > 0 (climb demanded), induced drag rises sharply (∝ CL²)
         // and thrust tilts away from the flight path.  The feedforward adds throttle
-        // proportional to alpha_target so the airspeed loop does not have to react
-        // to a speed drop first.  At steady level flight alpha_target → 0, so the
-        // feedforward is zero and the integral holds trim throttle unchanged.
+        // proportional to the *inner-loop alpha error* (alpha_target − state.alpha,
+        // floored at zero) — it fires only while the aircraft is still pitching toward
+        // the commanded alpha, i.e. during the transient.  At steady level flight
+        // state.alpha ≈ alpha_target, so alpha_error → 0 and the feedforward is zero;
+        // the airspeed integral alone holds trim throttle.
+        let alpha_error = (alpha_target - state.alpha).max(0.0);
         let throttle_fb = self.airspeed_pid.update(self.target_airspeed - state.airspeed, dt);
-        let throttle    = (throttle_fb + alpha_target * self.throttle_ff_gain).clamp(0.0, 1.0);
+        let throttle    = (throttle_fb + alpha_error * self.throttle_ff_gain).clamp(0.0, 1.0);
 
         // Wings level: drive roll to zero.
         let roll    = roll_angle(state.attitude);
