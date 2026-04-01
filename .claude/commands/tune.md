@@ -67,7 +67,98 @@ cannot sustain level flight (T_c > 0.95 at that speed). Typical targets for a ge
 
 ---
 
+## Phase 1b — (Optional) Coarse outer-loop grid search
+
+Run this phase at your own discretion — no user prompt needed. It replaces the
+physics-based outer-loop estimates with empirically selected ones when those estimates are
+likely unreliable.
+
+**Run Phase 1b when any of the following hold:**
+- `thrust_max / (mass × 9.81)` is outside [0.3, 0.8]
+- Computed `V_c` is below 50 m/s or above 200 m/s
+- Computed `T_c` exceeds 0.85 or is below 0.1
+- (Post-Round-0 fallback) Round 0 fails 3+ scenarios **and** failure modes are inconsistent
+  across scenarios — different fixes indicated per scenario, suggesting the estimates are
+  simply wrong rather than systematically biased
+
+**Skip Phase 1b when** all cruise reference values are within the ranges above or the plane
+is close to `generic_jet` defaults.
+
+---
+
+### Grid definition
+
+Keep `alpha_kp` and `alpha_kd` fixed at Phase 1 physics values. Sweep outer loops only:
+
+| Parameter | Base value       | Multipliers       |
+|-----------|------------------|-------------------|
+| `alt_kp`  | Phase 1 estimate | ×0.5, ×1.0, ×2.0 |
+| `alt_ki`  | Phase 1 estimate | ×0.5, ×1.0, ×2.0 |
+| `alt_kd`  | Phase 1 estimate | ×0.5, ×1.0, ×2.0 |
+| `spd_kp`  | Phase 1 estimate | ×0.5, ×1.0, ×2.0 |
+| `spd_ki`  | Phase 1 estimate | ×0.5, ×1.0, ×2.0 |
+
+3^5 = 243 grid points. Evaluate on **scenario B only** (500 m / 100 m/s).
+
+Traverse order: center point (×1.0 all) first, then single-axis perturbations (one param
+varied, rest ×1.0), then two-axis, etc. This places the most likely candidates first and
+maximises early-exit probability.
+
+### Run command (per grid point)
+
+```bash
+cargo run --example observe_state --no-default-features -- \
+  --plane PLANE \
+  --steps 1800 \
+  --interval 60 \
+  --controller level_hold \
+  --altitude 500 \
+  --airspeed 100 \
+  --alt-kp ALT_KP --alt-ki ALT_KI --alt-kd ALT_KD \
+  --alpha-kp ALPHA_KP --alpha-kd ALPHA_KD \
+  --spd-kp SPD_KP --spd-ki SPD_KI
+```
+
+Each run produces 30 rows. Evaluate all 30 as the final window
+(same pass criteria: `|ΔAlt| ≤ 10 m`, `|ΔSpd| ≤ 2 m/s`).
+
+### Selection
+
+Score each grid point:
+
+```
+score = worst |altitude_m − 500| + worst |airspeed_ms − 100|   (over all 30 rows)
+```
+
+**Early stopping:** if a grid point passes cleanly (both criteria on all 30 rows), stop
+and use it as the winner immediately. Otherwise evaluate all 243 and pick the lowest score.
+
+### Output
+
+```
+Phase 1b grid search — scenario B (500 m / 100 m/s), 30-row window
+Top 3 candidates:
+  Rank  alt_kp  alt_ki  alt_kd  spd_kp  spd_ki  Score  Pass?
+  1     F       F       F       F       F       F      YES/NO  ← winner
+  2     F       F       F       F       F       F      YES/NO
+  3     F       F       F       F       F       F      YES/NO
+
+Winner outer-loop gains (alpha loop unchanged from Phase 1):
+  --alt-kp F --alt-ki F --alt-kd F
+  --alpha-kp F --alpha-kd F   [unchanged]
+  --spd-kp F --spd-ki F
+```
+
+Replace the physics-based outer-loop gains with the winner's values. Phase 2 runs these
+as Round 0 across all 5 scenarios.
+
+---
+
 ## Phase 2 — Baseline run (Round 0)
+
+> If Phase 1b ran, the gains here are the grid-search winner's outer-loop values with
+> physics-based `alpha_kp`/`alpha_kd`. Otherwise they are the raw Phase 1 physics estimates.
+> The procedure and pass criteria are identical either way.
 
 Run all 5 scenarios with the Round 0 gains computed above (60 s, 3600 steps at 60 Hz):
 
@@ -165,6 +256,11 @@ Repeat the following for rounds 1, 2, and 3 (stop early if all scenarios pass):
 6. Re-diagnose remaining failures and propose the next fix. If the same fix was tried twice
    without improvement, try the opposite direction (e.g., if halving kp didn't help, try ×1.5
    instead) or move on to adjusting the adjacent loop.
+
+   If you reach Round 2 with 3+ scenarios still failing and no consistent improvement
+   direction, and Phase 1b was not already run, stop the refinement loop, run Phase 1b now
+   (using its Round-0-failure trigger criteria), then restart Phase 4 from Round 1 with the
+   grid-search winner's gains.
 
 ---
 
