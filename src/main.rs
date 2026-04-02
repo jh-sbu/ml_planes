@@ -6,9 +6,9 @@ use ml_planes::environment::{EnvironmentPlugin, spawn_plane};
 use ml_planes::plane::{config::PlaneConfig, PlanePlugin};
 
 #[cfg(feature = "visual")]
-use ml_planes::controllers::ActiveController;
+use ml_planes::controllers::{ActiveController, ControllerTuning, PlaneTuning};
 #[cfg(feature = "visual")]
-use ml_planes::plane::FlightState;
+use ml_planes::plane::{FlightState, PlaneTuningHandle};
 use ml_planes::training::SpawnSpec;
 
 #[cfg(feature = "visual")]
@@ -106,9 +106,17 @@ fn switch_controller(
 /// have already written their changes before this system fires.
 #[cfg(feature = "visual")]
 fn apply_controller_switch(
-    mut query: Query<(&FlightState, &mut ActiveController, &ControllerKind), Changed<ControllerKind>>,
+    mut query: Query<
+        (&FlightState, &mut ActiveController, &ControllerKind, Option<&PlaneTuningHandle>),
+        Changed<ControllerKind>,
+    >,
+    tuning_assets: Res<Assets<PlaneTuning>>,
 ) {
-    for (state, mut controller, &kind) in query.iter_mut() {
-        controller.0 = kind.build(state);
+    for (state, mut controller, &kind, tuning_handle) in query.iter_mut() {
+        let tuning: Option<&dyn ControllerTuning> = tuning_handle
+            .and_then(|h| tuning_assets.get(&h.0))
+            .and_then(|pt| pt.get_level_hold("normal"))
+            .map(|t| t as &dyn ControllerTuning);
+        controller.0 = kind.build(state, tuning);
     }
 }

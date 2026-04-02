@@ -8,6 +8,7 @@
 
 use bevy::math::{Quat, Vec3};
 
+use crate::controllers::tuning::LevelHoldTuning;
 use crate::controllers::{FlightController, PidController};
 use crate::plane::{ControlInputs, FlightState};
 
@@ -64,6 +65,23 @@ impl LevelHoldController {
     /// Use this when switching from another controller to avoid a sudden command jolt.
     pub fn from_state(state: &FlightState) -> Self {
         Self::new(state.altitude, state.airspeed)
+    }
+
+    /// Create a controller from the given flight state, overriding gains from `tuning`.
+    ///
+    /// Targets are captured from `state` for a bumpless handoff.
+    /// Structural parameters (integral clamp, output limits) are left at their defaults.
+    pub fn with_tuning(state: &FlightState, tuning: &LevelHoldTuning) -> Self {
+        let mut ctrl = Self::from_state(state);
+        ctrl.altitude_pid.kp    = tuning.alt_kp;
+        ctrl.altitude_pid.ki    = tuning.alt_ki;
+        ctrl.altitude_pid.kd    = tuning.alt_kd;
+        ctrl.alpha_pid.kp       = tuning.alpha_kp;
+        ctrl.alpha_pid.kd       = tuning.alpha_kd;
+        ctrl.airspeed_pid.kp    = tuning.spd_kp;
+        ctrl.airspeed_pid.ki    = tuning.spd_ki;
+        ctrl.throttle_ff_gain   = tuning.throttle_ff_gain;
+        ctrl
     }
 
     /// Create a controller with default gains for the generic jet at 100 m/s.

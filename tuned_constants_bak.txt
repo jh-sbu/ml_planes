@@ -1,0 +1,1 @@
+alt-kp 0.015 alt-ki 0.12 alt-kd 0.04 alpha-kp 2.0 alpha-kd 0.764 spd-kp 0.01 spd-ki 0.10

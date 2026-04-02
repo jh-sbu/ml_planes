@@ -6,5 +6,5 @@ pub mod systems;
 
 pub use config::PlaneConfig;
 pub use inputs::ControlInputs;
-pub use plugin::{PlaneConfigHandle, PlanePlugin};
+pub use plugin::{PlaneConfigHandle, PlaneTuningHandle, PlanePlugin};
 pub use state::FlightState;

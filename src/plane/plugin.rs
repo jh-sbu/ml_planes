@@ -1,8 +1,9 @@
 use bevy::asset::io::Reader;
-use bevy::asset::{AssetApp, AssetLoader, Assets, LoadContext};
+use bevy::asset::{AssetApp, AssetLoader, LoadContext};
 use bevy::prelude::*;
 use bevy_rapier3d::prelude::PhysicsSet;
 
+use crate::controllers::tuning::{LevelHoldTuning, PlaneTuning};
 use crate::plane::config::PlaneConfig;
 use super::systems::{apply_aerodynamic_forces, run_flight_controllers, sync_flight_state};
 
@@ -13,6 +14,15 @@ use super::systems::{apply_aerodynamic_forces, run_flight_controllers, sync_flig
 #[derive(Component, Clone, Debug, Reflect)]
 #[reflect(Component)]
 pub struct PlaneConfigHandle(pub Handle<PlaneConfig>);
+
+// --- PlaneTuningHandle component ---
+
+/// Component that stores a handle to a plane's [`PlaneTuning`] asset.
+/// Optional — planes without a `.tuning.ron` file omit this component and
+/// controllers fall back to their built-in default gains.
+#[derive(Component, Clone, Debug, Reflect)]
+#[reflect(Component)]
+pub struct PlaneTuningHandle(pub Handle<PlaneTuning>);
 
 // --- Error type for the RON loader ---
 
@@ -35,7 +45,51 @@ impl std::error::Error for PlaneConfigLoaderError {}
 impl From<std::io::Error>           for PlaneConfigLoaderError { fn from(e: std::io::Error)           -> Self { Self::Io(e) } }
 impl From<ron::error::SpannedError> for PlaneConfigLoaderError { fn from(e: ron::error::SpannedError) -> Self { Self::Ron(e) } }
 
-// --- Asset loader ---
+// --- PlaneTuning loader ---
+
+#[derive(Debug)]
+pub enum PlaneTuningLoaderError {
+    Io(std::io::Error),
+    Ron(ron::error::SpannedError),
+}
+
+impl std::fmt::Display for PlaneTuningLoaderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(e)  => write!(f, "PlaneTuning I/O error: {e}"),
+            Self::Ron(e) => write!(f, "PlaneTuning RON parse error: {e}"),
+        }
+    }
+}
+impl std::error::Error for PlaneTuningLoaderError {}
+
+impl From<std::io::Error>           for PlaneTuningLoaderError { fn from(e: std::io::Error)           -> Self { Self::Io(e) } }
+impl From<ron::error::SpannedError> for PlaneTuningLoaderError { fn from(e: ron::error::SpannedError) -> Self { Self::Ron(e) } }
+
+/// Loads `.tuning.ron` files as [`PlaneTuning`] assets.
+#[derive(Default, bevy::reflect::TypePath)]
+pub struct PlaneTuningLoader;
+
+impl AssetLoader for PlaneTuningLoader {
+    type Asset    = PlaneTuning;
+    type Settings = ();
+    type Error    = PlaneTuningLoaderError;
+
+    async fn load(
+        &self,
+        reader: &mut dyn Reader,
+        _settings: &(),
+        _ctx: &mut LoadContext<'_>,
+    ) -> Result<PlaneTuning, PlaneTuningLoaderError> {
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).await?;
+        Ok(ron::de::from_bytes(&bytes)?)
+    }
+
+    fn extensions(&self) -> &[&str] { &["tuning.ron"] }
+}
+
+// --- PlaneConfig loader ---
 
 /// Loads `.plane.ron` files as [`PlaneConfig`] assets.
 #[derive(Default, bevy::reflect::TypePath)]
@@ -70,6 +124,12 @@ impl Plugin for PlanePlugin {
         app.register_type::<PlaneConfig>();
         app.register_type::<PlaneConfigHandle>();
         app.init_asset_loader::<PlaneConfigLoader>();
+
+        app.init_asset::<PlaneTuning>();
+        app.register_type::<PlaneTuning>();
+        app.register_type::<LevelHoldTuning>();
+        app.register_type::<PlaneTuningHandle>();
+        app.init_asset_loader::<PlaneTuningLoader>();
 
         app.add_systems(
             FixedUpdate,

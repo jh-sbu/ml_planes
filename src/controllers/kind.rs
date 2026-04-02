@@ -1,5 +1,6 @@
 use bevy::prelude::Component;
 
+use crate::controllers::tuning::ControllerTuning;
 use crate::controllers::{FlightController, LevelHoldController, ManualController};
 use crate::plane::FlightState;
 
@@ -31,10 +32,16 @@ impl ControllerKind {
 
     /// Construct a fresh controller for this kind, capturing relevant state
     /// so the handoff is bumpless.
-    pub fn build(self, state: &FlightState) -> Box<dyn FlightController> {
+    ///
+    /// Pass `tuning` to apply per-plane gains; `None` falls back to the
+    /// controller's built-in defaults.
+    pub fn build(self, state: &FlightState, tuning: Option<&dyn ControllerTuning>) -> Box<dyn FlightController> {
         match self {
             ControllerKind::Manual => Box::new(ManualController::new()),
-            ControllerKind::LevelHold => Box::new(LevelHoldController::from_state(state)),
+            ControllerKind::LevelHold => match tuning {
+                Some(t) => t.build(state),
+                None    => Box::new(LevelHoldController::from_state(state)),
+            },
         }
     }
 }
