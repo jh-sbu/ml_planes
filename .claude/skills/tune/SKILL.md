@@ -309,7 +309,12 @@ Exact reproduction command (scenario B as reference):
     --altitude 500 --airspeed 100 \
     [gains above]
 
-Write these gains to PLANE as a comment block? (yes/no)
+Once written to the tuning file, the equivalent command will be:
+  cargo run --example observe_state --no-default-features -- \
+    --plane PLANE --tuning-file TUNING_FILE --profile PROFILE \
+    --steps 3600 --interval 60 --altitude 500 --airspeed 100
+
+Write these gains to the tuning file? If yes, also provide a profile name (default: "normal").
 ```
 
 **If any scenario still fails after 3 rounds:**
@@ -338,15 +343,94 @@ Do not offer write-back if any scenario fails.
 
 ## Phase 6 — Write-back (only if user answers yes in Phase 5)
 
-Append (or replace an existing block) at the **bottom of `PLANE`**, after the closing `)`:
+Derive the tuning file path by replacing `.plane.ron` with `.tuning.ron` in `PLANE`:
 
 ```
-// --- Tuned PID gains (tune YYYY-MM-DD, N rounds) ---
-// --alt-kp F --alt-ki F --alt-kd F
-// --alpha-kp F --alpha-kd F
-// --spd-kp F --spd-ki F
+TUNING_FILE = PLANE with ".plane.ron" → ".tuning.ron"
+Example: assets/planes/generic_jet.plane.ron → assets/planes/generic_jet.tuning.ron
 ```
 
-Use today's date. Use the actual winning gain values.
-If the file already contains a `// --- Tuned PID gains` block, replace it in place (do not append
-a second block).
+Use `PROFILE` = the name the user supplied (default `"normal"`).
+Use today's date and the actual winning gain values.
+`throttle_ff_gain` is not tuned — preserve the existing value from the file, or default to `0.7` if absent.
+
+---
+
+### 6a — File does not exist
+
+Use **Write** to create `TUNING_FILE`:
+
+```ron
+// Tuned PID gains for PLANE_BASENAME
+// Profile "PROFILE" — tune YYYY-MM-DD, N rounds
+PlaneTuning(
+    level_hold: {
+        "PROFILE": LevelHoldTuning(
+            alt_kp: F,
+            alt_ki: F,
+            alt_kd: F,
+            alpha_kp: F,
+            alpha_kd: F,
+            spd_kp: F,
+            spd_ki: F,
+            throttle_ff_gain: 0.7,
+        ),
+    },
+)
+```
+
+---
+
+### 6b — File exists, profile already present
+
+Use **Read** to get the file content. Locate the block:
+
+```
+"PROFILE": LevelHoldTuning(
+    ...
+),
+```
+
+Use **Edit** to replace the entire `LevelHoldTuning( … )` value for that key with the new values.
+Also update (or insert) the date comment for that profile if one exists nearby.
+
+---
+
+### 6c — File exists, profile not present but `level_hold` map is present
+
+Use **Read** to get the file content. Locate the `level_hold: {` line.
+Use **Edit** to insert the new profile entry immediately after the opening `{`:
+
+```ron
+        "PROFILE": LevelHoldTuning(
+            alt_kp: F,
+            alt_ki: F,
+            alt_kd: F,
+            alpha_kp: F,
+            alpha_kd: F,
+            spd_kp: F,
+            spd_ki: F,
+            throttle_ff_gain: 0.7,
+        ),
+```
+
+---
+
+### 6d — File exists but has no `level_hold` field
+
+Use **Edit** to insert `level_hold: { … }` before the final `)` of the `PlaneTuning(` struct:
+
+```ron
+    level_hold: {
+        "PROFILE": LevelHoldTuning(
+            alt_kp: F,
+            alt_ki: F,
+            alt_kd: F,
+            alpha_kp: F,
+            alpha_kd: F,
+            spd_kp: F,
+            spd_ki: F,
+            throttle_ff_gain: 0.7,
+        ),
+    },
+```
