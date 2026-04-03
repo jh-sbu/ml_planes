@@ -6,7 +6,7 @@ use ml_planes::environment::{EnvironmentPlugin, spawn_plane};
 use ml_planes::plane::{config::PlaneConfig, PlanePlugin};
 
 #[cfg(feature = "visual")]
-use ml_planes::controllers::{ActiveController, ControllerTuning, PlaneTuning};
+use ml_planes::controllers::{ActiveController, ControllerTuning, PlaneTuning, SelectedTuningProfile};
 #[cfg(feature = "visual")]
 use ml_planes::plane::{FlightState, PlaneTuningHandle};
 use ml_planes::training::SpawnSpec;
@@ -65,7 +65,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         aileron_limit: 0.4363, elevator_limit: 0.3491, rudder_limit: 0.2618,
     };
 
-    spawn_plane(
+    let _entity = spawn_plane(
         &mut commands,
         &asset_server,
         &SpawnSpec::default(),
@@ -73,6 +73,16 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         ControllerKind::Manual,
         &cfg,
     );
+
+    #[cfg(feature = "visual")]
+    {
+        let tuning_handle: Handle<PlaneTuning> =
+            asset_server.load("planes/generic_jet.tuning.ron");
+        commands.entity(_entity).insert((
+            PlaneTuningHandle(tuning_handle),
+            SelectedTuningProfile("normal".to_string()),
+        ));
+    }
 }
 
 #[cfg(feature = "visual")]
@@ -101,21 +111,28 @@ fn switch_controller(
     }
 }
 
-/// Rebuild `ActiveController` whenever `ControllerKind` changes (key press or HUD dropdown).
+/// Rebuild `ActiveController` whenever `ControllerKind` or `SelectedTuningProfile` changes.
 /// Runs in `PostUpdate` so both `switch_controller` (Update) and `draw_flight_hud` (Update)
 /// have already written their changes before this system fires.
 #[cfg(feature = "visual")]
 fn apply_controller_switch(
     mut query: Query<
-        (&FlightState, &mut ActiveController, &ControllerKind, Option<&PlaneTuningHandle>),
-        Changed<ControllerKind>,
+        (
+            &FlightState,
+            &mut ActiveController,
+            &ControllerKind,
+            Option<&PlaneTuningHandle>,
+            Option<&SelectedTuningProfile>,
+        ),
+        Or<(Changed<ControllerKind>, Changed<SelectedTuningProfile>)>,
     >,
     tuning_assets: Res<Assets<PlaneTuning>>,
 ) {
-    for (state, mut controller, &kind, tuning_handle) in query.iter_mut() {
+    for (state, mut controller, &kind, tuning_handle, profile) in query.iter_mut() {
+        let profile_name = profile.map(|p| p.0.as_str()).unwrap_or("normal");
         let tuning: Option<&dyn ControllerTuning> = tuning_handle
             .and_then(|h| tuning_assets.get(&h.0))
-            .and_then(|pt| pt.get_level_hold("normal"))
+            .and_then(|pt| pt.get_level_hold(profile_name))
             .map(|t| t as &dyn ControllerTuning);
         controller.0 = kind.build(state, tuning);
     }

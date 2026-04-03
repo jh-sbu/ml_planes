@@ -12,4 +12,4 @@ pub use level_hold::LevelHoldController;
 pub use manual::ManualController;
 pub use pid::PidController;
 pub use traits::FlightController;
-pub use tuning::{ControllerTuning, LevelHoldTuning, PlaneTuning};
+pub use tuning::{ControllerTuning, LevelHoldTuning, PlaneTuning, SelectedTuningProfile};

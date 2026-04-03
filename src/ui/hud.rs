@@ -3,14 +3,21 @@ use bevy_egui::{egui, EguiContexts};
 use std::f32::consts::PI;
 
 use crate::camera::CameraMode;
-use crate::controllers::ControllerKind;
-use crate::plane::{ControlInputs, FlightState};
+use crate::controllers::{ControllerKind, PlaneTuning, SelectedTuningProfile};
+use crate::plane::{ControlInputs, FlightState, PlaneTuningHandle};
 
 pub fn draw_flight_hud(
     mode: Res<CameraMode>,
     mut contexts: EguiContexts,
-    mut plane_query: Query<(&FlightState, &ControlInputs, &mut ControllerKind)>,
+    mut plane_query: Query<(
+        &FlightState,
+        &ControlInputs,
+        &mut ControllerKind,
+        Option<&mut SelectedTuningProfile>,
+        Option<&PlaneTuningHandle>,
+    )>,
     all_planes: Query<Entity, With<FlightState>>,
+    tuning_assets: Res<Assets<PlaneTuning>>,
 ) {
     // Determine which entity to display
     let result = match *mode {
@@ -18,7 +25,7 @@ pub fn draw_flight_hud(
         CameraMode::FreeLook => plane_query.iter_mut().next(),
     };
 
-    let Some((state, inputs, mut kind)) = result else { return };
+    let Some((state, inputs, mut kind, profile, tuning_handle)) = result else { return };
 
     let Ok(ctx) = contexts.ctx_mut() else { return };
 
@@ -75,6 +82,28 @@ pub fn draw_flight_hud(
                 *kind = selected;
             }
             ui.label("(C to cycle)");
+
+            if *kind == ControllerKind::LevelHold {
+                if let (Some(ref mut profile), Some(handle)) = (profile, tuning_handle) {
+                    if let Some(pt) = tuning_assets.get(&handle.0) {
+                        let mut profiles: Vec<&str> =
+                            pt.level_hold.keys().map(|s| s.as_str()).collect();
+                        profiles.sort();
+                        let current_profile = profile.0.clone();
+                        let mut selected_profile = current_profile.clone();
+                        egui::ComboBox::from_label("Tune Profile")
+                            .selected_text(&selected_profile)
+                            .show_ui(ui, |ui| {
+                                for &p in &profiles {
+                                    ui.selectable_value(&mut selected_profile, p.to_string(), p);
+                                }
+                            });
+                        if selected_profile != current_profile {
+                            profile.0 = selected_profile;
+                        }
+                    }
+                }
+            }
         });
 }
 

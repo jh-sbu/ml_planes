@@ -109,6 +109,11 @@ impl PlaneTuning {
     }
 }
 
+/// Tracks which named tuning profile is selected for this plane entity.
+/// Changing this component triggers `apply_controller_switch` to rebuild the controller.
+#[derive(bevy::prelude::Component, Clone, Debug, PartialEq, Eq)]
+pub struct SelectedTuningProfile(pub String);
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
