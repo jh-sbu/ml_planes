@@ -41,6 +41,7 @@ impl FlightController for ManualController {
     }
 
     fn name(&self) -> &'static str { "Manual" }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 
     #[cfg(feature = "visual")]
     fn poll_input(

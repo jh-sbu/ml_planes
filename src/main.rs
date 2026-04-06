@@ -1,15 +1,18 @@
 use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
 
-use ml_planes::controllers::{ControllerKind, ManualController};
+use ml_planes::controllers::{
+    ControllerKind, LevelHoldController, WingmanController,
+    FormationOffset, LeaderRef, LeaderState,
+};
 use ml_planes::environment::{EnvironmentPlugin, spawn_plane};
-use ml_planes::plane::{config::PlaneConfig, PlanePlugin};
+use ml_planes::plane::{config::PlaneConfig, FlightState, PlanePlugin};
+use ml_planes::training::SpawnSpec;
 
 #[cfg(feature = "visual")]
 use ml_planes::controllers::{ActiveController, ControllerTuning, PlaneTuning, SelectedTuningProfile};
 #[cfg(feature = "visual")]
-use ml_planes::plane::{FlightState, PlaneTuningHandle};
-use ml_planes::training::SpawnSpec;
+use ml_planes::plane::PlaneTuningHandle;
 
 #[cfg(feature = "visual")]
 use bevy_egui::EguiPlugin;
@@ -65,12 +68,30 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         aileron_limit: 0.4363, elevator_limit: 0.3491, rudder_limit: 0.2618,
     };
 
-    let _entity = spawn_plane(
+    // --- Leader plane: LevelHold at 1000 m / 100 m/s ---
+    let leader_pos = Vec3::new(0.0, 1000.0, 0.0);
+    let leader_vel = Vec3::new(100.0, 0.0, 0.0);
+    let leader_attitude = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+
+    let leader_initial = FlightState {
+        position: leader_pos,
+        velocity: leader_vel,
+        attitude: leader_attitude,
+        airspeed: 100.0,
+        altitude: 1000.0,
+        ..Default::default()
+    };
+
+    let leader = spawn_plane(
         &mut commands,
         &asset_server,
-        &SpawnSpec::default(),
-        Box::new(ManualController::new()),
-        ControllerKind::Manual,
+        &SpawnSpec {
+            position: Some(leader_pos),
+            velocity: Some(leader_vel),
+            ..Default::default()
+        },
+        Box::new(LevelHoldController::new(1000.0, 100.0)),
+        ControllerKind::LevelHold,
         &cfg,
     );
 
@@ -78,11 +99,43 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     {
         let tuning_handle: Handle<PlaneTuning> =
             asset_server.load("planes/generic_jet.tuning.ron");
-        commands.entity(_entity).insert((
+        commands.entity(leader).insert((
             PlaneTuningHandle(tuning_handle),
             SelectedTuningProfile("normal".to_string()),
         ));
     }
+
+    // --- Wingman plane: trails 20 m behind, 15 m to the right ---
+    let offset = FormationOffset::default(); // (-20, 15, 0) in leader body frame
+    // With rotation_x(-π/2): body +Y (right) maps to world +Z, body +X (fwd) maps to world +X.
+    let wingman_pos = leader_pos + leader_attitude * offset.offset_body;
+    let own_initial = FlightState {
+        position: wingman_pos,
+        velocity: leader_vel,
+        attitude: leader_attitude,
+        airspeed: 100.0,
+        altitude: wingman_pos.y,
+        ..Default::default()
+    };
+
+    let wingman = spawn_plane(
+        &mut commands,
+        &asset_server,
+        &SpawnSpec {
+            position: Some(wingman_pos),
+            velocity: Some(leader_vel),
+            ..Default::default()
+        },
+        Box::new(WingmanController::new(&leader_initial, &own_initial, offset.clone())),
+        ControllerKind::Wingman,
+        &cfg,
+    );
+
+    commands.entity(wingman).insert((
+        LeaderRef(leader),
+        LeaderState::default(),
+        offset,
+    ));
 }
 
 #[cfg(feature = "visual")]

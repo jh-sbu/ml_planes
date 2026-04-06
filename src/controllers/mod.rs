@@ -5,6 +5,7 @@ pub mod manual;
 pub mod pid;
 pub mod traits;
 pub mod tuning;
+pub mod wingman;
 
 pub use component::ActiveController;
 pub use kind::ControllerKind;
@@ -13,3 +14,4 @@ pub use manual::ManualController;
 pub use pid::PidController;
 pub use traits::FlightController;
 pub use tuning::{ControllerTuning, LevelHoldTuning, PlaneTuning, SelectedTuningProfile};
+pub use wingman::{feed_leader_state, FormationOffset, LeaderRef, LeaderState, WingmanController};

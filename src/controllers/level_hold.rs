@@ -58,6 +58,9 @@ pub struct LevelHoldController {
     /// the extra drag force (~12 800 N) divided by thrust_max (60 000 N) ≈ 0.21,
     /// giving a natural gain of 0.21/0.3 ≈ 0.7.
     pub throttle_ff_gain: f32,
+    /// Commanded bank angle [rad]. 0.0 = wings level (default).
+    /// Set by WingmanController to steer laterally toward the formation slot.
+    pub target_roll: f32,
 }
 
 impl LevelHoldController {
@@ -117,6 +120,7 @@ impl LevelHoldController {
             // Feedforward gain: proactively adds throttle proportional to the pitch
             // command so the airspeed loop does not have to react to speed loss first.
             throttle_ff_gain: 0.7,
+            target_roll: 0.0,
         }
     }
 }
@@ -145,9 +149,9 @@ impl FlightController for LevelHoldController {
         let throttle_fb = self.airspeed_pid.update(self.target_airspeed - state.airspeed, dt);
         let throttle    = (throttle_fb + alpha_error * self.throttle_ff_gain).clamp(0.0, 1.0);
 
-        // Wings level: drive roll to zero.
+        // Wings level (or bank-to-command): drive roll toward target_roll (default 0 = wings level).
         let roll    = roll_angle(state.attitude);
-        let aileron = self.roll_pid.update(-roll, dt);
+        let aileron = self.roll_pid.update(self.target_roll - roll, dt);
 
         // Sideslip / heading hold: drive β to zero.
         let rudder = self.beta_pid.update(-state.beta, dt);
@@ -156,6 +160,7 @@ impl FlightController for LevelHoldController {
     }
 
     fn name(&self) -> &'static str { "LevelHold" }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 
     #[cfg(feature = "visual")]
     fn poll_input(

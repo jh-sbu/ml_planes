@@ -4,6 +4,7 @@ use bevy::prelude::*;
 use bevy_rapier3d::prelude::PhysicsSet;
 
 use crate::controllers::tuning::{LevelHoldTuning, PlaneTuning};
+use crate::controllers::feed_leader_state;
 use crate::plane::config::PlaneConfig;
 use super::systems::{apply_aerodynamic_forces, run_flight_controllers, sync_flight_state};
 
@@ -133,7 +134,7 @@ impl Plugin for PlanePlugin {
 
         app.add_systems(
             FixedUpdate,
-            (sync_flight_state, run_flight_controllers, apply_aerodynamic_forces)
+            (sync_flight_state, feed_leader_state, run_flight_controllers, apply_aerodynamic_forces)
                 .into_configs()
                 .chain()
                 .before(PhysicsSet::StepSimulation),

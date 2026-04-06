@@ -12,6 +12,10 @@ use crate::plane::FlightState;
 pub enum ControllerKind {
     Manual,
     LevelHold,
+    /// Formation wingman. Controller must be constructed explicitly via
+    /// `WingmanController::new()`; use `ControllerKind::LevelHold` as the
+    /// fallback when cycling through kinds interactively.
+    Wingman,
 }
 
 impl ControllerKind {
@@ -19,12 +23,13 @@ impl ControllerKind {
 
     pub fn name(self) -> &'static str {
         match self {
-            ControllerKind::Manual => "Manual",
+            ControllerKind::Manual    => "Manual",
             ControllerKind::LevelHold => "Level Hold",
+            ControllerKind::Wingman   => "Wingman",
         }
     }
 
-    /// Return the next kind in the cycle.
+    /// Return the next kind in the cycle (interactive UI; Wingman is excluded).
     pub fn next(self) -> Self {
         let idx = Self::ALL.iter().position(|&k| k == self).unwrap_or(0);
         Self::ALL[(idx + 1) % Self::ALL.len()]
@@ -35,10 +40,15 @@ impl ControllerKind {
     ///
     /// Pass `tuning` to apply per-plane gains; `None` falls back to the
     /// controller's built-in defaults.
+    ///
+    /// Note: `Wingman` falls back to `LevelHold` here because the wingman
+    /// controller requires a leader entity reference that cannot be passed
+    /// through this generic factory. Spawn wingmen explicitly with
+    /// `WingmanController::new()`.
     pub fn build(self, state: &FlightState, tuning: Option<&dyn ControllerTuning>) -> Box<dyn FlightController> {
         match self {
             ControllerKind::Manual => Box::new(ManualController::new()),
-            ControllerKind::LevelHold => match tuning {
+            ControllerKind::LevelHold | ControllerKind::Wingman => match tuning {
                 Some(t) => t.build(state),
                 None    => Box::new(LevelHoldController::from_state(state)),
             },

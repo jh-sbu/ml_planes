@@ -3,6 +3,7 @@ use crate::plane::{FlightState, ControlInputs};
 pub trait FlightController: Send + Sync + 'static {
     fn update(&mut self, state: &FlightState, dt: f32) -> ControlInputs;
     fn name(&self) -> &'static str { "Unknown" }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 
     #[cfg(feature = "visual")]
     fn poll_input(
