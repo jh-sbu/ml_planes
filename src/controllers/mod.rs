@@ -1,3 +1,4 @@
+pub mod ascent;
 pub mod component;
 pub mod kind;
 pub mod level_hold;
@@ -7,6 +8,7 @@ pub mod traits;
 pub mod tuning;
 pub mod wingman;
 
+pub use ascent::AscentController;
 pub use component::ActiveController;
 pub use kind::ControllerKind;
 pub use level_hold::LevelHoldController;

@@ -16,6 +16,10 @@ pub enum ControllerKind {
     /// `WingmanController::new()`; use `ControllerKind::LevelHold` as the
     /// fallback when cycling through kinds interactively.
     Wingman,
+    /// Climbs to a preset altitude then holds. Controller must be constructed
+    /// explicitly via `AscentController::new()`; `build()` falls back to
+    /// `LevelHold` (no target altitude is available in the generic factory).
+    Ascent,
 }
 
 impl ControllerKind {
@@ -26,6 +30,7 @@ impl ControllerKind {
             ControllerKind::Manual    => "Manual",
             ControllerKind::LevelHold => "Level Hold",
             ControllerKind::Wingman   => "Wingman",
+            ControllerKind::Ascent    => "Ascent",
         }
     }
 
@@ -48,7 +53,7 @@ impl ControllerKind {
     pub fn build(self, state: &FlightState, tuning: Option<&dyn ControllerTuning>) -> Box<dyn FlightController> {
         match self {
             ControllerKind::Manual => Box::new(ManualController::new()),
-            ControllerKind::LevelHold | ControllerKind::Wingman => match tuning {
+            ControllerKind::LevelHold | ControllerKind::Wingman | ControllerKind::Ascent => match tuning {
                 Some(t) => t.build(state),
                 None    => Box::new(LevelHoldController::from_state(state)),
             },
