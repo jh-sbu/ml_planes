@@ -134,7 +134,16 @@ impl FlightController for LevelHoldController {
         // Inner loop error is (alpha_target − state.alpha): positive error → positive elevator
         // → nose up → alpha increases toward target.
         let alpha_target = self.altitude_pid.update(self.target_altitude - state.altitude, dt);
-        let elevator     = self.alpha_pid.update(alpha_target - state.alpha, dt);
+        // Derivative on measurement: use pitch rate q to avoid derivative kick from
+        // frame-to-frame changes in alpha_target (outer loop output).
+        // Body-frame convention: positive q (angular_velocity.y) rotates the nose toward -Z
+        // (nose-DOWN), so alpha *increases* when q is *negative*.
+        // d(alpha)/dt ≈ -angular_velocity.y → measured_rate for DoM is -q.
+        let elevator     = self.alpha_pid.update_dom(
+            alpha_target - state.alpha,
+            -state.angular_velocity.y,
+            dt,
+        );
 
         // Airspeed: feedback from speed error + feedforward from pitch command.
         //
@@ -151,7 +160,13 @@ impl FlightController for LevelHoldController {
 
         // Wings level (or bank-to-command): drive roll toward target_roll (default 0 = wings level).
         let roll    = roll_angle(state.attitude);
-        let aileron = self.roll_pid.update(self.target_roll - roll, dt);
+        // Derivative on measurement: use roll rate p directly.
+        // p = angular_velocity.x; positive p = right roll = roll angle increasing.
+        let aileron = self.roll_pid.update_dom(
+            self.target_roll - roll,
+            state.angular_velocity.x,
+            dt,
+        );
 
         // Sideslip / heading hold: drive β to zero.
         let rudder = self.beta_pid.update(-state.beta, dt);

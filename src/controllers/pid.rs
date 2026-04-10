@@ -44,6 +44,23 @@ impl PidController {
         output.clamp(self.output_min, self.output_max)
     }
 
+    /// Derivative-on-measurement variant.
+    ///
+    /// `measured_rate` is `d(process_variable)/dt` as observed from the sensor —
+    /// e.g., pitch rate `q` for the alpha loop, roll rate `p` for the roll loop.
+    /// The derivative contribution is `-kd * measured_rate`, which damps motion
+    /// toward the setpoint without spiking when the setpoint itself changes.
+    ///
+    /// Use this instead of `update` for any inner loop whose setpoint varies
+    /// frame-to-frame (output of an outer PID), or for any loop with direct
+    /// access to the relevant body rate.
+    pub fn update_dom(&mut self, error: f32, measured_rate: f32, dt: f32) -> f32 {
+        self.integral = (self.integral + error * dt)
+            .clamp(-self.integral_clamp, self.integral_clamp);
+        let output = self.kp * error + self.ki * self.integral - self.kd * measured_rate;
+        output.clamp(self.output_min, self.output_max)
+    }
+
     pub fn reset(&mut self) {
         self.integral = 0.0;
         self.prev_error = None;
@@ -103,6 +120,24 @@ mod tests {
         let mut pid = PidController::new(0.0, 0.0, 10.0, 100.0, -1000.0, 1000.0);
         let out = pid.update(5.0, 0.1);
         assert!((out).abs() < 1e-6, "first call derivative should be 0, out={}", out);
+    }
+
+    #[test]
+    fn dom_no_kick_on_setpoint_step() {
+        // DoM must not spike when the error jumps due to a setpoint change.
+        // kp=0, ki=0, kd=1 — output is purely the derivative term.
+        // Measured rate is 0; error jumps from 0 to 10 (setpoint step).
+        let mut pid = PidController::new(0.0, 0.0, 1.0, 100.0, -1000.0, 1000.0);
+        let out = pid.update_dom(10.0, 0.0, 0.1);
+        assert!(out.abs() < 1e-6, "DoM kick on setpoint step: out={}", out);
+    }
+
+    #[test]
+    fn dom_damps_measured_rate() {
+        // kp=0, ki=0, kd=2 — output = -kd * measured_rate = -6.0.
+        let mut pid = PidController::new(0.0, 0.0, 2.0, 100.0, -1000.0, 1000.0);
+        let out = pid.update_dom(0.0, 3.0, 0.1);
+        assert!((out - (-6.0)).abs() < 1e-5, "out={}", out);
     }
 
     #[test]
