@@ -13,7 +13,7 @@ use bevy::ecs::component::Component;
 pub struct FlightState {
     pub position: Vec3,          // world frame [m]
     pub velocity: Vec3,          // world frame [m/s]
-    pub attitude: Quat,          // world→body rotation
+    pub attitude: Quat,          // body→world rotation  (matches Bevy Transform.rotation)
     pub angular_velocity: Vec3,  // body frame [rad/s]  p, q, r
     pub alpha: f32,              // angle of attack [rad]
     pub beta: f32,               // sideslip angle [rad]
