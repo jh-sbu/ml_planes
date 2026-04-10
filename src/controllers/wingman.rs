@@ -73,7 +73,7 @@ impl WingmanController {
         own_initial: &FlightState,
         offset: FormationOffset,
     ) -> Self {
-        let mut inner = LevelHoldController::from_state(own_initial);
+        let mut inner = LevelHoldController::from_state(own_initial, &ControlInputs::default());
         // Pre-seed altitude/airspeed targets from formation geometry so the
         // inner PIDs don't see a step command on the very first tick.
         let desired_pos = leader_initial.position

@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use bevy::reflect::Reflect;
 use serde::{Deserialize, Serialize};
 
-use crate::plane::FlightState;
+use crate::plane::{ControlInputs, FlightState};
 
 use super::level_hold::LevelHoldController;
 use super::FlightController;
@@ -23,8 +23,9 @@ use super::FlightController;
 /// Implementors encode one controller's complete set of tunable parameters.
 /// The factory method captures the current state for a bumpless mode handoff.
 pub trait ControllerTuning: std::fmt::Debug + Send + Sync + 'static {
-    /// Construct a tuned controller, using `state` to seed targets.
-    fn build(&self, state: &FlightState) -> Box<dyn FlightController>;
+    /// Construct a tuned controller, using `state` to seed targets and
+    /// `prev_inputs` to pre-load integrators for a bumpless handoff.
+    fn build(&self, state: &FlightState, prev_inputs: &ControlInputs) -> Box<dyn FlightController>;
 }
 
 // ---------------------------------------------------------------------------
@@ -72,8 +73,8 @@ impl Default for LevelHoldTuning {
 }
 
 impl ControllerTuning for LevelHoldTuning {
-    fn build(&self, state: &FlightState) -> Box<dyn FlightController> {
-        Box::new(LevelHoldController::with_tuning(state, self))
+    fn build(&self, state: &FlightState, prev_inputs: &ControlInputs) -> Box<dyn FlightController> {
+        Box::new(LevelHoldController::with_tuning(state, self, prev_inputs))
     }
 }
 
@@ -190,7 +191,7 @@ mod tests {
             airspeed:         100.0,
             altitude:         500.0,
         };
-        let ctrl = LevelHoldController::with_tuning(&state, &tuning);
+        let ctrl = LevelHoldController::with_tuning(&state, &tuning, &ControlInputs::default());
         assert!((ctrl.altitude_pid.kp - 0.03).abs() < 1e-6, "alt_kp");
         assert!((ctrl.altitude_pid.ki - 0.20).abs() < 1e-6, "alt_ki");
         assert!((ctrl.altitude_pid.kd - 0.08).abs() < 1e-6, "alt_kd");

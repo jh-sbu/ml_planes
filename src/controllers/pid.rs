@@ -61,6 +61,14 @@ impl PidController {
         output.clamp(self.output_min, self.output_max)
     }
 
+    /// Pre-load the integrator to a specific value (clamped).
+    ///
+    /// Use at controller engagement to seed the integral so the initial output
+    /// matches trim without waiting for the integrator to wind up.
+    pub fn seed_integral(&mut self, value: f32) {
+        self.integral = value.clamp(-self.integral_clamp, self.integral_clamp);
+    }
+
     pub fn reset(&mut self) {
         self.integral = 0.0;
         self.prev_error = None;

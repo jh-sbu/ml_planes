@@ -36,7 +36,7 @@ impl AscentController {
     /// airspeed PID sees no step command.  Sets inner `target_altitude` to
     /// `target_altitude` immediately.
     pub fn new(state: &FlightState, target_altitude: f32) -> Self {
-        let mut inner = LevelHoldController::from_state(state);
+        let mut inner = LevelHoldController::from_state(state, &ControlInputs::default());
         inner.target_altitude = target_altitude;
         Self {
             target_altitude,

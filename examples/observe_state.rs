@@ -80,7 +80,7 @@ fn main() {
             if let Some(v) = args.spd_kp   { tuning.spd_kp           = v; }
             if let Some(v) = args.spd_ki   { tuning.spd_ki           = v; }
             let state = FlightState { altitude: args.altitude, airspeed: args.airspeed, ..FlightState::default() };
-            Box::new(LevelHoldController::with_tuning(&state, &tuning))
+            Box::new(LevelHoldController::with_tuning(&state, &tuning, &ml_planes::plane::ControlInputs::default()))
         }
         _ => Box::new(ManualController::new()),
     };

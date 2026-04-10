@@ -64,18 +64,26 @@ pub struct LevelHoldController {
 }
 
 impl LevelHoldController {
-    /// Create a controller whose targets are captured from the given flight state.
-    /// Use this when switching from another controller to avoid a sudden command jolt.
-    pub fn from_state(state: &FlightState) -> Self {
-        Self::new(state.altitude, state.airspeed)
+    /// Create a controller whose targets and integrators are seeded from the
+    /// given flight state and previous controller output.
+    ///
+    /// `prev_inputs` is the last `ControlInputs` produced by the outgoing
+    /// controller. The airspeed and altitude integrals are pre-loaded so that
+    /// the first `update` call produces outputs close to trim with no transient
+    /// sag. Pass `&ControlInputs::default()` when there is no previous output
+    /// (fresh spawn).
+    pub fn from_state(state: &FlightState, prev_inputs: &ControlInputs) -> Self {
+        let mut ctrl = Self::new(state.altitude, state.airspeed);
+        ctrl.seed_integrals(state, prev_inputs);
+        ctrl
     }
 
     /// Create a controller from the given flight state, overriding gains from `tuning`.
     ///
-    /// Targets are captured from `state` for a bumpless handoff.
-    /// Structural parameters (integral clamp, output limits) are left at their defaults.
-    pub fn with_tuning(state: &FlightState, tuning: &LevelHoldTuning) -> Self {
-        let mut ctrl = Self::from_state(state);
+    /// Gains are applied before integrators are seeded so that the seed
+    /// calculation uses the correct `ki` values.
+    pub fn with_tuning(state: &FlightState, tuning: &LevelHoldTuning, prev_inputs: &ControlInputs) -> Self {
+        let mut ctrl = Self::new(state.altitude, state.airspeed);
         ctrl.altitude_pid.kp    = tuning.alt_kp;
         ctrl.altitude_pid.ki    = tuning.alt_ki;
         ctrl.altitude_pid.kd    = tuning.alt_kd;
@@ -84,7 +92,23 @@ impl LevelHoldController {
         ctrl.airspeed_pid.kp    = tuning.spd_kp;
         ctrl.airspeed_pid.ki    = tuning.spd_ki;
         ctrl.throttle_ff_gain   = tuning.throttle_ff_gain;
+        ctrl.seed_integrals(state, prev_inputs);
         ctrl
+    }
+
+    /// Seed the airspeed and altitude integrators so that the first update
+    /// produces outputs near trim rather than starting from zero.
+    ///
+    /// - Airspeed integral: `I = throttle / ki` → first `throttle_fb ≈ prev_inputs.throttle`
+    /// - Altitude integral: `I = state.alpha / ki` → first `alpha_target ≈ state.alpha`,
+    ///   which keeps the inner loop at near-zero elevator error.
+    fn seed_integrals(&mut self, state: &FlightState, prev_inputs: &ControlInputs) {
+        if self.airspeed_pid.ki > 0.0 {
+            self.airspeed_pid.seed_integral(prev_inputs.throttle / self.airspeed_pid.ki);
+        }
+        if self.altitude_pid.ki > 0.0 {
+            self.altitude_pid.seed_integral(state.alpha / self.altitude_pid.ki);
+        }
     }
 
     /// Create a controller with default gains for the generic jet at 100 m/s.
@@ -263,15 +287,57 @@ mod tests {
     }
 
     #[test]
-    fn zero_error_on_first_step_gives_near_zero_control_outputs() {
-        // No integral has built up yet, no derivative, no error → outputs ≈ 0.
-        let mut ctrl = LevelHoldController::new(1000.0, 80.0);
-        let state    = level_state(1000.0, 80.0);
-        let inputs   = ctrl.update(&state, 1.0 / 60.0);
+    fn unseeded_zero_error_gives_near_zero_control_outputs() {
+        // With no previous inputs (fresh spawn, prev_inputs = default = zeros),
+        // integrals are seeded to zero. At zero error all outputs should be near zero.
+        use crate::plane::ControlInputs;
+        let mut ctrl = LevelHoldController::from_state(
+            &level_state(1000.0, 80.0),
+            &ControlInputs::default(),
+        );
+        let state  = level_state(1000.0, 80.0);
+        let inputs = ctrl.update(&state, 1.0 / 60.0);
         assert!(inputs.elevator.abs() < 0.05, "elevator={}", inputs.elevator);
         assert!(inputs.aileron.abs()  < 0.05, "aileron={}", inputs.aileron);
         assert!(inputs.rudder.abs()   < 0.05, "rudder={}", inputs.rudder);
-        // Throttle: error=0, no integral yet → 0
         assert!(inputs.throttle.abs() < 0.05, "throttle={}", inputs.throttle);
+    }
+
+    #[test]
+    fn bumpless_engagement_preserves_trim_throttle() {
+        // Simulate engaging from a previous controller that was outputting trim throttle.
+        // With seeding: first-step throttle should match previous throttle closely.
+        use crate::plane::ControlInputs;
+        let trim_throttle = 0.058_f32;
+        let prev_inputs = ControlInputs { throttle: trim_throttle, ..Default::default() };
+        // state.alpha = 0 (synthetic level state), so altitude integral seeds to 0 too.
+        let mut ctrl = LevelHoldController::from_state(
+            &level_state(1000.0, 80.0),
+            &prev_inputs,
+        );
+        let state  = level_state(1000.0, 80.0);
+        let inputs = ctrl.update(&state, 1.0 / 60.0);
+        // ki_spd = 0.06; seeded integral = 0.058/0.06 = 0.967 (clamped to 1.0 by integral_clamp).
+        // throttle_fb = ki * integral ≈ 0.06 * 0.967 = 0.058, within 5 % of trim.
+        let rel_err = (inputs.throttle - trim_throttle).abs() / trim_throttle;
+        assert!(rel_err < 0.05, "throttle={} expected≈{}", inputs.throttle, trim_throttle);
+    }
+
+    #[test]
+    fn bumpless_engagement_preserves_alpha_via_altitude_integral() {
+        // When state.alpha is at trim (e.g. 0.065 rad), altitude integral should be seeded
+        // so alpha_target ≈ trim alpha and elevator error ≈ 0 on the first step.
+        use crate::plane::ControlInputs;
+        let trim_alpha = 0.065_f32;
+        // Construct a state with non-zero alpha.
+        let state = FlightState {
+            alpha: trim_alpha,
+            ..level_state(1000.0, 100.0)
+        };
+        let prev_inputs = ControlInputs { throttle: 0.058, ..Default::default() };
+        let mut ctrl = LevelHoldController::from_state(&state, &prev_inputs);
+        let inputs = ctrl.update(&state, 1.0 / 60.0);
+        // Elevator should be near zero: alpha_target ≈ trim_alpha, error ≈ 0.
+        assert!(inputs.elevator.abs() < 0.1, "elevator={} expected≈0", inputs.elevator);
     }
 }

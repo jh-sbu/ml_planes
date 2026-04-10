@@ -12,6 +12,8 @@ use ml_planes::training::SpawnSpec;
 #[cfg(feature = "visual")]
 use ml_planes::controllers::{ActiveController, ControllerTuning, PlaneTuning, SelectedTuningProfile};
 #[cfg(feature = "visual")]
+use ml_planes::plane::ControlInputs;
+#[cfg(feature = "visual")]
 use ml_planes::plane::PlaneTuningHandle;
 
 #[cfg(feature = "visual")]
@@ -174,6 +176,7 @@ fn apply_controller_switch(
             &FlightState,
             &mut ActiveController,
             &ControllerKind,
+            &ControlInputs,
             Option<&PlaneTuningHandle>,
             Option<&SelectedTuningProfile>,
         ),
@@ -181,12 +184,12 @@ fn apply_controller_switch(
     >,
     tuning_assets: Res<Assets<PlaneTuning>>,
 ) {
-    for (state, mut controller, &kind, tuning_handle, profile) in query.iter_mut() {
+    for (state, mut controller, &kind, prev_inputs, tuning_handle, profile) in query.iter_mut() {
         let profile_name = profile.map(|p| p.0.as_str()).unwrap_or("normal");
         let tuning: Option<&dyn ControllerTuning> = tuning_handle
             .and_then(|h| tuning_assets.get(&h.0))
             .and_then(|pt| pt.get_level_hold(profile_name))
             .map(|t| t as &dyn ControllerTuning);
-        controller.0 = kind.build(state, tuning);
+        controller.0 = kind.build(state, tuning, prev_inputs);
     }
 }

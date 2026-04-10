@@ -2,7 +2,7 @@ use bevy::prelude::Component;
 
 use crate::controllers::tuning::ControllerTuning;
 use crate::controllers::{FlightController, LevelHoldController, ManualController};
-use crate::plane::FlightState;
+use crate::plane::{ControlInputs, FlightState};
 
 /// Identifies which controller implementation is active on a plane entity.
 ///
@@ -43,6 +43,10 @@ impl ControllerKind {
     /// Construct a fresh controller for this kind, capturing relevant state
     /// so the handoff is bumpless.
     ///
+    /// `prev_inputs` is the last `ControlInputs` from the outgoing controller;
+    /// it is used to pre-seed PID integrals for a true bumpless transfer.
+    /// Pass `&ControlInputs::default()` for fresh spawns with no prior output.
+    ///
     /// Pass `tuning` to apply per-plane gains; `None` falls back to the
     /// controller's built-in defaults.
     ///
@@ -50,12 +54,17 @@ impl ControllerKind {
     /// controller requires a leader entity reference that cannot be passed
     /// through this generic factory. Spawn wingmen explicitly with
     /// `WingmanController::new()`.
-    pub fn build(self, state: &FlightState, tuning: Option<&dyn ControllerTuning>) -> Box<dyn FlightController> {
+    pub fn build(
+        self,
+        state: &FlightState,
+        tuning: Option<&dyn ControllerTuning>,
+        prev_inputs: &ControlInputs,
+    ) -> Box<dyn FlightController> {
         match self {
             ControllerKind::Manual => Box::new(ManualController::new()),
             ControllerKind::LevelHold | ControllerKind::Wingman | ControllerKind::Ascent => match tuning {
-                Some(t) => t.build(state),
-                None    => Box::new(LevelHoldController::from_state(state)),
+                Some(t) => t.build(state, prev_inputs),
+                None    => Box::new(LevelHoldController::from_state(state, prev_inputs)),
             },
         }
     }
