@@ -3,7 +3,7 @@ use bevy_egui::{egui, EguiContexts};
 use std::f32::consts::PI;
 
 use crate::camera::CameraMode;
-use crate::controllers::{ControllerKind, PlaneTuning, SelectedTuningProfile};
+use crate::controllers::{ActiveController, AscentController, ControllerKind, PlaneTuning, SelectedTuningProfile};
 use crate::plane::{ControlInputs, FlightState, PlaneTuningHandle};
 
 pub fn draw_flight_hud(
@@ -13,6 +13,7 @@ pub fn draw_flight_hud(
         &FlightState,
         &ControlInputs,
         &mut ControllerKind,
+        &mut ActiveController,
         Option<&mut SelectedTuningProfile>,
         Option<&PlaneTuningHandle>,
     )>,
@@ -25,7 +26,7 @@ pub fn draw_flight_hud(
         CameraMode::FreeLook => plane_query.iter_mut().next(),
     };
 
-    let Some((state, inputs, mut kind, profile, tuning_handle)) = result else { return };
+    let Some((state, inputs, mut kind, mut controller, profile, tuning_handle)) = result else { return };
 
     let Ok(ctx) = contexts.ctx_mut() else { return };
 
@@ -82,6 +83,13 @@ pub fn draw_flight_hud(
                 *kind = selected;
             }
             ui.label("(C to cycle)");
+
+            if *kind == ControllerKind::Ascent {
+                if let Some(ascent) = controller.0.as_any_mut().downcast_mut::<AscentController>() {
+                    let status = if ascent.complete { "Complete" } else { "Climbing" };
+                    ui.label(format!("Target: {:.0} m — {}", ascent.target_altitude, status));
+                }
+            }
 
             if *kind == ControllerKind::LevelHold {
                 if let (Some(ref mut profile), Some(handle)) = (profile, tuning_handle) {

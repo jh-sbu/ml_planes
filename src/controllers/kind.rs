@@ -1,7 +1,7 @@
 use bevy::prelude::Component;
 
 use crate::controllers::tuning::ControllerTuning;
-use crate::controllers::{FlightController, LevelHoldController, ManualController};
+use crate::controllers::{AscentController, FlightController, LevelHoldController, ManualController};
 use crate::plane::{ControlInputs, FlightState};
 
 /// Identifies which controller implementation is active on a plane entity.
@@ -23,7 +23,7 @@ pub enum ControllerKind {
 }
 
 impl ControllerKind {
-    pub const ALL: &'static [ControllerKind] = &[Self::Manual, Self::LevelHold];
+    pub const ALL: &'static [ControllerKind] = &[Self::Manual, Self::LevelHold, Self::Ascent];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -54,6 +54,9 @@ impl ControllerKind {
     /// controller requires a leader entity reference that cannot be passed
     /// through this generic factory. Spawn wingmen explicitly with
     /// `WingmanController::new()`.
+    ///
+    /// `Ascent` targets `state.altitude + 1000 m` — a sensible default for
+    /// an interactive climb from wherever the plane is when switching.
     pub fn build(
         self,
         state: &FlightState,
@@ -62,7 +65,8 @@ impl ControllerKind {
     ) -> Box<dyn FlightController> {
         match self {
             ControllerKind::Manual => Box::new(ManualController::new()),
-            ControllerKind::LevelHold | ControllerKind::Wingman | ControllerKind::Ascent => match tuning {
+            ControllerKind::Ascent => Box::new(AscentController::new(state, state.altitude + 1000.0)),
+            ControllerKind::LevelHold | ControllerKind::Wingman => match tuning {
                 Some(t) => t.build(state, prev_inputs),
                 None    => Box::new(LevelHoldController::from_state(state, prev_inputs)),
             },
