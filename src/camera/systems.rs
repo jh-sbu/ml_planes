@@ -3,7 +3,7 @@ use bevy::input::mouse::AccumulatedMouseMotion;
 use std::f32::consts::PI;
 
 use super::mode::CameraMode;
-use crate::plane::FlightState;
+use crate::plane::{FlightState, PlaneIndex};
 
 #[derive(Component)]
 pub struct FreeLookCamera {
@@ -28,14 +28,15 @@ pub fn spawn_camera(mut commands: Commands) {
 pub fn cycle_camera_mode(
     keys: Res<ButtonInput<KeyCode>>,
     mut mode: ResMut<CameraMode>,
-    planes: Query<Entity, With<FlightState>>,
+    planes: Query<(Entity, &PlaneIndex), With<FlightState>>,
 ) {
     if !keys.just_pressed(KeyCode::Tab) {
         return;
     }
 
-    let mut sorted: Vec<Entity> = planes.iter().collect();
-    sorted.sort();
+    let mut pairs: Vec<(Entity, u32)> = planes.iter().map(|(e, idx)| (e, idx.0)).collect();
+    pairs.sort_by_key(|&(_, i)| i);
+    let sorted: Vec<Entity> = pairs.into_iter().map(|(e, _)| e).collect();
 
     *mode = match *mode {
         CameraMode::FreeLook => {

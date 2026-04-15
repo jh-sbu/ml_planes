@@ -6,7 +6,7 @@ use ml_planes::controllers::{
     FormationOffset, LeaderRef, LeaderState,
 };
 use ml_planes::environment::{EnvironmentPlugin, spawn_plane};
-use ml_planes::plane::{config::PlaneConfig, FlightState, PlanePlugin};
+use ml_planes::plane::{config::PlaneConfig, FlightState, PlaneIndex, PlanePlugin};
 use ml_planes::training::SpawnSpec;
 
 #[cfg(feature = "visual")]
@@ -96,6 +96,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         ControllerKind::LevelHold,
         &cfg,
     );
+    commands.entity(leader).insert(PlaneIndex(1));
 
     #[cfg(feature = "visual")]
     {
@@ -137,6 +138,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         LeaderRef(leader),
         LeaderState::default(),
         offset,
+        PlaneIndex(2),
     ));
 }
 

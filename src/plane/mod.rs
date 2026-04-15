@@ -8,3 +8,9 @@ pub use config::PlaneConfig;
 pub use inputs::ControlInputs;
 pub use plugin::{PlaneConfigHandle, PlaneTuningHandle, PlanePlugin};
 pub use state::FlightState;
+
+/// Explicit stable ordering for plane entities (1 = leader, 2 = wingman, …).
+/// Used by the camera cycle and HUD to label planes consistently regardless of
+/// Bevy entity-ID allocation order.
+#[derive(bevy::prelude::Component, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct PlaneIndex(pub u32);

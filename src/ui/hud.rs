@@ -4,7 +4,7 @@ use std::f32::consts::PI;
 
 use crate::camera::CameraMode;
 use crate::controllers::{ActiveController, AscentController, ControllerKind, PlaneTuning, SelectedTuningProfile};
-use crate::plane::{ControlInputs, FlightState, PlaneTuningHandle};
+use crate::plane::{ControlInputs, FlightState, PlaneIndex, PlaneTuningHandle};
 
 pub fn draw_flight_hud(
     mode: Res<CameraMode>,
@@ -17,7 +17,7 @@ pub fn draw_flight_hud(
         Option<&mut SelectedTuningProfile>,
         Option<&PlaneTuningHandle>,
     )>,
-    all_planes: Query<Entity, With<FlightState>>,
+    all_planes: Query<(Entity, &PlaneIndex), With<FlightState>>,
     tuning_assets: Res<Assets<PlaneTuning>>,
 ) {
     // Determine which entity to display
@@ -30,8 +30,9 @@ pub fn draw_flight_hud(
 
     let Ok(ctx) = contexts.ctx_mut() else { return };
 
-    let mut sorted_planes: Vec<Entity> = all_planes.iter().collect();
-    sorted_planes.sort();
+    let mut pairs: Vec<(Entity, u32)> = all_planes.iter().map(|(e, idx)| (e, idx.0)).collect();
+    pairs.sort_by_key(|&(_, i)| i);
+    let sorted_planes: Vec<Entity> = pairs.into_iter().map(|(e, _)| e).collect();
     let camera_label = match *mode {
         CameraMode::FreeLook => "Camera: Free Look".to_string(),
         CameraMode::Follow(entity) => {
