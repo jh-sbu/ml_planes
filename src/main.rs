@@ -177,17 +177,24 @@ fn apply_controller_switch(
         (
             &FlightState,
             &mut ActiveController,
-            &ControllerKind,
+            Ref<ControllerKind>,
             &ControlInputs,
             Option<&PlaneTuningHandle>,
-            Option<&SelectedTuningProfile>,
+            Option<Ref<SelectedTuningProfile>>,
         ),
         Or<(Changed<ControllerKind>, Changed<SelectedTuningProfile>)>,
     >,
     tuning_assets: Res<Assets<PlaneTuning>>,
 ) {
-    for (state, mut controller, &kind, prev_inputs, tuning_handle, profile) in query.iter_mut() {
-        let profile_name = profile.map(|p| p.0.as_str()).unwrap_or("normal");
+    for (state, mut controller, kind, prev_inputs, tuning_handle, profile) in query.iter_mut() {
+        // Skip entities that matched only because components were just inserted at spawn —
+        // their controllers were already constructed correctly before spawning.
+        let kind_mutated = kind.is_changed() && !kind.is_added();
+        let profile_mutated = profile.as_ref().map(|p| p.is_changed() && !p.is_added()).unwrap_or(false);
+        if !kind_mutated && !profile_mutated {
+            continue;
+        }
+        let profile_name = profile.as_deref().map(|p| p.0.as_str()).unwrap_or("normal");
         let tuning: Option<&dyn ControllerTuning> = tuning_handle
             .and_then(|h| tuning_assets.get(&h.0))
             .and_then(|pt| pt.get_level_hold(profile_name))

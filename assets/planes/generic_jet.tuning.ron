@@ -1,19 +1,18 @@
 // Tuned PID gains for generic_jet.plane.ron
-// Generated from: tuned_constants_bak.txt
-//
-// Profile "normal": tuned for stable level-hold across the standard 5-scenario matrix
-// (200 m/80 m·s⁻¹ to 2000 m/130 m·s⁻¹).
+// Profile "normal" — tuned 2026-04-20, 2 rounds
+// Passes all 5 scenarios (200m/80–2000m/130 m·s⁻¹ envelope).
+// throttle_ff_gain reduced 0.7→0.3 to fix FF-coupling airspeed failure at 70 m/s.
 PlaneTuning(
     level_hold: {
         "normal": LevelHoldTuning(
             alt_kp: 0.015,
             alt_ki: 0.12,
             alt_kd: 0.04,
-            alpha_kp: 2.0,
+            alpha_kp: 1.910,
             alpha_kd: 0.764,
-            spd_kp: 0.01,
-            spd_ki: 0.10,
-            throttle_ff_gain: 0.7,
+            spd_kp: 0.010,
+            spd_ki: 0.06,
+            throttle_ff_gain: 0.3,
         ),
     },
 )

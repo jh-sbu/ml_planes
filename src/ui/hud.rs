@@ -3,7 +3,7 @@ use bevy_egui::{egui, EguiContexts};
 use std::f32::consts::PI;
 
 use crate::camera::CameraMode;
-use crate::controllers::{ActiveController, AscentController, ControllerKind, PlaneTuning, SelectedTuningProfile};
+use crate::controllers::{ActiveController, AscentController, LevelHoldController, ControllerKind, PlaneTuning, SelectedTuningProfile};
 use crate::plane::{ControlInputs, FlightState, PlaneIndex, PlaneTuningHandle};
 
 pub fn draw_flight_hud(
@@ -93,6 +93,11 @@ pub fn draw_flight_hud(
             }
 
             if *kind == ControllerKind::LevelHold {
+                if let Some(lh) = controller.0.as_any_mut().downcast_mut::<LevelHoldController>() {
+                    let tgt_kts = lh.target_airspeed * 1.944;
+                    ui.label(format!("Tgt Alt:  {:.0} m", lh.target_altitude));
+                    ui.label(format!("Tgt Spd:  {:.1} m/s  ({:.0} kts)", lh.target_airspeed, tgt_kts));
+                }
                 if let (Some(ref mut profile), Some(handle)) = (profile, tuning_handle) {
                     if let Some(pt) = tuning_assets.get(&handle.0) {
                         let mut profiles: Vec<&str> =

@@ -48,7 +48,17 @@ pub fn spawn_plane(
                 principal_inertia: cfg.inertia,
                 principal_inertia_local_frame: Quat::IDENTITY,
             }),
-            FlightState::default(),
+            {
+                let mut s = FlightState {
+                    position: position,
+                    velocity: linvel,
+                    attitude,
+                    angular_velocity: angvel_body,
+                    ..Default::default()
+                };
+                s.update_air_data();
+                s
+            },
             ControlInputs::default(),
             ActiveController(controller),
             kind,
