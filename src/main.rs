@@ -5,6 +5,8 @@ use ml_planes::controllers::{
     ControllerKind, LevelHoldController, WingmanController,
     FormationOffset, LeaderRef, LeaderState,
 };
+#[cfg(feature = "training")]
+use ml_planes::controllers::RlLevelHoldController;
 use ml_planes::environment::{EnvironmentPlugin, spawn_plane};
 use ml_planes::plane::{config::PlaneConfig, FlightState, PlaneIndex, PlanePlugin};
 use ml_planes::training::SpawnSpec;
@@ -140,6 +142,35 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         offset,
         PlaneIndex(2),
     ));
+
+    // --- Optional RL comparison plane (requires `training` feature + trained weights) ---
+    #[cfg(feature = "training")]
+    {
+        let model_path = "models/ppo_level_hold";
+        if std::path::Path::new(&format!("{model_path}.mpk")).exists() {
+            match RlLevelHoldController::load(model_path, 1000.0, 100.0) {
+                Ok(rl_ctrl) => {
+                    // Spawn 30 m behind the leader so both are visible in follow-cam.
+                    let rl_pos = Vec3::new(0.0, 1000.0, -30.0);
+                    let rl_plane = spawn_plane(
+                        &mut commands,
+                        &asset_server,
+                        &SpawnSpec {
+                            position: Some(rl_pos),
+                            velocity: Some(leader_vel),
+                            ..Default::default()
+                        },
+                        Box::new(rl_ctrl),
+                        ControllerKind::LevelHold,
+                        &cfg,
+                    );
+                    commands.entity(rl_plane).insert(PlaneIndex(3));
+                    println!("RL plane spawned — loaded from {model_path}.mpk");
+                }
+                Err(e) => eprintln!("Failed to load RL model from {model_path}.mpk: {e}"),
+            }
+        }
+    }
 }
 
 #[cfg(feature = "visual")]
