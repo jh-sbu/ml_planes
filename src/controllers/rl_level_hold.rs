@@ -81,7 +81,7 @@ impl FlightController for RlLevelHoldController {
     fn as_any_mut(&mut self) -> &mut dyn Any { self }
 }
 
-/// Build normalized 8-dim observation matching `LevelHoldEnv::build_observation`.
+/// Build normalized 10-dim observation matching `LevelHoldEnv::build_observation`.
 fn build_obs(state: &FlightState, target_alt: f32, target_spd: f32) -> Vec<f32> {
     let alt_err   = state.altitude - target_alt;
     let speed_err = state.airspeed  - target_spd;
@@ -98,6 +98,8 @@ fn build_obs(state: &FlightState, target_alt: f32, target_spd: f32) -> Vec<f32> 
         p / 1.0,
         state.beta / 0.5,
         r / 1.0,
+        pitch_angle(state.attitude) / 0.5,
+        state.velocity.y / 30.0,
     ]
 }
 
@@ -105,4 +107,9 @@ fn roll_angle(attitude: Quat) -> f32 {
     let right_world = attitude * bevy::math::Vec3::Y;
     let up_world    = attitude * bevy::math::Vec3::Z;
     right_world.y.atan2(up_world.y)
+}
+
+fn pitch_angle(attitude: Quat) -> f32 {
+    let fwd_world = attitude * bevy::math::Vec3::X;
+    fwd_world.y.atan2((fwd_world.x * fwd_world.x + fwd_world.z * fwd_world.z).sqrt())
 }

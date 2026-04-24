@@ -3,9 +3,10 @@
 //! Self-contained: runs its own Euler-integrated 6-DOF flight model
 //! using `compute_aero_forces`.  No Bevy ECS or Rapier required.
 //!
-//! Observation (dim = 8, normalised to ≈ [-1, 1]):
+//! Observation (dim = 10, normalised to ≈ [-1, 1]):
 //!   [alt_err/200, speed_err/50, alpha/0.5, pitch_rate/1,
-//!    roll_angle/0.5, roll_rate/1, beta/0.5, yaw_rate/1]
+//!    roll_angle/0.5, roll_rate/1, beta/0.5, yaw_rate/1,
+//!    pitch_angle/0.5, vertical_speed/30]
 //!
 //! Action (dim = 4, each in [-1, 1]):
 //!   [elevator, throttle_norm, aileron, rudder]
@@ -25,6 +26,11 @@ fn roll_angle(attitude: Quat) -> f32 {
     let right_world = attitude * Vec3::Y;
     let up_world    = attitude * Vec3::Z;
     right_world.y.atan2(up_world.y)
+}
+
+fn pitch_angle(attitude: Quat) -> f32 {
+    let fwd_world = attitude * Vec3::X;
+    fwd_world.y.atan2((fwd_world.x * fwd_world.x + fwd_world.z * fwd_world.z).sqrt())
 }
 
 // ---------------------------------------------------------------------------
@@ -157,6 +163,8 @@ impl LevelHoldEnv {
             p / 1.0,
             self.state.beta / 0.5,
             r / 1.0,
+            pitch_angle(self.state.attitude) / 0.5,
+            self.state.velocity.y / 30.0,
         ]
     }
 
@@ -288,7 +296,7 @@ mod tests {
     fn reset_returns_correct_obs_length() {
         let mut env = LevelHoldEnv::new(1000.0, 80.0, jet_cfg());
         let (obs, _) = env.reset();
-        assert_eq!(obs.len(), 8);
+        assert_eq!(obs.len(), 10);
     }
 
     #[test]
@@ -296,7 +304,7 @@ mod tests {
         let mut env = LevelHoldEnv::new(1000.0, 80.0, jet_cfg());
         env.reset();
         let (obs, _reward, _done, _info) = env.step(&[0.0, 0.0, 0.0, 0.0]);
-        assert_eq!(obs.len(), 8);
+        assert_eq!(obs.len(), 10);
     }
 
     #[test]

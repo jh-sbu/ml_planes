@@ -24,7 +24,7 @@ pub struct PolicyNet<B: Backend> {
 impl<B: Backend> PolicyNet<B> {
     pub fn new(device: &B::Device) -> Self {
         Self {
-            fc1: LinearConfig::new(8, 64).init(device),
+            fc1: LinearConfig::new(10, 64).init(device),
             fc2: LinearConfig::new(64, 64).init(device),
             out: LinearConfig::new(64, 4).init(device),
         }
@@ -52,7 +52,7 @@ pub struct ValueNet<B: Backend> {
 impl<B: Backend> ValueNet<B> {
     pub fn new(device: &B::Device) -> Self {
         Self {
-            fc1: LinearConfig::new(8, 64).init(device),
+            fc1: LinearConfig::new(10, 64).init(device),
             fc2: LinearConfig::new(64, 64).init(device),
             out: LinearConfig::new(64, 1).init(device),
         }
@@ -211,7 +211,7 @@ mod tests {
     #[test]
     fn actor_critic_output_shapes() {
         let model = ActorCritic::<B>::new(&device());
-        let obs = Tensor::<B, 2>::zeros([4, 8], &device());
+        let obs = Tensor::<B, 2>::zeros([4, 10], &device());
         let (action, log_prob) = model.sample_action(obs.clone());
         assert_eq!(action.dims(), [4, 4]);
         assert_eq!(log_prob.dims(), [4]);
@@ -222,7 +222,7 @@ mod tests {
     #[test]
     fn policy_output_in_range() {
         let model = ActorCritic::<B>::new(&device());
-        let obs = Tensor::<B, 2>::random([8, 8], Distribution::Normal(0.0, 1.0), &device());
+        let obs = Tensor::<B, 2>::random([8, 10], Distribution::Normal(0.0, 1.0), &device());
         let (action, _) = model.sample_action(obs);
         let data = action.into_data().to_vec::<f32>().unwrap();
         for v in &data {
@@ -247,7 +247,7 @@ mod tests {
     #[test]
     fn evaluate_actions_shapes() {
         let model = ActorCritic::<B>::new(&device());
-        let obs = Tensor::<B, 2>::zeros([4, 8], &device());
+        let obs = Tensor::<B, 2>::zeros([4, 10], &device());
         let (action, _) = model.sample_action(obs.clone());
         let (log_prob, entropy) = model.evaluate_actions(obs, action);
         assert_eq!(log_prob.dims(), [4]);
@@ -257,7 +257,7 @@ mod tests {
     #[test]
     fn log_prob_is_finite() {
         let model = ActorCritic::<B>::new(&device());
-        let obs = Tensor::<B, 2>::random([4, 8], Distribution::Normal(0.0, 1.0), &device());
+        let obs = Tensor::<B, 2>::random([4, 10], Distribution::Normal(0.0, 1.0), &device());
         let (action, log_prob) = model.sample_action(obs.clone());
         let (log_prob2, entropy) = model.evaluate_actions(obs, action);
         for v in log_prob.into_data().to_vec::<f32>().unwrap() {
