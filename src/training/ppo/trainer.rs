@@ -245,7 +245,7 @@ mod tests {
             mass: 5000.0, inertia: Vec3::new(10000.0, 40000.0, 45000.0),
             cl0: 0.1, cl_alpha: 4.5, cl_delta_e: 0.4, cl_max: 1.4,
             cd0: 0.02, cd_induced: 0.05,
-            cm0: -0.02, cm_alpha: 0.6, cm_q: -8.0, cm_delta_e: -1.2,
+            cm0: -0.02, cm_alpha: 0.6, cm_q: -14.0, cm_delta_e: -1.2,
             cl_beta: -0.08, cl_p: -0.45, cl_r: 0.12, cl_delta_a: 0.18,
             cn_beta: 0.10, cn_r: -0.12, cn_delta_r: -0.10,
             thrust_max: 60000.0,
