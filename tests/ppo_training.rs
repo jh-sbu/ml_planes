@@ -45,8 +45,8 @@ fn ppo_50_iterations_no_nan_no_reward_collapse() {
     let mut returns: Vec<f32> = Vec::new();
 
     for _i in 0..50 {
-        let (buffer, mean_ret) = trainer.collect_rollout();
-        trainer.update(&buffer);
+        let (buffer, mean_ret, _ep_len) = trainer.collect_rollout();
+        let _ = trainer.update(&buffer);
         returns.push(mean_ret);
     }
 

@@ -12,6 +12,8 @@ fn main() {
 
 #[cfg(feature = "training")]
 fn main() {
+    use std::time::Instant;
+
     use burn::backend::{Autodiff, Wgpu};
     use bevy::math::Vec3;
 
@@ -41,23 +43,76 @@ fn main() {
     let total_timesteps: usize = 2_000_000;
     let mut steps = 0usize;
     let mut iteration = 0usize;
+    let mut rows_since_header = 0usize;
+    let start = Instant::now();
 
     println!("Starting PPO training — target {} steps", total_timesteps);
-    println!("{:<6}  {:<10}  {}", "iter", "steps", "mean_return");
 
     while steps < total_timesteps {
-        let (buffer, mean_return) = trainer.collect_rollout();
+        let (buffer, mean_return, mean_ep_len) = trainer.collect_rollout();
         steps += buffer.len();
-        trainer.update(&buffer);
+        let metrics = trainer.update(&buffer);
         iteration += 1;
 
         if iteration % 10 == 0 || iteration <= 5 {
-            println!("{:<6}  {:<10}  {:.3}", iteration, steps, mean_return);
+            if rows_since_header == 0 {
+                println!(
+                    "{:<6}  {:<11}  {:>5}  {:>8}  {:>9}  {:>9}  {:>8}  {:>6}  {:>8}  {:>8}  {:>8}",
+                    "iter", "steps", "pct", "steps/s", "elapsed", "eta",
+                    "mean_ret", "ep_len", "p_loss", "v_loss", "entropy",
+                );
+            }
+
+            let elapsed_secs = start.elapsed().as_secs_f64();
+            let steps_per_sec = steps as f64 / elapsed_secs;
+            let pct = 100.0 * steps as f64 / total_timesteps as f64;
+            let remaining = total_timesteps.saturating_sub(steps);
+            let eta_secs = if steps_per_sec > 0.0 {
+                (remaining as f64 / steps_per_sec) as u64
+            } else {
+                0
+            };
+
+            println!(
+                "{:<6}  {:<11}  {:>4.1}%  {:>8.0}  {:>9}  {:>9}  {:>8.3}  {:>6.0}  {:>8.4}  {:>8.4}  {:>8.4}",
+                iteration,
+                steps,
+                pct,
+                steps_per_sec,
+                fmt_duration(elapsed_secs as u64),
+                fmt_duration(eta_secs),
+                mean_return,
+                mean_ep_len,
+                metrics.policy_loss,
+                metrics.value_loss,
+                metrics.entropy,
+            );
+
+            rows_since_header += 1;
+            if rows_since_header >= 50 {
+                rows_since_header = 0;
+            }
         }
     }
 
-    println!("Training complete ({steps} steps, {iteration} iterations).");
+    let elapsed_secs = start.elapsed().as_secs();
+    println!(
+        "Training complete ({steps} steps, {iteration} iterations, elapsed {}).",
+        fmt_duration(elapsed_secs),
+    );
 
     std::fs::create_dir_all("models").expect("create models dir");
     trainer.save_policy("models/ppo_level_hold");
+}
+
+#[cfg(feature = "training")]
+fn fmt_duration(secs: u64) -> String {
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    if h > 0 {
+        format!("{}:{:02}:{:02}", h, m, s)
+    } else {
+        format!("{:02}:{:02}", m, s)
+    }
 }

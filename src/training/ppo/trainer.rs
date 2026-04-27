@@ -16,6 +16,12 @@ use super::{model::ActorCritic, buffer::{RolloutBuffer, RolloutStep}};
 // Trainer
 // ---------------------------------------------------------------------------
 
+pub struct PpoMetrics {
+    pub policy_loss: f32,
+    pub value_loss:  f32,
+    pub entropy:     f32,
+}
+
 pub struct PpoTrainer<B: AutodiffBackend> {
     pub model:      ActorCritic<B>,
     optimizer:      OptimizerAdaptor<Adam, ActorCritic<B>, B>,
@@ -61,15 +67,17 @@ impl<B: AutodiffBackend> PpoTrainer<B> {
 
     /// Collect `rollout_steps` environment interactions using the current policy.
     ///
-    /// Returns (buffer with GAE computed, mean episode return).
-    pub fn collect_rollout(&mut self) -> (RolloutBuffer, f32) {
+    /// Returns (buffer with GAE computed, mean episode return, mean episode length).
+    pub fn collect_rollout(&mut self) -> (RolloutBuffer, f32, f32) {
         let inference_model = self.model.valid();
         let inner_device = inference_model.log_std.val().device();
 
         let mut buffer = RolloutBuffer::new();
         let (mut obs, _spec) = self.env.reset();
         let mut episode_returns: Vec<f32> = Vec::new();
+        let mut episode_lengths: Vec<u32> = Vec::new();
         let mut ep_ret = 0.0_f32;
+        let mut ep_len = 0u32;
 
         for _ in 0..self.rollout_steps {
             let obs_t = obs_to_tensor::<B::InnerBackend>(&obs, &inner_device);
@@ -92,11 +100,14 @@ impl<B: AutodiffBackend> PpoTrainer<B> {
             });
 
             ep_ret += reward;
+            ep_len += 1;
             obs = next_obs;
 
             if done {
                 episode_returns.push(ep_ret);
+                episode_lengths.push(ep_len);
                 ep_ret = 0.0;
+                ep_len = 0;
                 let (reset_obs, _) = self.env.reset();
                 obs = reset_obs;
             }
@@ -119,17 +130,30 @@ impl<B: AutodiffBackend> PpoTrainer<B> {
             episode_returns.iter().sum::<f32>() / episode_returns.len() as f32
         };
 
-        (buffer, mean_return)
+        let mean_ep_len = if episode_lengths.is_empty() {
+            ep_len as f32
+        } else {
+            episode_lengths.iter().sum::<u32>() as f32 / episode_lengths.len() as f32
+        };
+
+        (buffer, mean_return, mean_ep_len)
     }
 
     /// Run PPO gradient updates over the collected buffer.
-    pub fn update(&mut self, buffer: &RolloutBuffer) {
+    ///
+    /// Returns averaged loss metrics across all minibatch updates.
+    pub fn update(&mut self, buffer: &RolloutBuffer) -> PpoMetrics {
         let n = buffer.len();
         let mb = self.minibatch;
         let lr = self.lr;
         let clip = self.clip_epsilon;
         let value_coef = self.value_coef;
         let entropy_coef = self.entropy_coef;
+
+        let mut total_policy_loss = 0.0_f32;
+        let mut total_value_loss  = 0.0_f32;
+        let mut total_entropy     = 0.0_f32;
+        let mut num_updates       = 0usize;
 
         for _epoch in 0..self.n_epochs {
             // Shuffle indices.
@@ -177,18 +201,31 @@ impl<B: AutodiffBackend> PpoTrainer<B> {
                 // Value loss (MSE).
                 let value_loss = (values_new - ret_t).powf_scalar(2.0).mean();
 
-                // Entropy bonus.
-                let entropy_loss = -entropy.mean();
+                // Mean entropy (positive; used for display before negating for loss).
+                let mean_entropy = entropy.mean();
+
+                // Extract scalar metrics before tensors are consumed.
+                total_policy_loss += policy_loss.clone().into_data().to_vec::<f32>().expect("policy_loss")[0];
+                total_value_loss  += value_loss.clone().into_data().to_vec::<f32>().expect("value_loss")[0];
+                total_entropy     += mean_entropy.clone().into_data().to_vec::<f32>().expect("entropy")[0];
+                num_updates       += 1;
 
                 // Combined loss.
                 let loss = policy_loss
                     + value_loss * value_coef
-                    + entropy_loss * entropy_coef;
+                    + (-mean_entropy) * entropy_coef;
 
                 let grads = loss.backward();
                 let grads_params = GradientsParams::from_grads(grads, &self.model);
                 self.model = self.optimizer.step(lr, self.model.clone(), grads_params);
             }
+        }
+
+        let n = num_updates as f32;
+        PpoMetrics {
+            policy_loss: total_policy_loss / n,
+            value_loss:  total_value_loss  / n,
+            entropy:     total_entropy     / n,
         }
     }
 
@@ -263,8 +300,8 @@ mod tests {
         trainer.minibatch     = 64;
         trainer.n_epochs      = 1;
 
-        let (buffer, _mean_ret) = trainer.collect_rollout();
-        trainer.update(&buffer);
+        let (buffer, _mean_ret, _ep_len) = trainer.collect_rollout();
+        let _ = trainer.update(&buffer);
 
         // All model params must be finite after one update.
         let inner = trainer.model.valid();
