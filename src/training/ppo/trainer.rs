@@ -154,7 +154,7 @@ impl<B: AutodiffBackend> PpoTrainer<B> {
                 let ret_batch: Vec<f32>  = idx.iter().map(|&i| buffer.returns[i]).collect();
 
                 let obs_t  = Tensor::<B, 2>::from_data(
-                    TensorData::new(obs_flat, vec![mb, 8]), &self.device);
+                    TensorData::new(obs_flat, vec![mb, 10]), &self.device);
                 let act_t  = Tensor::<B, 2>::from_data(
                     TensorData::new(act_flat, vec![mb, 4]), &self.device);
                 let lp_old_t = Tensor::<B, 1>::from_data(
@@ -211,7 +211,7 @@ fn obs_to_tensor<B: burn::tensor::backend::Backend>(
     obs:    &[f32],
     device: &B::Device,
 ) -> Tensor<B, 2> {
-    Tensor::from_data(TensorData::new(obs.to_vec(), vec![1, 8]), device)
+    Tensor::from_data(TensorData::new(obs.to_vec(), vec![1, 10]), device)
 }
 
 /// In-place Fisher-Yates shuffle using a linear congruential generator.
@@ -269,7 +269,7 @@ mod tests {
         // All model params must be finite after one update.
         let inner = trainer.model.valid();
         let test_obs = Tensor::<<B as AutodiffBackend>::InnerBackend, 2>::zeros(
-            [1, 8], &inner.log_std.val().device());
+            [1, 10], &inner.log_std.val().device());
         let (action, lp) = inner.sample_action(test_obs);
         for v in action.into_data().to_vec::<f32>().unwrap() {
             assert!(v.is_finite(), "action NaN after update: {v}");

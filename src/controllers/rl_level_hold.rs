@@ -57,7 +57,7 @@ impl FlightController for RlLevelHoldController {
     fn update(&mut self, state: &FlightState, _dt: f32) -> ControlInputs {
         let obs = build_obs(state, self.target_altitude, self.target_airspeed);
         let obs_t = Tensor::<InfB, 2>::from_data(
-            TensorData::new(obs, vec![1, 8]),
+            TensorData::new(obs, vec![1, 10]),
             &self.device,
         );
         // Deterministic inference: use mean action (no sampling noise).

@@ -258,7 +258,7 @@ impl TrainingEnv for LevelHoldEnv {
         (obs, reward, done, info)
     }
 
-    fn observation_dim(&self) -> usize { 8 }
+    fn observation_dim(&self) -> usize { 10 }
     fn action_dim(&self) -> usize { 4 }
 }
 
@@ -288,7 +288,7 @@ mod tests {
     #[test]
     fn dimensions_are_correct() {
         let env = LevelHoldEnv::new(1000.0, 80.0, jet_cfg());
-        assert_eq!(env.observation_dim(), 8);
+        assert_eq!(env.observation_dim(), 10);
         assert_eq!(env.action_dim(), 4);
     }
 

@@ -2,7 +2,7 @@
 
 /// One step of environment interaction collected during rollout.
 pub struct RolloutStep {
-    pub obs:      Vec<f32>,  // [8]
+    pub obs:      Vec<f32>,  // [10]
     pub action:   Vec<f32>,  // [4]  tanh-squashed, in [-1,1]
     pub log_prob: f32,
     pub reward:   f32,
@@ -92,7 +92,7 @@ mod tests {
 
     fn make_step(reward: f32, value: f32, done: bool) -> RolloutStep {
         RolloutStep {
-            obs:      vec![0.0; 8],
+            obs:      vec![0.0; 10],
             action:   vec![0.0; 4],
             log_prob: 0.0,
             reward,

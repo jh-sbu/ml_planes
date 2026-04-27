@@ -54,7 +54,7 @@ fn ppo_50_iterations_no_nan_no_reward_collapse() {
     let inner = trainer.model.valid();
     let inner_device = inner.log_std.val().device();
     let test_obs = Tensor::<<B as burn::tensor::backend::AutodiffBackend>::InnerBackend, 2>
-        ::zeros([1, 8], &inner_device);
+        ::zeros([1, 10], &inner_device);
     let (action, lp) = inner.sample_action(test_obs);
     for v in action.into_data().to_vec::<f32>().unwrap() {
         assert!(v.is_finite(), "action NaN after 50 PPO iterations: {v}");
