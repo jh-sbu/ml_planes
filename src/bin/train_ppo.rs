@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 //! PPO training binary.  Build and run with:
 //!   cargo run --no-default-features --features training --bin train_ppo
 //!
@@ -73,7 +75,7 @@ fn main() {
             id_entropy.clone(),
         ))
     } else {
-        Box::new(TuiMetricsRenderer::new(interrupter.clone(), None).persistent())
+        Box::new(TuiMetricsRenderer::new(interrupter.clone(), None))
     };
 
     // Register metrics — must happen before any update_train call.
@@ -143,6 +145,7 @@ fn main() {
     }
 
     renderer.on_train_end(None).ok();
+    drop(renderer); // restore terminal before printing to it
 
     let elapsed_secs = start.elapsed().as_secs();
     println!(
