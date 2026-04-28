@@ -31,7 +31,11 @@ fn main() {
     #[cfg(feature = "visual")]
     app.add_plugins(DefaultPlugins);
     #[cfg(not(feature = "visual"))]
-    app.add_plugins(MinimalPlugins);
+    app.add_plugins((
+        MinimalPlugins,
+        bevy::asset::AssetPlugin::default(),
+        bevy::transform::TransformPlugin,
+    ));
 
     app.add_plugins(RapierPhysicsPlugin::<NoUserData>::default());
     app.add_plugins(PlanePlugin);

@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use bevy_rapier3d::prelude::PhysicsSet;
 
 use super::ground::spawn_ground;
-use super::spawner::{detect_ground_contact, PlaneGroundContactEvent};
+use super::spawner::detect_ground_contact;
 
 #[cfg(feature = "visual")]
 use super::visual::{draw_plane_gizmos, spawn_visual_ground};
