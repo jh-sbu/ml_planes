@@ -9,7 +9,7 @@ pub struct SpawnSpec {
     pub angular_velocity: Option<Vec3>,
 }
 
-pub type Observation = Vec<f32>;
+pub type Observation = [f32; 10];
 
 #[derive(Debug, Clone, Default)]
 pub struct StepInfo {

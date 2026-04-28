@@ -1,9 +1,11 @@
 //! Rollout buffer and Generalized Advantage Estimation (GAE).
 
+use crate::training::Observation;
+
 /// One step of environment interaction collected during rollout.
 pub struct RolloutStep {
-    pub obs:      Vec<f32>,  // [10]
-    pub action:   Vec<f32>,  // [4]  tanh-squashed, in [-1,1]
+    pub obs:      Observation,
+    pub action:   [f32; 4],  // tanh-squashed, in [-1,1]
     pub log_prob: f32,
     pub reward:   f32,
     pub value:    f32,
@@ -19,10 +21,14 @@ pub struct RolloutBuffer {
 
 impl RolloutBuffer {
     pub fn new() -> Self {
+        Self::with_capacity(0)
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            steps:      Vec::new(),
-            advantages: Vec::new(),
-            returns:    Vec::new(),
+            steps:      Vec::with_capacity(capacity),
+            advantages: Vec::with_capacity(capacity),
+            returns:    Vec::with_capacity(capacity),
         }
     }
 
@@ -92,8 +98,8 @@ mod tests {
 
     fn make_step(reward: f32, value: f32, done: bool) -> RolloutStep {
         RolloutStep {
-            obs:      vec![0.0; 10],
-            action:   vec![0.0; 4],
+            obs:      [0.0; 10],
+            action:   [0.0; 4],
             log_prob: 0.0,
             reward,
             value,

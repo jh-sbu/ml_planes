@@ -154,7 +154,7 @@ impl LevelHoldEnv {
         let p = self.state.angular_velocity.x;
         let q = self.state.angular_velocity.y;
         let r = self.state.angular_velocity.z;
-        vec![
+        [
             alt_err   / 200.0,
             speed_err / 50.0,
             self.state.alpha / 0.5,

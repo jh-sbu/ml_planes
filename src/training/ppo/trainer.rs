@@ -9,7 +9,7 @@ use burn::{
     tensor::{TensorData, Tensor, backend::AutodiffBackend},
 };
 
-use crate::training::{LevelHoldEnv, TrainingEnv};
+use crate::training::{LevelHoldEnv, Observation, TrainingEnv};
 use super::{model::ActorCritic, buffer::{RolloutBuffer, RolloutStep}};
 
 // ---------------------------------------------------------------------------
@@ -72,10 +72,10 @@ impl<B: AutodiffBackend> PpoTrainer<B> {
         let inference_model = self.model.valid();
         let inner_device = inference_model.log_std.val().device();
 
-        let mut buffer = RolloutBuffer::new();
+        let mut buffer = RolloutBuffer::with_capacity(self.rollout_steps);
         let (mut obs, _spec) = self.env.reset();
-        let mut episode_returns: Vec<f32> = Vec::new();
-        let mut episode_lengths: Vec<u32> = Vec::new();
+        let mut episode_returns: Vec<f32> = Vec::with_capacity(8);
+        let mut episode_lengths: Vec<u32> = Vec::with_capacity(8);
         let mut ep_ret = 0.0_f32;
         let mut ep_len = 0u32;
 
@@ -84,15 +84,21 @@ impl<B: AutodiffBackend> PpoTrainer<B> {
             let (action_t, log_prob_t) = inference_model.sample_action(obs_t.clone());
             let value_t = inference_model.value.forward(obs_t).squeeze_dims::<1>(&[1]);
 
-            let action_vec = action_t.into_data().to_vec::<f32>().expect("action data");
+            let action_data = action_t.into_data().to_vec::<f32>().expect("action data");
+            let action = [
+                action_data[0],
+                action_data[1],
+                action_data[2],
+                action_data[3],
+            ];
             let log_prob   = log_prob_t.into_data().to_vec::<f32>().expect("log_prob data")[0];
             let value      = value_t.into_data().to_vec::<f32>().expect("value data")[0];
 
-            let (next_obs, reward, done, _info) = self.env.step(&action_vec);
+            let (next_obs, reward, done, _info) = self.env.step(&action);
 
             buffer.push(RolloutStep {
-                obs:      obs.clone(),
-                action:   action_vec,
+                obs,
+                action,
                 log_prob,
                 reward,
                 value,
@@ -141,7 +147,8 @@ impl<B: AutodiffBackend> PpoTrainer<B> {
 
     /// Run PPO gradient updates over the collected buffer.
     ///
-    /// Returns averaged loss metrics across all minibatch updates.
+    /// Returns loss metrics sampled once per epoch. Sampling every minibatch
+    /// would force a wgpu readback on each scalar metric.
     pub fn update(&mut self, buffer: &RolloutBuffer) -> PpoMetrics {
         let n = buffer.len();
         let mb = self.minibatch;
@@ -153,11 +160,14 @@ impl<B: AutodiffBackend> PpoTrainer<B> {
         let mut total_policy_loss = 0.0_f32;
         let mut total_value_loss  = 0.0_f32;
         let mut total_entropy     = 0.0_f32;
-        let mut num_updates       = 0usize;
+        let mut num_metric_samples = 0usize;
+        let mut indices: Vec<usize> = (0..n).collect();
 
         for _epoch in 0..self.n_epochs {
             // Shuffle indices.
-            let mut indices: Vec<usize> = (0..n).collect();
+            for (i, value) in indices.iter_mut().enumerate() {
+                *value = i;
+            }
             lcg_shuffle(&mut indices, &mut self.rng_seed);
 
             let num_batches = n / mb;
@@ -167,15 +177,20 @@ impl<B: AutodiffBackend> PpoTrainer<B> {
                 let idx   = &indices[start..end];
 
                 // Build batch tensors.
-                let obs_flat: Vec<f32> = idx.iter()
-                    .flat_map(|&i| buffer.steps[i].obs.iter().copied())
-                    .collect();
-                let act_flat: Vec<f32> = idx.iter()
-                    .flat_map(|&i| buffer.steps[i].action.iter().copied())
-                    .collect();
-                let lp_old: Vec<f32>   = idx.iter().map(|&i| buffer.steps[i].log_prob).collect();
-                let adv_batch: Vec<f32> = idx.iter().map(|&i| buffer.advantages[i]).collect();
-                let ret_batch: Vec<f32>  = idx.iter().map(|&i| buffer.returns[i]).collect();
+                let mut obs_flat = Vec::with_capacity(mb * 10);
+                let mut act_flat = Vec::with_capacity(mb * 4);
+                let mut lp_old = Vec::with_capacity(mb);
+                let mut adv_batch = Vec::with_capacity(mb);
+                let mut ret_batch = Vec::with_capacity(mb);
+
+                for &i in idx {
+                    let step = &buffer.steps[i];
+                    obs_flat.extend_from_slice(&step.obs);
+                    act_flat.extend_from_slice(&step.action);
+                    lp_old.push(step.log_prob);
+                    adv_batch.push(buffer.advantages[i]);
+                    ret_batch.push(buffer.returns[i]);
+                }
 
                 let obs_t  = Tensor::<B, 2>::from_data(
                     TensorData::new(obs_flat, vec![mb, 10]), &self.device);
@@ -204,11 +219,14 @@ impl<B: AutodiffBackend> PpoTrainer<B> {
                 // Mean entropy (positive; used for display before negating for loss).
                 let mean_entropy = entropy.mean();
 
-                // Extract scalar metrics before tensors are consumed.
-                total_policy_loss += policy_loss.clone().into_data().to_vec::<f32>().expect("policy_loss")[0];
-                total_value_loss  += value_loss.clone().into_data().to_vec::<f32>().expect("value_loss")[0];
-                total_entropy     += mean_entropy.clone().into_data().to_vec::<f32>().expect("entropy")[0];
-                num_updates       += 1;
+                // Extract scalar metrics only once per epoch. Each into_data()
+                // on wgpu synchronizes with the device.
+                if batch_idx + 1 == num_batches {
+                    total_policy_loss += policy_loss.clone().into_data().to_vec::<f32>().expect("policy_loss")[0];
+                    total_value_loss  += value_loss.clone().into_data().to_vec::<f32>().expect("value_loss")[0];
+                    total_entropy     += mean_entropy.clone().into_data().to_vec::<f32>().expect("entropy")[0];
+                    num_metric_samples += 1;
+                }
 
                 // Combined loss.
                 let loss = policy_loss
@@ -221,7 +239,7 @@ impl<B: AutodiffBackend> PpoTrainer<B> {
             }
         }
 
-        let n = num_updates as f32;
+        let n = num_metric_samples as f32;
         PpoMetrics {
             policy_loss: total_policy_loss / n,
             value_loss:  total_value_loss  / n,
@@ -245,10 +263,10 @@ impl<B: AutodiffBackend> PpoTrainer<B> {
 // ---------------------------------------------------------------------------
 
 fn obs_to_tensor<B: burn::tensor::backend::Backend>(
-    obs:    &[f32],
+    obs:    &Observation,
     device: &B::Device,
 ) -> Tensor<B, 2> {
-    Tensor::from_data(TensorData::new(obs.to_vec(), vec![1, 10]), device)
+    Tensor::from_floats([*obs], device)
 }
 
 /// In-place Fisher-Yates shuffle using a linear congruential generator.
