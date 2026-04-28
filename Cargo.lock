@@ -6167,6 +6167,7 @@ dependencies = [
  "bevy_egui",
  "bevy_rapier3d",
  "burn",
+ "naga 26.0.0",
  "ron 0.8.1",
  "serde",
 ]
