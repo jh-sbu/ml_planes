@@ -4,10 +4,13 @@
 //!   cargo run --no-default-features --features training --bin train_ppo
 //!
 //! Trains a PPO level-hold controller for 2 000 000 environment steps and
-//! saves the policy to `models/level_hold/ppo_level_hold.mpk`.
+//! saves the policy under `models/level_hold/`.
 //!
 //! Flags:
-//!   --plain   Print the traditional metrics table instead of the TUI display.
+//!   --plain           Print the traditional metrics table instead of the TUI display.
+//!   --output <stem>   Save the model to `models/level_hold/<stem>.mpk`.
+//!                     If omitted, auto-increments: ppo_level_hold_1.mpk,
+//!                     ppo_level_hold_2.mpk, … (never overwrites an existing file).
 
 #[cfg(not(feature = "training"))]
 fn main() {
@@ -35,6 +38,27 @@ fn main() {
     type B = Autodiff<Wgpu>;
 
     let plain = std::env::args().any(|a| a == "--plain");
+
+    let output_stem: Option<String> = {
+        let args: Vec<String> = std::env::args().collect();
+        args.windows(2)
+            .find(|w| w[0] == "--output")
+            .map(|w| w[1].clone())
+    };
+
+    let save_path = match output_stem {
+        Some(stem) => format!("models/level_hold/{stem}"),
+        None => {
+            let mut n = 1u32;
+            loop {
+                let candidate = format!("models/level_hold/ppo_level_hold_{n}");
+                if !std::path::Path::new(&format!("{candidate}.mpk")).exists() {
+                    break candidate;
+                }
+                n += 1;
+            }
+        }
+    };
 
     // Generic jet values matching assets/planes/generic_jet.plane.ron
     let cfg = PlaneConfig {
@@ -153,8 +177,9 @@ fn main() {
         fmt_duration(elapsed_secs),
     );
 
-    std::fs::create_dir_all("models/level_hold").expect("create models/level_hold dir");
-    trainer.save_policy("models/level_hold/ppo_level_hold");
+    let save_dir = std::path::Path::new(&save_path).parent().unwrap_or(std::path::Path::new("models"));
+    std::fs::create_dir_all(save_dir).expect("create model output dir");
+    trainer.save_policy(&save_path);
 }
 
 #[cfg(feature = "training")]
