@@ -3,9 +3,10 @@ use bevy_egui::{egui, EguiContexts};
 use std::f32::consts::PI;
 
 use crate::camera::CameraMode;
-use crate::controllers::{ActiveController, AscentController, LevelHoldController, ControllerKind, PlaneTuning, SelectedTuningProfile};
+use crate::controllers::{ActiveController, AscentController, LevelHoldController, ControllerKind, ModelLibrary, PlaneTuning, SelectedModel, SelectedTuningProfile};
 use crate::plane::{ControlInputs, FlightState, PlaneIndex, PlaneTuningHandle};
 
+#[allow(unused_variables, unused_mut)]
 pub fn draw_flight_hud(
     mode: Res<CameraMode>,
     mut contexts: EguiContexts,
@@ -16,9 +17,11 @@ pub fn draw_flight_hud(
         &mut ActiveController,
         Option<&mut SelectedTuningProfile>,
         Option<&PlaneTuningHandle>,
+        Option<&mut SelectedModel>,
     )>,
     all_planes: Query<(Entity, &PlaneIndex), With<FlightState>>,
     tuning_assets: Res<Assets<PlaneTuning>>,
+    model_lib: Res<ModelLibrary>,
 ) {
     // Determine which entity to display
     let result = match *mode {
@@ -26,7 +29,7 @@ pub fn draw_flight_hud(
         CameraMode::FreeLook => plane_query.iter_mut().next(),
     };
 
-    let Some((state, inputs, mut kind, mut controller, profile, tuning_handle)) = result else { return };
+    let Some((state, inputs, mut kind, mut controller, profile, tuning_handle, mut selected_model)) = result else { return };
 
     let Ok(ctx) = contexts.ctx_mut() else { return };
 
@@ -118,7 +121,42 @@ pub fn draw_flight_hud(
                     }
                 }
             }
+
+            #[cfg(feature = "training")]
+            if *kind == ControllerKind::RlLevelHold {
+                use crate::controllers::RlLevelHoldController;
+
+                if let Some(rl) = controller.0.as_any_mut().downcast_mut::<RlLevelHoldController>() {
+                    let tgt_kts = rl.target_airspeed * 1.944;
+                    ui.label(format!("Tgt Alt:  {:.0} m", rl.target_altitude));
+                    ui.label(format!("Tgt Spd:  {:.1} m/s  ({:.0} kts)", rl.target_airspeed, tgt_kts));
+                }
+
+                if let Some(ref mut sel) = selected_model {
+                    let dir_key = kind.model_dir().unwrap_or("level_hold");
+                    if let Some(available) = model_lib.0.get(dir_key) {
+                        let current_path = sel.0.clone();
+                        let mut chosen = current_path.clone();
+                        egui::ComboBox::from_label("Model")
+                            .selected_text(path_stem(&chosen))
+                            .show_ui(ui, |ui| {
+                                for path in available {
+                                    ui.selectable_value(&mut chosen, path.clone(), path_stem(path));
+                                }
+                            });
+                        if chosen != current_path {
+                            sel.0 = chosen;
+                        }
+                    }
+                }
+            }
         });
+}
+
+/// Returns the filename stem from a path like `"models/level_hold/ppo_level_hold"`.
+#[cfg(feature = "training")]
+fn path_stem(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
 }
 
 fn add_surface_bar(ui: &mut egui::Ui, label: &str, value: f32, range: std::ops::RangeInclusive<f32>) {

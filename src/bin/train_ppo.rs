@@ -4,7 +4,7 @@
 //!   cargo run --no-default-features --features training --bin train_ppo
 //!
 //! Trains a PPO level-hold controller for 2 000 000 environment steps and
-//! saves the policy to `models/ppo_level_hold.mpk`.
+//! saves the policy to `models/level_hold/ppo_level_hold.mpk`.
 //!
 //! Flags:
 //!   --plain   Print the traditional metrics table instead of the TUI display.
@@ -153,8 +153,8 @@ fn main() {
         fmt_duration(elapsed_secs),
     );
 
-    std::fs::create_dir_all("models").expect("create models dir");
-    trainer.save_policy("models/ppo_level_hold");
+    std::fs::create_dir_all("models/level_hold").expect("create models/level_hold dir");
+    trainer.save_policy("models/level_hold/ppo_level_hold");
 }
 
 #[cfg(feature = "training")]

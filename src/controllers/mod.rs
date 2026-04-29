@@ -6,6 +6,7 @@ pub mod manual;
 pub mod pid;
 #[cfg(feature = "training")]
 pub mod rl_level_hold;
+pub mod selected_model;
 pub mod traits;
 pub mod tuning;
 pub mod wingman;
@@ -18,6 +19,7 @@ pub use manual::ManualController;
 pub use pid::PidController;
 #[cfg(feature = "training")]
 pub use rl_level_hold::RlLevelHoldController;
+pub use selected_model::{ModelLibrary, SelectedModel};
 pub use traits::FlightController;
 pub use tuning::{ControllerTuning, LevelHoldTuning, PlaneTuning, SelectedTuningProfile};
 pub use wingman::{feed_leader_state, FormationOffset, LeaderRef, LeaderState, WingmanController};

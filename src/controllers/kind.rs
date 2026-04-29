@@ -20,6 +20,11 @@ pub enum ControllerKind {
     /// explicitly via `AscentController::new()`; `build()` falls back to
     /// `LevelHold` (no target altitude is available in the generic factory).
     Ascent,
+    /// ML-based level hold (PPO policy). Controller must be constructed
+    /// explicitly via `RlLevelHoldController::load()`; `build()` falls back to
+    /// `LevelHold` (generic factory cannot produce an RL controller without a
+    /// model path).
+    RlLevelHold,
 }
 
 impl ControllerKind {
@@ -27,10 +32,20 @@ impl ControllerKind {
 
     pub fn name(self) -> &'static str {
         match self {
-            ControllerKind::Manual    => "Manual",
-            ControllerKind::LevelHold => "Level Hold",
-            ControllerKind::Wingman   => "Wingman",
-            ControllerKind::Ascent    => "Ascent",
+            ControllerKind::Manual      => "Manual",
+            ControllerKind::LevelHold   => "Level Hold",
+            ControllerKind::Wingman     => "Wingman",
+            ControllerKind::Ascent      => "Ascent",
+            ControllerKind::RlLevelHold => "RL Level Hold",
+        }
+    }
+
+    /// Returns the `models/` subdirectory name for ML controller kinds, or
+    /// `None` for non-ML controllers.
+    pub fn model_dir(self) -> Option<&'static str> {
+        match self {
+            ControllerKind::RlLevelHold => Some("level_hold"),
+            _ => None,
         }
     }
 
@@ -66,7 +81,8 @@ impl ControllerKind {
         match self {
             ControllerKind::Manual => Box::new(ManualController::new()),
             ControllerKind::Ascent => Box::new(AscentController::new(state, state.altitude + 1000.0)),
-            ControllerKind::LevelHold | ControllerKind::Wingman => match tuning {
+            // RlLevelHold requires a model path — fall back to LevelHold like Wingman.
+            ControllerKind::LevelHold | ControllerKind::Wingman | ControllerKind::RlLevelHold => match tuning {
                 Some(t) => t.build(state, prev_inputs),
                 None    => Box::new(LevelHoldController::from_state(state, prev_inputs)),
             },

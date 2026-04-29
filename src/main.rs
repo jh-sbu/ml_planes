@@ -2,11 +2,11 @@ use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
 
 use ml_planes::controllers::{
-    ControllerKind, LevelHoldController, WingmanController,
+    ControllerKind, LevelHoldController, ModelLibrary, WingmanController,
     FormationOffset, LeaderRef, LeaderState,
 };
 #[cfg(feature = "training")]
-use ml_planes::controllers::RlLevelHoldController;
+use ml_planes::controllers::{RlLevelHoldController, SelectedModel};
 use ml_planes::environment::{EnvironmentPlugin, spawn_plane};
 use ml_planes::plane::{config::PlaneConfig, FlightState, PlaneIndex, PlanePlugin};
 use ml_planes::training::SpawnSpec;
@@ -49,13 +49,18 @@ fn main() {
         app.add_plugins(UiPlugin);
     }
 
+    app.init_resource::<ModelLibrary>();
     app.add_systems(Startup, setup);
+    #[cfg(feature = "training")]
+    app.add_systems(Startup, scan_models);
 
     #[cfg(feature = "visual")]
     app.add_systems(Update, (poll_controller_inputs, switch_controller));
 
     #[cfg(feature = "visual")]
     app.add_systems(PostUpdate, apply_controller_switch);
+    #[cfg(all(feature = "visual", feature = "training"))]
+    app.add_systems(PostUpdate, apply_model_switch);
 
     app.run();
 }
@@ -150,7 +155,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     // --- Optional RL comparison plane (requires `training` feature + trained weights) ---
     #[cfg(feature = "training")]
     {
-        let model_path = "models/ppo_level_hold";
+        let model_path = "models/level_hold/ppo_level_hold";
         if std::path::Path::new(&format!("{model_path}.mpk")).exists() {
             match RlLevelHoldController::load(model_path, 1000.0, 100.0) {
                 Ok(rl_ctrl) => {
@@ -165,11 +170,13 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
                             ..Default::default()
                         },
                         Box::new(rl_ctrl),
-                        ControllerKind::LevelHold,
+                        ControllerKind::RlLevelHold,
                         &cfg,
                     );
-                    commands.entity(rl_plane).insert(PlaneIndex(3));
-                    println!("RL plane spawned — loaded from {model_path}.mpk");
+                    commands.entity(rl_plane).insert((
+                        PlaneIndex(3),
+                        SelectedModel(model_path.to_string()),
+                    ));
                 }
                 Err(e) => eprintln!("Failed to load RL model from {model_path}.mpk: {e}"),
             }
@@ -199,6 +206,56 @@ fn switch_controller(
         for mut kind in query.iter_mut() {
             let next = kind.next();
             kind.set_if_neq(next);
+        }
+    }
+}
+
+/// Scan `models/<category>/` subdirectories at startup and populate `ModelLibrary`.
+#[cfg(feature = "training")]
+fn scan_models(mut commands: Commands) {
+    let mut lib: std::collections::HashMap<String, Vec<String>> = Default::default();
+    if let Ok(categories) = std::fs::read_dir("models/") {
+        for cat in categories.flatten() {
+            if !cat.file_type().map(|t| t.is_dir()).unwrap_or(false) { continue; }
+            let cat_name = match cat.file_name().into_string() {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            if let Ok(files) = std::fs::read_dir(cat.path()) {
+                let mut stems: Vec<String> = files.flatten()
+                    .filter_map(|f| {
+                        let name = f.file_name().into_string().ok()?;
+                        let stem = name.strip_suffix(".mpk")?;
+                        Some(format!("models/{cat_name}/{stem}"))
+                    })
+                    .collect();
+                stems.sort();
+                if !stems.is_empty() {
+                    lib.insert(cat_name, stems);
+                }
+            }
+        }
+    }
+    commands.insert_resource(ModelLibrary(lib));
+}
+
+/// Reload `ActiveController` whenever `SelectedModel` changes (HUD model dropdown).
+#[cfg(all(feature = "visual", feature = "training"))]
+fn apply_model_switch(
+    mut query: Query<
+        (&mut ActiveController, &SelectedModel),
+        Changed<SelectedModel>,
+    >,
+) {
+    for (mut ctrl, sel) in query.iter_mut() {
+        let (target_alt, target_spd) = ctrl.0
+            .as_any_mut()
+            .downcast_mut::<RlLevelHoldController>()
+            .map(|r| (r.target_altitude, r.target_airspeed))
+            .unwrap_or((1000.0, 100.0));
+        match RlLevelHoldController::load(&sel.0, target_alt, target_spd) {
+            Ok(new_ctrl) => ctrl.0 = Box::new(new_ctrl),
+            Err(e) => eprintln!("Failed to load model {}: {e}", sel.0),
         }
     }
 }
