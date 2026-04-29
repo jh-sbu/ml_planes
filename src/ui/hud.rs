@@ -90,8 +90,21 @@ pub fn draw_flight_hud(
 
             if *kind == ControllerKind::Ascent {
                 if let Some(ascent) = controller.0.as_any_mut().downcast_mut::<AscentController>() {
+                    let prev = ascent.target_altitude;
+                    ui.horizontal(|ui| {
+                        ui.label("Target Alt:");
+                        ui.add(
+                            egui::DragValue::new(&mut ascent.target_altitude)
+                                .speed(10.0)
+                                .range(100.0..=15000.0)
+                                .suffix(" m"),
+                        );
+                    });
+                    if ascent.target_altitude != prev {
+                        ascent.complete = false;
+                    }
                     let status = if ascent.complete { "Complete" } else { "Climbing" };
-                    ui.label(format!("Target: {:.0} m — {}", ascent.target_altitude, status));
+                    ui.label(format!("Status: {}", status));
                 }
             }
 
