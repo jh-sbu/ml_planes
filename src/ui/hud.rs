@@ -110,9 +110,26 @@ pub fn draw_flight_hud(
 
             if *kind == ControllerKind::LevelHold {
                 if let Some(lh) = controller.0.as_any_mut().downcast_mut::<LevelHoldController>() {
+                    ui.horizontal(|ui| {
+                        ui.label("Target Alt:");
+                        ui.add(
+                            egui::DragValue::new(&mut lh.target_altitude)
+                                .speed(10.0)
+                                .range(100.0..=15000.0)
+                                .suffix(" m"),
+                        );
+                    });
                     let tgt_kts = lh.target_airspeed * 1.944;
-                    ui.label(format!("Tgt Alt:  {:.0} m", lh.target_altitude));
-                    ui.label(format!("Tgt Spd:  {:.1} m/s  ({:.0} kts)", lh.target_airspeed, tgt_kts));
+                    ui.horizontal(|ui| {
+                        ui.label("Target Spd:");
+                        ui.add(
+                            egui::DragValue::new(&mut lh.target_airspeed)
+                                .speed(1.0)
+                                .range(30.0..=200.0)
+                                .suffix(" m/s"),
+                        );
+                        ui.label(format!("({:.0} kts)", tgt_kts));
+                    });
                 }
                 if let (Some(ref mut profile), Some(handle)) = (profile, tuning_handle) {
                     if let Some(pt) = tuning_assets.get(&handle.0) {
@@ -141,18 +158,49 @@ pub fn draw_flight_hud(
 
                 // During the transition frames before the RL model is loaded the active
                 // controller may still be a LevelHoldController (fallback from build()); try
-                // both so targets are always visible regardless of which is present.
-                let tgt = if let Some(rl) = controller.0.as_any_mut().downcast_mut::<RlLevelHoldController>() {
-                    Some((rl.target_altitude, rl.target_airspeed))
+                // both so targets are always editable regardless of which is present.
+                if let Some(rl) = controller.0.as_any_mut().downcast_mut::<RlLevelHoldController>() {
+                    ui.horizontal(|ui| {
+                        ui.label("Target Alt:");
+                        ui.add(
+                            egui::DragValue::new(&mut rl.target_altitude)
+                                .speed(10.0)
+                                .range(100.0..=15000.0)
+                                .suffix(" m"),
+                        );
+                    });
+                    let tgt_kts = rl.target_airspeed * 1.944;
+                    ui.horizontal(|ui| {
+                        ui.label("Target Spd:");
+                        ui.add(
+                            egui::DragValue::new(&mut rl.target_airspeed)
+                                .speed(1.0)
+                                .range(30.0..=200.0)
+                                .suffix(" m/s"),
+                        );
+                        ui.label(format!("({:.0} kts)", tgt_kts));
+                    });
                 } else if let Some(lh) = controller.0.as_any_mut().downcast_mut::<LevelHoldController>() {
-                    Some((lh.target_altitude, lh.target_airspeed))
-                } else {
-                    None
-                };
-                if let Some((tgt_alt, tgt_spd)) = tgt {
-                    let tgt_kts = tgt_spd * 1.944;
-                    ui.label(format!("Tgt Alt:  {:.0} m", tgt_alt));
-                    ui.label(format!("Tgt Spd:  {:.1} m/s  ({:.0} kts)", tgt_spd, tgt_kts));
+                    ui.horizontal(|ui| {
+                        ui.label("Target Alt:");
+                        ui.add(
+                            egui::DragValue::new(&mut lh.target_altitude)
+                                .speed(10.0)
+                                .range(100.0..=15000.0)
+                                .suffix(" m"),
+                        );
+                    });
+                    let tgt_kts = lh.target_airspeed * 1.944;
+                    ui.horizontal(|ui| {
+                        ui.label("Target Spd:");
+                        ui.add(
+                            egui::DragValue::new(&mut lh.target_airspeed)
+                                .speed(1.0)
+                                .range(30.0..=200.0)
+                                .suffix(" m/s"),
+                        );
+                        ui.label(format!("({:.0} kts)", tgt_kts));
+                    });
                 }
 
                 if let Some(ref mut sel) = selected_model {
