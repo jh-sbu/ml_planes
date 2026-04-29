@@ -28,7 +28,11 @@ pub enum ControllerKind {
 }
 
 impl ControllerKind {
+    #[cfg(not(feature = "training"))]
     pub const ALL: &'static [ControllerKind] = &[Self::Manual, Self::LevelHold, Self::Ascent];
+
+    #[cfg(feature = "training")]
+    pub const ALL: &'static [ControllerKind] = &[Self::Manual, Self::LevelHold, Self::Ascent, Self::RlLevelHold];
 
     pub fn name(self) -> &'static str {
         match self {

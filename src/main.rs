@@ -60,7 +60,10 @@ fn main() {
     #[cfg(feature = "visual")]
     app.add_systems(PostUpdate, apply_controller_switch);
     #[cfg(all(feature = "visual", feature = "training"))]
-    app.add_systems(PostUpdate, apply_model_switch);
+    app.add_systems(PostUpdate, (
+        apply_rl_controller_switch.after(apply_controller_switch),
+        apply_model_switch,
+    ));
 
     app.run();
 }
@@ -256,6 +259,42 @@ fn apply_model_switch(
         match RlLevelHoldController::load(&sel.0, target_alt, target_spd) {
             Ok(new_ctrl) => ctrl.0 = Box::new(new_ctrl),
             Err(e) => eprintln!("Failed to load model {}: {e}", sel.0),
+        }
+    }
+}
+
+/// When `ControllerKind` changes to `RlLevelHold`, load the actual RL model,
+/// overriding the `LevelHold` fallback that `apply_controller_switch` produces.
+/// If the entity lacks `SelectedModel`, inserts a default so `apply_model_switch`
+/// loads the controller on the next frame.
+#[cfg(all(feature = "visual", feature = "training"))]
+fn apply_rl_controller_switch(
+    mut commands: Commands,
+    mut query: Query<
+        (Entity, &FlightState, &mut ActiveController, Ref<ControllerKind>, Option<&SelectedModel>),
+        Changed<ControllerKind>,
+    >,
+    model_lib: Res<ModelLibrary>,
+) {
+    for (entity, state, mut controller, kind, sel) in query.iter_mut() {
+        if *kind != ControllerKind::RlLevelHold || kind.is_added() {
+            continue;
+        }
+        if let Some(sel) = sel {
+            let (tgt_alt, tgt_spd) = controller.0
+                .as_any_mut()
+                .downcast_mut::<RlLevelHoldController>()
+                .map(|r| (r.target_altitude, r.target_airspeed))
+                .unwrap_or((state.altitude, state.airspeed));
+            match RlLevelHoldController::load(&sel.0, tgt_alt, tgt_spd) {
+                Ok(rl) => controller.0 = Box::new(rl),
+                Err(e) => eprintln!("Failed to load RL model '{}': {e}", sel.0),
+            }
+        } else if let Some(paths) = model_lib.0.get("level_hold") {
+            if let Some(path) = paths.first() {
+                commands.entity(entity).insert(SelectedModel(path.clone()));
+                // apply_model_switch will load the controller next frame
+            }
         }
     }
 }

@@ -126,10 +126,20 @@ pub fn draw_flight_hud(
             if *kind == ControllerKind::RlLevelHold {
                 use crate::controllers::RlLevelHoldController;
 
-                if let Some(rl) = controller.0.as_any_mut().downcast_mut::<RlLevelHoldController>() {
-                    let tgt_kts = rl.target_airspeed * 1.944;
-                    ui.label(format!("Tgt Alt:  {:.0} m", rl.target_altitude));
-                    ui.label(format!("Tgt Spd:  {:.1} m/s  ({:.0} kts)", rl.target_airspeed, tgt_kts));
+                // During the transition frames before the RL model is loaded the active
+                // controller may still be a LevelHoldController (fallback from build()); try
+                // both so targets are always visible regardless of which is present.
+                let tgt = if let Some(rl) = controller.0.as_any_mut().downcast_mut::<RlLevelHoldController>() {
+                    Some((rl.target_altitude, rl.target_airspeed))
+                } else if let Some(lh) = controller.0.as_any_mut().downcast_mut::<LevelHoldController>() {
+                    Some((lh.target_altitude, lh.target_airspeed))
+                } else {
+                    None
+                };
+                if let Some((tgt_alt, tgt_spd)) = tgt {
+                    let tgt_kts = tgt_spd * 1.944;
+                    ui.label(format!("Tgt Alt:  {:.0} m", tgt_alt));
+                    ui.label(format!("Tgt Spd:  {:.1} m/s  ({:.0} kts)", tgt_spd, tgt_kts));
                 }
 
                 if let Some(ref mut sel) = selected_model {
