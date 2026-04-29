@@ -30,7 +30,11 @@ pub fn cycle_camera_mode(
     mut mode: ResMut<CameraMode>,
     planes: Query<(Entity, &PlaneIndex), With<FlightState>>,
 ) {
-    if !keys.just_pressed(KeyCode::Tab) {
+    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    let forward = keys.just_pressed(KeyCode::Tab) && !shift;
+    let backward = keys.just_pressed(KeyCode::Tab) && shift;
+
+    if !forward && !backward {
         return;
     }
 
@@ -38,19 +42,26 @@ pub fn cycle_camera_mode(
     pairs.sort_by_key(|&(_, i)| i);
     let sorted: Vec<Entity> = pairs.into_iter().map(|(e, _)| e).collect();
 
-    *mode = match *mode {
-        CameraMode::FreeLook => {
-            if let Some(&first) = sorted.first() {
-                CameraMode::Follow(first)
-            } else {
-                CameraMode::FreeLook
+    *mode = if forward {
+        match *mode {
+            CameraMode::FreeLook => sorted.first().copied().map(CameraMode::Follow).unwrap_or(CameraMode::FreeLook),
+            CameraMode::Follow(current) => {
+                let idx = sorted.iter().position(|&e| e == current);
+                match idx {
+                    Some(i) if i + 1 < sorted.len() => CameraMode::Follow(sorted[i + 1]),
+                    _ => CameraMode::FreeLook,
+                }
             }
         }
-        CameraMode::Follow(current) => {
-            let idx = sorted.iter().position(|&e| e == current);
-            match idx {
-                Some(i) if i + 1 < sorted.len() => CameraMode::Follow(sorted[i + 1]),
-                _ => CameraMode::FreeLook,
+    } else {
+        match *mode {
+            CameraMode::FreeLook => sorted.last().copied().map(CameraMode::Follow).unwrap_or(CameraMode::FreeLook),
+            CameraMode::Follow(current) => {
+                let idx = sorted.iter().position(|&e| e == current);
+                match idx {
+                    Some(0) | None => CameraMode::FreeLook,
+                    Some(i) => CameraMode::Follow(sorted[i - 1]),
+                }
             }
         }
     };
