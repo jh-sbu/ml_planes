@@ -1,4 +1,6 @@
 mod ground;
+#[cfg(feature = "visual")]
+mod grid_material;
 mod plugin;
 mod spawner;
 #[cfg(feature = "visual")]
