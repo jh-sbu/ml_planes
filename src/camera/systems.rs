@@ -136,6 +136,7 @@ pub fn handle_follow_camera_input(
 
 pub fn update_follow_camera(
     mode: Res<CameraMode>,
+    time: Res<Time>,
     target_query: Query<&Transform, Without<Camera3d>>,
     mut camera_query: Query<(&mut Transform, &FollowCamera), With<Camera3d>>,
 ) {
@@ -149,10 +150,41 @@ pub fn update_follow_camera(
 
     let horiz = follow.distance * follow.pitch.cos();
     let vert = follow.distance * follow.pitch.sin();
-    let local_offset = Vec3::new(horiz * follow.yaw.sin(), vert, horiz * follow.yaw.cos());
+    // Body frame: −X = behind (nose), +Y = right wing, +Z = up
+    let local_offset = Vec3::new(-horiz * follow.yaw.cos(), horiz * follow.yaw.sin(), vert);
     let offset = target_rot * local_offset;
     let camera_pos = target_pos + offset;
 
-    cam_transform.translation = cam_transform.translation.lerp(camera_pos, 0.1);
+    let alpha = 1.0 - (-8.0_f32 * time.delta_secs()).exp();
+    cam_transform.translation = cam_transform.translation.lerp(camera_pos, alpha);
     cam_transform.look_at(target_pos, Vec3::Y);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::f32::consts::FRAC_PI_2;
+
+    fn orbit_offset(yaw: f32, pitch: f32, distance: f32) -> Vec3 {
+        let horiz = distance * pitch.cos();
+        let vert = distance * pitch.sin();
+        Vec3::new(-horiz * yaw.cos(), horiz * yaw.sin(), vert)
+    }
+
+    #[test]
+    fn default_offset_is_behind_and_above() {
+        let follow = FollowCamera::default();
+        let offset = orbit_offset(follow.yaw, follow.pitch, follow.distance);
+        assert!((offset.x + 30.0).abs() < 0.1, "x={} expected≈-30", offset.x);
+        assert!(offset.y.abs() < 0.1, "y={} expected≈0", offset.y);
+        assert!((offset.z - 10.0).abs() < 0.1, "z={} expected≈10", offset.z);
+    }
+
+    #[test]
+    fn yaw_90_puts_camera_to_right() {
+        let follow = FollowCamera { yaw: FRAC_PI_2, ..FollowCamera::default() };
+        let offset = orbit_offset(follow.yaw, follow.pitch, follow.distance);
+        assert!(offset.x.abs() < 0.1, "x={} expected≈0", offset.x);
+        assert!(offset.y > 0.0, "y={} expected>0 (right side)", offset.y);
+    }
 }
