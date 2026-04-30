@@ -47,10 +47,16 @@ impl Lcg {
         self.0 = self.0
             .wrapping_mul(6_364_136_223_846_793_005)
             .wrapping_add(1_442_695_040_888_963_407);
-        let frac = ((self.0 >> 33) as f32) / (u32::MAX as f32);
+        let frac = ((self.0 >> 32) as u32 as f32) / (u32::MAX as f32);
         min + frac * (max - min)
     }
 }
+
+// Domain-randomization ranges applied at every reset.
+const ROLL_RANGE:    f32 = 10.0 * std::f32::consts::PI / 180.0; // ±10°
+const PITCH_RANGE:   f32 =  5.0 * std::f32::consts::PI / 180.0; // ±5°
+const ANG_VEL_RANGE: f32 =  5.0 * std::f32::consts::PI / 180.0; // ±5°/s
+const VVEL_RANGE:    f32 =  2.0;                                  // ±2 m/s
 
 // ---------------------------------------------------------------------------
 // LevelHoldEnv
@@ -218,15 +224,28 @@ impl TrainingEnv for LevelHoldEnv {
             *self.airspeed_spawn_range.start(),
             *self.airspeed_spawn_range.end(),
         );
+        let droll  = self.rng.next_f32(-ROLL_RANGE,    ROLL_RANGE);
+        let dpitch = self.rng.next_f32(-PITCH_RANGE,   PITCH_RANGE);
+        let dp     = self.rng.next_f32(-ANG_VEL_RANGE, ANG_VEL_RANGE);
+        let dq     = self.rng.next_f32(-ANG_VEL_RANGE, ANG_VEL_RANGE);
+        let dr     = self.rng.next_f32(-ANG_VEL_RANGE, ANG_VEL_RANGE);
+        let dvv    = self.rng.next_f32(-VVEL_RANGE,    VVEL_RANGE);
 
-        // Level-flight attitude: body +Z (up) aligns with world +Y (up).
-        let attitude = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+        // Base level-flight attitude: body +Z (up) aligns with world +Y (up).
+        // Roll (body X) and pitch (body Y) perturbations are applied in body frame.
+        let base_attitude = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+        let attitude = (base_attitude
+            * Quat::from_rotation_x(droll)
+            * Quat::from_rotation_y(dpitch))
+            .normalize();
+
+        let ang_vel = Vec3::new(dp, dq, dr);
 
         self.state = FlightState {
             position:         Vec3::new(0.0, spawn_alt, 0.0),
-            velocity:         Vec3::new(spawn_spd, 0.0, 0.0),
+            velocity:         Vec3::new(spawn_spd, dvv, 0.0),
             attitude,
-            angular_velocity: Vec3::ZERO,
+            angular_velocity: ang_vel,
             alpha:            0.0,
             beta:             0.0,
             airspeed:         spawn_spd,
@@ -239,7 +258,7 @@ impl TrainingEnv for LevelHoldEnv {
             position:         Some(self.state.position),
             velocity:         Some(self.state.velocity),
             attitude:         Some(attitude),
-            angular_velocity: Some(Vec3::ZERO),
+            angular_velocity: Some(ang_vel),
         };
 
         (self.build_observation(), spawn_spec)
