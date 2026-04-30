@@ -7,10 +7,11 @@
 //! saves the policy under `models/level_hold/`.
 //!
 //! Flags:
-//!   --plain           Print the traditional metrics table instead of the TUI display.
-//!   --output <stem>   Save the model to `models/level_hold/<stem>.mpk`.
-//!                     If omitted, auto-increments: ppo_level_hold_1.mpk,
-//!                     ppo_level_hold_2.mpk, … (never overwrites an existing file).
+//!   --plain                   Print the traditional metrics table instead of the TUI display.
+//!   --output <stem>           Save the model to `models/level_hold/<stem>.mpk`.
+//!                             If omitted, auto-increments: ppo_level_hold_1.mpk,
+//!                             ppo_level_hold_2.mpk, … (never overwrites an existing file).
+//!   --backend <wgpu|ndarray>  Compute backend (default: wgpu).
 
 #[cfg(not(feature = "training"))]
 fn main() {
@@ -20,31 +21,20 @@ fn main() {
 
 #[cfg(feature = "training")]
 fn main() {
-    use std::sync::Arc;
-    use std::time::Instant;
-
-    use burn::backend::{Autodiff, Wgpu};
-    use burn::train::Interrupter;
-    use burn::train::metric::{MetricAttributes, MetricDefinition, MetricId, NumericAttributes};
-    use burn::train::renderer::{MetricsRenderer, TrainingProgress};
-    use burn::train::renderer::tui::TuiMetricsRenderer;
-    use burn::data::dataloader::Progress;
-    use bevy::math::Vec3;
-
-    use ml_planes::plane::config::PlaneConfig;
-    use ml_planes::training::LevelHoldEnv;
-    use ml_planes::training::ppo::PpoTrainer;
-
-    type B = Autodiff<Wgpu>;
+    use burn::backend::{Autodiff, NdArray, Wgpu};
 
     let plain = std::env::args().any(|a| a == "--plain");
 
-    let output_stem: Option<String> = {
-        let args: Vec<String> = std::env::args().collect();
-        args.windows(2)
-            .find(|w| w[0] == "--output")
-            .map(|w| w[1].clone())
-    };
+    let args: Vec<String> = std::env::args().collect();
+
+    let output_stem: Option<String> = args.windows(2)
+        .find(|w| w[0] == "--output")
+        .map(|w| w[1].clone());
+
+    let backend_str: String = args.windows(2)
+        .find(|w| w[0] == "--backend")
+        .map(|w| w[1].clone())
+        .unwrap_or_else(|| "wgpu".to_string());
 
     let save_path = match output_stem {
         Some(stem) => format!("models/level_hold/{stem}"),
@@ -60,6 +50,32 @@ fn main() {
         }
     };
 
+    match backend_str.as_str() {
+        "ndarray" | "cpu" => run::<Autodiff<NdArray>>(plain, save_path),
+        _                  => run::<Autodiff<Wgpu>>(plain, save_path),
+    }
+}
+
+#[cfg(feature = "training")]
+fn run<B>(plain: bool, save_path: String)
+where
+    B: burn::tensor::backend::AutodiffBackend,
+    B::Device: Default,
+{
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    use burn::train::Interrupter;
+    use burn::train::metric::{MetricAttributes, MetricDefinition, MetricId, NumericAttributes};
+    use burn::train::renderer::{MetricsRenderer, TrainingProgress};
+    use burn::train::renderer::tui::TuiMetricsRenderer;
+    use burn::data::dataloader::Progress;
+    use bevy::math::Vec3;
+
+    use ml_planes::plane::config::PlaneConfig;
+    use ml_planes::training::LevelHoldEnv;
+    use ml_planes::training::ppo::PpoTrainer;
+
     // Generic jet values matching assets/planes/generic_jet.plane.ron
     let cfg = PlaneConfig {
         wing_area: 20.0, mean_chord: 2.0, wing_span: 10.0,
@@ -74,18 +90,18 @@ fn main() {
     };
     let env = LevelHoldEnv::new(1000.0, 100.0, cfg);
 
-    let device: <B as burn::tensor::backend::Backend>::Device = Default::default();
+    let device: B::Device = Default::default();
     let trainer = PpoTrainer::<B>::new(env, device);
 
     let total_timesteps: usize = 2_000_000;
     let total_iterations = total_timesteps.div_ceil(trainer.rollout_steps);
 
     // --- metric IDs ---
-    let id_mean_return  = MetricId::new(Arc::new("mean_return".to_string()));
-    let id_ep_len       = MetricId::new(Arc::new("ep_len".to_string()));
-    let id_policy_loss  = MetricId::new(Arc::new("policy_loss".to_string()));
-    let id_value_loss   = MetricId::new(Arc::new("value_loss".to_string()));
-    let id_entropy      = MetricId::new(Arc::new("entropy".to_string()));
+    let id_mean_return   = MetricId::new(Arc::new("mean_return".to_string()));
+    let id_ep_len        = MetricId::new(Arc::new("ep_len".to_string()));
+    let id_policy_loss   = MetricId::new(Arc::new("policy_loss".to_string()));
+    let id_value_loss    = MetricId::new(Arc::new("value_loss".to_string()));
+    let id_entropy       = MetricId::new(Arc::new("entropy".to_string()));
     let id_steps_per_sec = MetricId::new(Arc::new("steps_per_sec".to_string()));
 
     let interrupter = Interrupter::new();
