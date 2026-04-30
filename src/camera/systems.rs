@@ -1,6 +1,6 @@
 use bevy::prelude::*;
-use bevy::input::mouse::AccumulatedMouseMotion;
-use std::f32::consts::PI;
+use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
+use std::f32::consts::{FRAC_PI_2, PI};
 
 use super::mode::CameraMode;
 use crate::plane::{FlightState, PlaneIndex};
@@ -17,11 +17,30 @@ impl Default for FreeLookCamera {
     }
 }
 
+#[derive(Component)]
+pub struct FollowCamera {
+    pub yaw: f32,
+    pub pitch: f32,
+    pub distance: f32,
+}
+
+impl Default for FollowCamera {
+    fn default() -> Self {
+        // Matches the previous hardcoded body-frame offset Vec3(0, 10, 30)
+        Self {
+            yaw: 0.0,
+            pitch: 10.0_f32.atan2(30.0),
+            distance: (10.0_f32.powi(2) + 30.0_f32.powi(2)).sqrt(),
+        }
+    }
+}
+
 pub fn spawn_camera(mut commands: Commands) {
     commands.spawn((
         Camera3d::default(),
         Transform::from_xyz(0.0, 10.0, 30.0).looking_at(Vec3::ZERO, Vec3::Y),
         FreeLookCamera::default(),
+        FollowCamera::default(),
     ));
 }
 
@@ -90,20 +109,48 @@ pub fn update_free_look_camera(
     transform.rotation = Quat::from_rotation_y(look.yaw) * Quat::from_rotation_x(look.pitch);
 }
 
+pub fn handle_follow_camera_input(
+    mode: Res<CameraMode>,
+    mouse_buttons: Res<ButtonInput<MouseButton>>,
+    accumulated_motion: Res<AccumulatedMouseMotion>,
+    accumulated_scroll: Res<AccumulatedMouseScroll>,
+    mut query: Query<&mut FollowCamera, With<Camera3d>>,
+) {
+    if !matches!(*mode, CameraMode::Follow(_)) {
+        return;
+    }
+    let Ok(mut follow) = query.single_mut() else { return };
+
+    let scroll = accumulated_scroll.delta.y;
+    if scroll != 0.0 {
+        follow.distance = (follow.distance - scroll * follow.distance * 0.1).clamp(5.0, 300.0);
+    }
+
+    if mouse_buttons.pressed(MouseButton::Right) {
+        const SENSITIVITY: f32 = 0.003;
+        follow.yaw += accumulated_motion.delta.x * SENSITIVITY;
+        follow.pitch -= accumulated_motion.delta.y * SENSITIVITY;
+        follow.pitch = follow.pitch.clamp(-(FRAC_PI_2 - 0.01), FRAC_PI_2 - 0.01);
+    }
+}
+
 pub fn update_follow_camera(
     mode: Res<CameraMode>,
     target_query: Query<&Transform, Without<Camera3d>>,
-    mut camera_query: Query<&mut Transform, With<Camera3d>>,
+    mut camera_query: Query<(&mut Transform, &FollowCamera), With<Camera3d>>,
 ) {
     let CameraMode::Follow(target_entity) = *mode else { return };
 
     let Ok(target_transform) = target_query.get(target_entity) else { return };
-    let Ok(mut cam_transform) = camera_query.single_mut() else { return };
+    let Ok((mut cam_transform, follow)) = camera_query.single_mut() else { return };
 
     let target_pos = target_transform.translation;
     let target_rot = target_transform.rotation;
 
-    let offset = target_rot * Vec3::new(0.0, 10.0, 30.0);
+    let horiz = follow.distance * follow.pitch.cos();
+    let vert = follow.distance * follow.pitch.sin();
+    let local_offset = Vec3::new(horiz * follow.yaw.sin(), vert, horiz * follow.yaw.cos());
+    let offset = target_rot * local_offset;
     let camera_pos = target_pos + offset;
 
     cam_transform.translation = cam_transform.translation.lerp(camera_pos, 0.1);
