@@ -81,11 +81,12 @@ fn main() {
     let total_iterations = total_timesteps.div_ceil(trainer.rollout_steps);
 
     // --- metric IDs ---
-    let id_mean_return = MetricId::new(Arc::new("mean_return".to_string()));
-    let id_ep_len      = MetricId::new(Arc::new("ep_len".to_string()));
-    let id_policy_loss = MetricId::new(Arc::new("policy_loss".to_string()));
-    let id_value_loss  = MetricId::new(Arc::new("value_loss".to_string()));
-    let id_entropy     = MetricId::new(Arc::new("entropy".to_string()));
+    let id_mean_return  = MetricId::new(Arc::new("mean_return".to_string()));
+    let id_ep_len       = MetricId::new(Arc::new("ep_len".to_string()));
+    let id_policy_loss  = MetricId::new(Arc::new("policy_loss".to_string()));
+    let id_value_loss   = MetricId::new(Arc::new("value_loss".to_string()));
+    let id_entropy      = MetricId::new(Arc::new("entropy".to_string()));
+    let id_steps_per_sec = MetricId::new(Arc::new("steps_per_sec".to_string()));
 
     let interrupter = Interrupter::new();
 
@@ -97,6 +98,7 @@ fn main() {
             id_policy_loss.clone(),
             id_value_loss.clone(),
             id_entropy.clone(),
+            id_steps_per_sec.clone(),
         ))
     } else {
         Box::new(TuiMetricsRenderer::new(interrupter.clone(), None))
@@ -134,6 +136,12 @@ fn main() {
             description: None,
             attributes: MetricAttributes::Numeric(NumericAttributes { unit: None, higher_is_better: true }),
         },
+        MetricDefinition {
+            metric_id: id_steps_per_sec.clone(),
+            name: "Steps/s".into(),
+            description: None,
+            attributes: MetricAttributes::Numeric(NumericAttributes { unit: Some("sps".into()), higher_is_better: true }),
+        },
     ];
     for def in definitions {
         renderer.register_metric(def);
@@ -150,11 +158,14 @@ fn main() {
         let metrics = trainer.update(&buffer);
         iteration += 1;
 
+        let steps_per_sec = steps as f64 / start.elapsed().as_secs_f64().max(1e-6);
+
         renderer.update_train(numeric_state(id_mean_return.clone(), format!("{mean_return:.3}"), mean_return as f64));
         renderer.update_train(numeric_state(id_ep_len.clone(), format!("{mean_ep_len:.0}"), mean_ep_len as f64));
         renderer.update_train(numeric_state(id_policy_loss.clone(), format!("{:.4}", metrics.policy_loss), metrics.policy_loss as f64));
         renderer.update_train(numeric_state(id_value_loss.clone(), format!("{:.4}", metrics.value_loss), metrics.value_loss as f64));
         renderer.update_train(numeric_state(id_entropy.clone(), format!("{:.4}", metrics.entropy), metrics.entropy as f64));
+        renderer.update_train(numeric_state(id_steps_per_sec.clone(), format!("{steps_per_sec:.0}"), steps_per_sec));
 
         renderer.render_train(TrainingProgress {
             progress: Progress { items_processed: steps, items_total: total_timesteps },
@@ -219,11 +230,13 @@ struct PlainMetricsRenderer {
     id_policy_loss: burn::train::metric::MetricId,
     id_value_loss: burn::train::metric::MetricId,
     id_entropy: burn::train::metric::MetricId,
+    id_steps_per_sec: burn::train::metric::MetricId,
     mean_return: f64,
     ep_len: f64,
     policy_loss: f64,
     value_loss: f64,
     entropy: f64,
+    steps_per_sec: f64,
 }
 
 #[cfg(feature = "training")]
@@ -235,6 +248,7 @@ impl PlainMetricsRenderer {
         id_policy_loss: burn::train::metric::MetricId,
         id_value_loss: burn::train::metric::MetricId,
         id_entropy: burn::train::metric::MetricId,
+        id_steps_per_sec: burn::train::metric::MetricId,
     ) -> Self {
         println!("Starting PPO training — target {} steps", total_timesteps);
         Self {
@@ -246,11 +260,13 @@ impl PlainMetricsRenderer {
             id_policy_loss,
             id_value_loss,
             id_entropy,
+            id_steps_per_sec,
             mean_return: 0.0,
             ep_len: 0.0,
             policy_loss: 0.0,
             value_loss: 0.0,
             entropy: 0.0,
+            steps_per_sec: 0.0,
         }
     }
 }
@@ -271,6 +287,8 @@ impl burn::train::renderer::MetricsRendererTraining for PlainMetricsRenderer {
                 self.value_loss = v;
             } else if entry.metric_id == self.id_entropy {
                 self.entropy = v;
+            } else if entry.metric_id == self.id_steps_per_sec {
+                self.steps_per_sec = v;
             }
         }
     }
@@ -293,11 +311,10 @@ impl burn::train::renderer::MetricsRendererTraining for PlainMetricsRenderer {
 
         let steps = item.progress.items_processed;
         let elapsed_secs = self.start.elapsed().as_secs_f64();
-        let steps_per_sec = steps as f64 / elapsed_secs;
         let pct = 100.0 * steps as f64 / self.total_timesteps as f64;
         let remaining = self.total_timesteps.saturating_sub(steps);
-        let eta_secs = if steps_per_sec > 0.0 {
-            (remaining as f64 / steps_per_sec) as u64
+        let eta_secs = if self.steps_per_sec > 0.0 {
+            (remaining as f64 / self.steps_per_sec) as u64
         } else {
             0
         };
@@ -307,7 +324,7 @@ impl burn::train::renderer::MetricsRendererTraining for PlainMetricsRenderer {
             iteration,
             steps,
             pct,
-            steps_per_sec,
+            self.steps_per_sec,
             fmt_duration(elapsed_secs as u64),
             fmt_duration(eta_secs),
             self.mean_return,
