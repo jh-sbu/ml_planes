@@ -3,7 +3,7 @@ use bevy_egui::{egui, EguiContexts};
 use std::f32::consts::PI;
 
 use crate::camera::CameraMode;
-use crate::controllers::{ActiveController, AscentController, LevelHoldController, ControllerKind, ModelLibrary, PlaneTuning, SelectedModel, SelectedTuningProfile};
+use crate::controllers::{ActiveController, AscentController, LevelHoldController, ControllerKind, LeaderRef, ModelLibrary, PlaneTuning, SelectedModel, SelectedTuningProfile};
 use crate::plane::{ControlInputs, FlightState, PlaneIndex, PlaneTuningHandle};
 
 #[allow(unused_variables, unused_mut)]
@@ -11,6 +11,7 @@ pub fn draw_flight_hud(
     mode: Res<CameraMode>,
     mut contexts: EguiContexts,
     mut plane_query: Query<(
+        Entity,
         &FlightState,
         &ControlInputs,
         &mut ControllerKind,
@@ -18,6 +19,7 @@ pub fn draw_flight_hud(
         Option<&mut SelectedTuningProfile>,
         Option<&PlaneTuningHandle>,
         Option<&mut SelectedModel>,
+        Option<&mut LeaderRef>,
     )>,
     all_planes: Query<(Entity, &PlaneIndex), With<FlightState>>,
     tuning_assets: Res<Assets<PlaneTuning>>,
@@ -29,17 +31,16 @@ pub fn draw_flight_hud(
         CameraMode::FreeLook => plane_query.iter_mut().next(),
     };
 
-    let Some((state, inputs, mut kind, mut controller, profile, tuning_handle, mut selected_model)) = result else { return };
+    let Some((current_entity, state, inputs, mut kind, mut controller, profile, tuning_handle, mut selected_model, mut leader_ref)) = result else { return };
 
     let Ok(ctx) = contexts.ctx_mut() else { return };
 
     let mut pairs: Vec<(Entity, u32)> = all_planes.iter().map(|(e, idx)| (e, idx.0)).collect();
     pairs.sort_by_key(|&(_, i)| i);
-    let sorted_planes: Vec<Entity> = pairs.into_iter().map(|(e, _)| e).collect();
     let camera_label = match *mode {
         CameraMode::FreeLook => "Camera: Free Look".to_string(),
         CameraMode::Follow(entity) => {
-            let n = sorted_planes.iter().position(|&e| e == entity).map(|i| i + 1).unwrap_or(0);
+            let n = pairs.iter().position(|&(e, _)| e == entity).map(|i| i + 1).unwrap_or(0);
             format!("Camera: Follow Plane {}", n)
         }
     };
@@ -87,6 +88,29 @@ pub fn draw_flight_hud(
                 *kind = selected;
             }
             ui.label("(C to cycle)");
+
+            if *kind == ControllerKind::Wingman {
+                if let Some(ref mut lref) = leader_ref {
+                    let current_leader = lref.0;
+                    let mut selected_leader = current_leader;
+                    let leader_label = pairs.iter()
+                        .find(|&&(e, _)| e == current_leader)
+                        .map(|&(_, idx)| format!("Plane {}", idx))
+                        .unwrap_or_else(|| "Unknown".to_string());
+                    egui::ComboBox::from_label("Leader")
+                        .selected_text(&leader_label)
+                        .show_ui(ui, |ui| {
+                            for &(entity, idx) in &pairs {
+                                if entity == current_entity { continue; }
+                                ui.selectable_value(&mut selected_leader, entity,
+                                    format!("Plane {}", idx));
+                            }
+                        });
+                    if selected_leader != current_leader {
+                        lref.0 = selected_leader;
+                    }
+                }
+            }
 
             if *kind == ControllerKind::Ascent {
                 if let Some(ascent) = controller.0.as_any_mut().downcast_mut::<AscentController>() {
