@@ -16,8 +16,8 @@
 //!   --alt-kp F           Altitude outer loop Kp override
 //!   --alt-ki F           Altitude outer loop Ki override
 //!   --alt-kd F           Altitude outer loop Kd override
-//!   --alpha-kp F         Alpha inner loop Kp override
-//!   --alpha-kd F         Alpha inner loop Kd override
+//!   --pitch-kp F         Pitch inner loop Kp override
+//!   --pitch-kd F         Pitch inner loop Kd override
 //!   --spd-kp F           Airspeed loop Kp override
 //!   --spd-ki F           Airspeed loop Ki override
 //!
@@ -75,8 +75,8 @@ fn main() {
             if let Some(v) = args.alt_kp   { tuning.alt_kp           = v; }
             if let Some(v) = args.alt_ki   { tuning.alt_ki           = v; }
             if let Some(v) = args.alt_kd   { tuning.alt_kd           = v; }
-            if let Some(v) = args.alpha_kp { tuning.alpha_kp         = v; }
-            if let Some(v) = args.alpha_kd { tuning.alpha_kd         = v; }
+            if let Some(v) = args.pitch_kp { tuning.pitch_kp         = v; }
+            if let Some(v) = args.pitch_kd { tuning.pitch_kd         = v; }
             if let Some(v) = args.spd_kp   { tuning.spd_kp           = v; }
             if let Some(v) = args.spd_ki   { tuning.spd_ki           = v; }
             let state = FlightState { altitude: args.altitude, airspeed: args.airspeed, ..FlightState::default() };
@@ -165,8 +165,8 @@ struct Args {
     alt_kp: Option<f32>,
     alt_ki: Option<f32>,
     alt_kd: Option<f32>,
-    alpha_kp: Option<f32>,
-    alpha_kd: Option<f32>,
+    pitch_kp: Option<f32>,
+    pitch_kd: Option<f32>,
     spd_kp: Option<f32>,
     spd_ki: Option<f32>,
 }
@@ -185,8 +185,8 @@ fn parse_args() -> Args {
         alt_kp:       get_arg(&args, "--alt-kp")     .and_then(|v| v.parse().ok()),
         alt_ki:       get_arg(&args, "--alt-ki")     .and_then(|v| v.parse().ok()),
         alt_kd:       get_arg(&args, "--alt-kd")     .and_then(|v| v.parse().ok()),
-        alpha_kp:     get_arg(&args, "--alpha-kp")   .and_then(|v| v.parse().ok()),
-        alpha_kd:     get_arg(&args, "--alpha-kd")   .and_then(|v| v.parse().ok()),
+        pitch_kp:     get_arg(&args, "--pitch-kp")   .and_then(|v| v.parse().ok()),
+        pitch_kd:     get_arg(&args, "--pitch-kd")   .and_then(|v| v.parse().ok()),
         spd_kp:       get_arg(&args, "--spd-kp")     .and_then(|v| v.parse().ok()),
         spd_ki:       get_arg(&args, "--spd-ki")     .and_then(|v| v.parse().ok()),
     }

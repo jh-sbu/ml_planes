@@ -44,15 +44,15 @@ pub struct LevelHoldTuning {
     pub alt_ki: f32,
     /// Altitude outer loop derivative gain.
     pub alt_kd: f32,
-    /// Alpha inner loop proportional gain.
-    pub alpha_kp: f32,
-    /// Alpha inner loop derivative gain.
-    pub alpha_kd: f32,
+    /// Pitch inner loop proportional gain.
+    pub pitch_kp: f32,
+    /// Pitch inner loop derivative gain.
+    pub pitch_kd: f32,
     /// Airspeed loop proportional gain.
     pub spd_kp: f32,
     /// Airspeed loop integral gain.
     pub spd_ki: f32,
-    /// Throttle feedforward gain (scales α_target [rad] into a throttle increment).
+    /// Throttle feedforward gain (scales pitch error [rad] into a throttle increment).
     pub throttle_ff_gain: f32,
 }
 
@@ -63,8 +63,8 @@ impl Default for LevelHoldTuning {
             alt_kp:           0.01,
             alt_ki:           0.12,
             alt_kd:           0.04,
-            alpha_kp:         1.0,
-            alpha_kd:         0.5,
+            pitch_kp:         1.0,
+            pitch_kd:         0.5,
             spd_kp:           0.01,
             spd_ki:           0.06,
             throttle_ff_gain: 0.7,
@@ -130,8 +130,8 @@ mod tests {
         assert!((t.alt_kp - 0.01).abs() < 1e-6);
         assert!((t.alt_ki - 0.12).abs() < 1e-6);
         assert!((t.alt_kd - 0.04).abs() < 1e-6);
-        assert!((t.alpha_kp - 1.0).abs() < 1e-6);
-        assert!((t.alpha_kd - 0.5).abs() < 1e-6);
+        assert!((t.pitch_kp - 1.0).abs() < 1e-6);
+        assert!((t.pitch_kd - 0.5).abs() < 1e-6);
         assert!((t.spd_kp - 0.01).abs() < 1e-6);
         assert!((t.spd_ki - 0.06).abs() < 1e-6);
         assert!((t.throttle_ff_gain - 0.7).abs() < 1e-6);
@@ -145,8 +145,8 @@ mod tests {
                     alt_kp: 0.015,
                     alt_ki: 0.12,
                     alt_kd: 0.04,
-                    alpha_kp: 2.0,
-                    alpha_kd: 0.764,
+                    pitch_kp: 2.0,
+                    pitch_kd: 0.764,
                     spd_kp: 0.01,
                     spd_ki: 0.10,
                     throttle_ff_gain: 0.7,
@@ -156,7 +156,7 @@ mod tests {
         let pt: PlaneTuning = ron::de::from_str(src).expect("PlaneTuning should parse");
         let t = pt.get_level_hold("normal").expect("'normal' profile should exist");
         assert!((t.alt_kp - 0.015).abs() < 1e-6);
-        assert!((t.alpha_kp - 2.0).abs() < 1e-6);
+        assert!((t.pitch_kp - 2.0).abs() < 1e-6);
         assert!(pt.get_level_hold("missing").is_none());
     }
 
@@ -175,8 +175,8 @@ mod tests {
             alt_kp: 0.03,
             alt_ki: 0.20,
             alt_kd: 0.08,
-            alpha_kp: 3.0,
-            alpha_kd: 1.0,
+            pitch_kp: 3.0,
+            pitch_kd: 1.0,
             spd_kp: 0.02,
             spd_ki: 0.15,
             throttle_ff_gain: 0.5,
@@ -195,8 +195,8 @@ mod tests {
         assert!((ctrl.altitude_pid.kp - 0.03).abs() < 1e-6, "alt_kp");
         assert!((ctrl.altitude_pid.ki - 0.20).abs() < 1e-6, "alt_ki");
         assert!((ctrl.altitude_pid.kd - 0.08).abs() < 1e-6, "alt_kd");
-        assert!((ctrl.alpha_pid.kp - 3.0).abs() < 1e-6, "alpha_kp");
-        assert!((ctrl.alpha_pid.kd - 1.0).abs() < 1e-6, "alpha_kd");
+        assert!((ctrl.pitch_pid.kp - 3.0).abs() < 1e-6, "pitch_kp");
+        assert!((ctrl.pitch_pid.kd - 1.0).abs() < 1e-6, "pitch_kd");
         assert!((ctrl.airspeed_pid.kp - 0.02).abs() < 1e-6, "spd_kp");
         assert!((ctrl.airspeed_pid.ki - 0.15).abs() < 1e-6, "spd_ki");
         assert!((ctrl.throttle_ff_gain - 0.5).abs() < 1e-6, "ff_gain");

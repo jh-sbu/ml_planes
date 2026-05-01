@@ -1,8 +1,8 @@
 //! Level-hold flight controller — cascade PID.
 //!
 //! Loops:
-//!   altitude  → [outer PID] → α_target → [inner PID] → elevator
-//!   airspeed  → [PID] → throttle (+ feedforward from α_target)
+//!   altitude  → [outer PID] → pitch_target → [inner PID] → elevator
+//!   airspeed  → [PID] → throttle (+ feedforward from pitch_target)
 //!   roll angle → [PID] → aileron
 //!   sideslip β → [PID] → rudder
 
@@ -30,6 +30,16 @@ fn roll_angle(attitude: Quat) -> f32 {
     right_world.y.atan2(up_world.y)
 }
 
+/// Pitch angle from a body→world quaternion.
+///
+/// Positive = nose above the world horizontal plane.
+/// Returns 0 for level, unclimbing flight.
+fn pitch_angle(attitude: Quat) -> f32 {
+    // Body +X is the nose direction. y-component in world space = sin(pitch).
+    let forward_world = attitude * Vec3::X;
+    forward_world.y.asin()
+}
+
 // ---------------------------------------------------------------------------
 // Controller
 // ---------------------------------------------------------------------------
@@ -42,10 +52,10 @@ pub struct LevelHoldController {
     pub target_altitude: f32,
     /// Target airspeed [m/s].
     pub target_airspeed: f32,
-    /// Outer altitude loop: altitude error [m] → α_target [rad], clamped ±0.3 rad.
+    /// Outer altitude loop: altitude error [m] → pitch_target [rad], clamped ±0.3 rad (≈ ±17°).
     pub altitude_pid: PidController,
-    /// Inner alpha loop: α error [rad] → elevator [-1, 1].
-    pub alpha_pid: PidController,
+    /// Inner pitch loop: pitch error [rad] → elevator [-1, 1].
+    pub pitch_pid: PidController,
     /// Airspeed loop: airspeed error [m/s] → throttle [0, 1].
     pub airspeed_pid: PidController,
     /// Wings-level loop: roll angle [rad] → aileron [-1, 1].
@@ -87,8 +97,8 @@ impl LevelHoldController {
         ctrl.altitude_pid.kp    = tuning.alt_kp;
         ctrl.altitude_pid.ki    = tuning.alt_ki;
         ctrl.altitude_pid.kd    = tuning.alt_kd;
-        ctrl.alpha_pid.kp       = tuning.alpha_kp;
-        ctrl.alpha_pid.kd       = tuning.alpha_kd;
+        ctrl.pitch_pid.kp       = tuning.pitch_kp;
+        ctrl.pitch_pid.kd       = tuning.pitch_kd;
         ctrl.airspeed_pid.kp    = tuning.spd_kp;
         ctrl.airspeed_pid.ki    = tuning.spd_ki;
         ctrl.throttle_ff_gain   = tuning.throttle_ff_gain;
@@ -100,14 +110,14 @@ impl LevelHoldController {
     /// produces outputs near trim rather than starting from zero.
     ///
     /// - Airspeed integral: `I = throttle / ki` → first `throttle_fb ≈ prev_inputs.throttle`
-    /// - Altitude integral: `I = state.alpha / ki` → first `alpha_target ≈ state.alpha`,
+    /// - Altitude integral: `I = pitch / ki` → first `pitch_target ≈ current_pitch`,
     ///   which keeps the inner loop at near-zero elevator error.
     fn seed_integrals(&mut self, state: &FlightState, prev_inputs: &ControlInputs) {
         if self.airspeed_pid.ki > 0.0 {
             self.airspeed_pid.seed_integral(prev_inputs.throttle / self.airspeed_pid.ki);
         }
         if self.altitude_pid.ki > 0.0 {
-            self.altitude_pid.seed_integral(state.alpha / self.altitude_pid.ki);
+            self.altitude_pid.seed_integral(pitch_angle(state.attitude) / self.altitude_pid.ki);
         }
     }
 
@@ -129,10 +139,10 @@ impl LevelHoldController {
             // kd=0.04: at a 2 m/s phugoid climb rate the derivative contributes −0.08 rad
             // to α_target, comparable to the proportional term at small errors.
             altitude_pid: PidController::new(0.01,  0.12,  0.04, 0.93, -0.3, 0.3),
-            // Inner alpha loop: error [rad] → elevator [-1, 1].
+            // Inner pitch loop: pitch error [rad] → elevator [-1, 1].
             // No integral (outer loop provides steady-state correction).
             // kd=0.5 gives ~50° phase margin on the pitch double-integrator plant.
-            alpha_pid:    PidController::new(1.0,   0.0,    0.5,  0.0, -1.0, 1.0),
+            pitch_pid:    PidController::new(1.0,   0.0,    0.5,  0.0, -1.0, 1.0),
             // Airspeed loop: integral holds throttle at trim without steady-state error.
             // ki=0.06 with integral_clamp=1.0 → max throttle from integral = 0.06,
             // which covers the ~0.058 trim throttle at 100 m/s cruise.
@@ -151,36 +161,39 @@ impl LevelHoldController {
 
 impl FlightController for LevelHoldController {
     fn update(&mut self, state: &FlightState, dt: f32) -> ControlInputs {
-        // Altitude cascade: altitude error → α_target → elevator.
+        // Altitude cascade: altitude error → pitch_target → elevator.
         //
-        // Sign note: positive elevator → nose-UP → alpha INCREASES (standard convention:
-        // nose rising means velocity appears further below nose in body frame, increasing α).
-        // Inner loop error is (alpha_target − state.alpha): positive error → positive elevator
-        // → nose up → alpha increases toward target.
-        let alpha_target = self.altitude_pid.update(self.target_altitude - state.altitude, dt);
+        // Pitch angle is a world-frame quantity: it oscillates during phugoid motion,
+        // giving the inner loop a measurable error to correct (alpha stays nearly
+        // constant during a phugoid and cannot provide this signal).
+        // Sign note: positive elevator → nose-UP → pitch INCREASES.
+        // Inner loop error is (pitch_target − current_pitch): positive error → positive
+        // elevator → nose up → pitch increases toward target.
+        let pitch_target  = self.altitude_pid.update(self.target_altitude - state.altitude, dt);
+        let current_pitch = pitch_angle(state.attitude);
         // Derivative on measurement: use pitch rate q to avoid derivative kick from
-        // frame-to-frame changes in alpha_target (outer loop output).
+        // frame-to-frame changes in pitch_target (outer loop output).
         // Body-frame convention: positive q (angular_velocity.y) rotates the nose toward -Z
-        // (nose-DOWN), so alpha *increases* when q is *negative*.
-        // d(alpha)/dt ≈ -angular_velocity.y → measured_rate for DoM is -q.
-        let elevator     = self.alpha_pid.update_dom(
-            alpha_target - state.alpha,
+        // (nose-DOWN), so pitch *increases* when q is *negative*.
+        // d(pitch)/dt ≈ -angular_velocity.y → measured_rate for DoM is -q.
+        let elevator      = self.pitch_pid.update_dom(
+            pitch_target - current_pitch,
             -state.angular_velocity.y,
             dt,
         );
 
         // Airspeed: feedback from speed error + feedforward from pitch command.
         //
-        // When alpha_target > 0 (climb demanded), induced drag rises sharply (∝ CL²)
-        // and thrust tilts away from the flight path.  The feedforward adds throttle
-        // proportional to the *inner-loop alpha error* (alpha_target − state.alpha,
+        // When pitch_target > current_pitch (climb demanded), induced drag rises sharply
+        // (∝ CL²) and thrust tilts away from the flight path.  The feedforward adds
+        // throttle proportional to the *inner-loop pitch error* (pitch_target − current_pitch,
         // floored at zero) — it fires only while the aircraft is still pitching toward
-        // the commanded alpha, i.e. during the transient.  At steady level flight
-        // state.alpha ≈ alpha_target, so alpha_error → 0 and the feedforward is zero;
+        // the commanded attitude, i.e. during the transient.  At steady level flight
+        // current_pitch ≈ pitch_target, so pitch_error → 0 and the feedforward is zero;
         // the airspeed integral alone holds trim throttle.
-        let alpha_error = (alpha_target - state.alpha).max(0.0);
+        let pitch_error = (pitch_target - current_pitch).max(0.0);
         let throttle_fb = self.airspeed_pid.update(self.target_airspeed - state.airspeed, dt);
-        let throttle    = (throttle_fb + alpha_error * self.throttle_ff_gain).clamp(0.0, 1.0);
+        let throttle    = (throttle_fb + pitch_error * self.throttle_ff_gain).clamp(0.0, 1.0);
 
         // Wings level (or bank-to-command): drive roll toward target_roll (default 0 = wings level).
         let roll    = roll_angle(state.attitude);
@@ -259,6 +272,21 @@ mod tests {
         assert!(roll.abs() > 0.3, "roll={roll} expected |roll|>0.3 for banked attitude");
     }
 
+    #[test]
+    fn pitch_angle_is_zero_at_level_attitude() {
+        let pitch = pitch_angle(level_attitude());
+        assert!(pitch.abs() < 1e-5, "pitch={pitch}");
+    }
+
+    #[test]
+    fn pitch_angle_positive_for_nose_up_attitude() {
+        // In body frame, positive Ry takes +X toward -Z (nose down in body convention).
+        // Negative Ry tips the nose up toward body +Z = world Y.
+        let nose_up = level_attitude() * Quat::from_rotation_y(-0.2);
+        let pitch   = pitch_angle(nose_up);
+        assert!(pitch > 0.1, "pitch={pitch} expected positive for nose-up attitude");
+    }
+
     // Positive elevator → nose-up → alpha increases (more lift, plane climbs).
     // To gain altitude, the controller pitches nose UP (positive elevator) so
     // alpha increases, lift exceeds weight, and altitude rises.
@@ -324,20 +352,18 @@ mod tests {
     }
 
     #[test]
-    fn bumpless_engagement_preserves_alpha_via_altitude_integral() {
-        // When state.alpha is at trim (e.g. 0.065 rad), altitude integral should be seeded
-        // so alpha_target ≈ trim alpha and elevator error ≈ 0 on the first step.
+    fn bumpless_engagement_preserves_pitch_via_altitude_integral() {
+        // When state pitch is near zero (level_state has level_attitude → pitch=0),
+        // altitude integral seeds to ~0 so pitch_target ≈ 0 and elevator error ≈ 0 on
+        // the first step. (Non-zero pitch at engagement would seed a non-zero integral
+        // — the mechanism is the same as the old alpha seeding since pitch ≈ alpha in
+        // level/trim flight.)
         use crate::plane::ControlInputs;
-        let trim_alpha = 0.065_f32;
-        // Construct a state with non-zero alpha.
-        let state = FlightState {
-            alpha: trim_alpha,
-            ..level_state(1000.0, 100.0)
-        };
+        let state = level_state(1000.0, 100.0);
         let prev_inputs = ControlInputs { throttle: 0.058, ..Default::default() };
         let mut ctrl = LevelHoldController::from_state(&state, &prev_inputs);
         let inputs = ctrl.update(&state, 1.0 / 60.0);
-        // Elevator should be near zero: alpha_target ≈ trim_alpha, error ≈ 0.
+        // Elevator should be near zero: pitch_target ≈ current_pitch ≈ 0, error ≈ 0.
         assert!(inputs.elevator.abs() < 0.1, "elevator={} expected≈0", inputs.elevator);
     }
 }
