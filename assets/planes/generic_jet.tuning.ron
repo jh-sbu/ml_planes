@@ -6,9 +6,9 @@ PlaneTuning(
     level_hold: {
         "normal": LevelHoldTuning(
             alt_kp: 0.015,
-            alt_ki: 0.12,
-            alt_kd: 0.04,
-            pitch_kp: 1.910,
+            alt_ki: 0.22,
+            alt_kd: 0.14,
+            pitch_kp: 0.910,
             pitch_kd: 0.764,
             spd_kp: 0.010,
             spd_ki: 0.06,
