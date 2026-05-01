@@ -3,6 +3,7 @@
 use crate::training::Observation;
 
 /// One step of environment interaction collected during rollout.
+#[derive(Clone, Copy)]
 pub struct RolloutStep {
     pub obs:      Observation,
     pub action:   [f32; 4],  // tanh-squashed, in [-1,1]

@@ -37,6 +37,7 @@ fn pitch_angle(attitude: Quat) -> f32 {
 // Minimal LCG for deterministic episode variation
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 struct Lcg(u64);
 
 impl Lcg {
@@ -63,6 +64,7 @@ const VVEL_RANGE:    f32 =  2.0;                                  // ±2 m/s
 // ---------------------------------------------------------------------------
 
 /// Training environment for level flight hold.
+#[derive(Clone)]
 pub struct LevelHoldEnv {
     /// Target altitude [m].
     pub target_altitude: f32,

@@ -91,7 +91,7 @@ where
     let env = LevelHoldEnv::new(1000.0, 100.0, cfg);
 
     let device: B::Device = Default::default();
-    let trainer = PpoTrainer::<B>::new(env, device);
+    let trainer = PpoTrainer::<B>::with_n_envs(env, 8, device);
 
     let total_timesteps: usize = 2_000_000;
     let total_iterations = total_timesteps.div_ceil(trainer.rollout_steps);

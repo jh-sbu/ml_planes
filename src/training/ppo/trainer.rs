@@ -9,7 +9,7 @@ use burn::{
     tensor::{TensorData, Tensor, backend::AutodiffBackend},
 };
 
-use crate::training::{LevelHoldEnv, Observation, TrainingEnv};
+use crate::training::{LevelHoldEnv, Observation, VecEnv};
 use super::{model::ActorCritic, buffer::{RolloutBuffer, RolloutStep}};
 
 // ---------------------------------------------------------------------------
@@ -25,7 +25,7 @@ pub struct PpoMetrics {
 pub struct PpoTrainer<B: AutodiffBackend> {
     pub model:      ActorCritic<B>,
     optimizer:      OptimizerAdaptor<Adam, ActorCritic<B>, B>,
-    pub env:        LevelHoldEnv,
+    pub envs:       VecEnv<LevelHoldEnv>,
     device:         B::Device,
     // Hyper-parameters
     pub gamma:         f32,
@@ -42,15 +42,23 @@ pub struct PpoTrainer<B: AutodiffBackend> {
 }
 
 impl<B: AutodiffBackend> PpoTrainer<B> {
+    /// Create a trainer with a single environment.
     pub fn new(env: LevelHoldEnv, device: B::Device) -> Self {
+        Self::with_n_envs(env, 1, device)
+    }
+
+    /// Create a trainer with `n` independent copies of `template_env`.
+    pub fn with_n_envs(template_env: LevelHoldEnv, n: usize, device: B::Device) -> Self {
+        assert!(n >= 1, "n_envs must be at least 1");
         let model = ActorCritic::<B>::new(&device);
         let optimizer = AdamConfig::new()
             .with_grad_clipping(Some(GradientClippingConfig::Norm(0.5)))
             .init::<B, ActorCritic<B>>();
+        let envs = VecEnv::new((0..n).map(|_| template_env.clone()).collect());
         Self {
             model,
             optimizer,
-            env,
+            envs,
             device,
             gamma:         0.99,
             gae_lambda:    0.95,
@@ -67,82 +75,121 @@ impl<B: AutodiffBackend> PpoTrainer<B> {
 
     /// Collect `rollout_steps` environment interactions using the current policy.
     ///
+    /// Inference is batched over all N environments at once ([N, 10] → [N, 4]),
+    /// reducing GPU readbacks from 3 × rollout_steps to 3 × (rollout_steps / N).
+    /// GAE is computed per-environment so episode boundaries don't bleed across
+    /// env indices, then all buffers are merged for minibatch updates.
+    ///
     /// Returns (buffer with GAE computed, mean episode return, mean episode length).
     pub fn collect_rollout(&mut self) -> (RolloutBuffer, f32, f32) {
+        let n = self.envs.n();
         let inference_model = self.model.valid();
         let inner_device = inference_model.log_std.val().device();
+        let steps_per_env = self.rollout_steps / n;
 
-        let mut buffer = RolloutBuffer::with_capacity(self.rollout_steps);
-        let (mut obs, _spec) = self.env.reset();
-        let mut episode_returns: Vec<f32> = Vec::with_capacity(8);
-        let mut episode_lengths: Vec<u32> = Vec::with_capacity(8);
-        let mut ep_ret = 0.0_f32;
-        let mut ep_len = 0u32;
+        let mut env_buffers: Vec<RolloutBuffer> = (0..n)
+            .map(|_| RolloutBuffer::with_capacity(steps_per_env))
+            .collect();
 
-        for _ in 0..self.rollout_steps {
-            let obs_t = obs_to_tensor::<B::InnerBackend>(&obs, &inner_device);
+        let mut obs_batch: Vec<Observation> = self.envs.reset_all();
+        let mut episode_returns: Vec<f32> = Vec::with_capacity(8 * n);
+        let mut episode_lengths: Vec<u32> = Vec::with_capacity(8 * n);
+        let mut ep_ret: Vec<f32> = vec![0.0; n];
+        let mut ep_len: Vec<u32> = vec![0; n];
+
+        for _ in 0..steps_per_env {
+            // Batch [n, 10] obs tensor — one inference call for all envs.
+            let obs_flat: Vec<f32> = obs_batch.iter()
+                .flat_map(|o| o.iter().copied())
+                .collect();
+            let obs_t = Tensor::<B::InnerBackend, 2>::from_data(
+                TensorData::new(obs_flat, vec![n, 10]), &inner_device);
+
             let (action_t, log_prob_t) = inference_model.sample_action(obs_t.clone());
             let value_t = inference_model.value.forward(obs_t).squeeze_dims::<1>(&[1]);
 
-            let action_data = action_t.into_data().to_vec::<f32>().expect("action data");
-            let action = [
-                action_data[0],
-                action_data[1],
-                action_data[2],
-                action_data[3],
-            ];
-            let log_prob   = log_prob_t.into_data().to_vec::<f32>().expect("log_prob data")[0];
-            let value      = value_t.into_data().to_vec::<f32>().expect("value data")[0];
+            // Three readbacks — each reads N values in a single transfer.
+            let action_data   = action_t.into_data().to_vec::<f32>().expect("action data");
+            let log_prob_data = log_prob_t.into_data().to_vec::<f32>().expect("log_prob data");
+            let value_data    = value_t.into_data().to_vec::<f32>().expect("value data");
 
-            let (next_obs, reward, done, _info) = self.env.step(&action);
+            let actions: Vec<[f32; 4]> = (0..n)
+                .map(|i| [action_data[i*4], action_data[i*4+1],
+                          action_data[i*4+2], action_data[i*4+3]])
+                .collect();
 
-            buffer.push(RolloutStep {
-                obs,
-                action,
-                log_prob,
-                reward,
-                value,
-                done,
-            });
+            let (next_obs, rewards, dones) = self.envs.step_batch(&actions);
 
-            ep_ret += reward;
-            ep_len += 1;
-            obs = next_obs;
+            for i in 0..n {
+                env_buffers[i].push(RolloutStep {
+                    obs:      obs_batch[i],
+                    action:   actions[i],
+                    log_prob: log_prob_data[i],
+                    reward:   rewards[i],
+                    value:    value_data[i],
+                    done:     dones[i],
+                });
+                ep_ret[i] += rewards[i];
+                ep_len[i] += 1;
+                if dones[i] {
+                    episode_returns.push(ep_ret[i]);
+                    episode_lengths.push(ep_len[i]);
+                    ep_ret[i] = 0.0;
+                    ep_len[i] = 0;
+                }
+            }
 
-            if done {
-                episode_returns.push(ep_ret);
-                episode_lengths.push(ep_len);
-                ep_ret = 0.0;
-                ep_len = 0;
-                let (reset_obs, _) = self.env.reset();
-                obs = reset_obs;
+            obs_batch = next_obs;
+            for i in 0..n {
+                if dones[i] {
+                    obs_batch[i] = self.envs.reset_at(i);
+                }
             }
         }
 
-        // Bootstrap last value.
-        let last_obs_t = obs_to_tensor::<B::InnerBackend>(&obs, &inner_device);
-        let last_value = inference_model.value.forward(last_obs_t)
+        // Bootstrap: one batched inference for all N last observations.
+        let last_flat: Vec<f32> = obs_batch.iter()
+            .flat_map(|o| o.iter().copied())
+            .collect();
+        let last_obs_t = Tensor::<B::InnerBackend, 2>::from_data(
+            TensorData::new(last_flat, vec![n, 10]), &inner_device);
+        let last_values = inference_model.value.forward(last_obs_t)
             .squeeze_dims::<1>(&[1])
             .into_data()
             .to_vec::<f32>()
-            .expect("last value")[0];
+            .expect("last values");
 
-        buffer.compute_gae(last_value, self.gamma, self.gae_lambda);
-        buffer.normalize_advantages();
+        // GAE per env so episode boundaries don't bleed across env indices.
+        for (i, buf) in env_buffers.iter_mut().enumerate() {
+            buf.compute_gae(last_values[i], self.gamma, self.gae_lambda);
+        }
+
+        // Merge into one buffer for minibatch updates.
+        let total = steps_per_env * n;
+        let mut merged = RolloutBuffer::with_capacity(total);
+        merged.advantages = Vec::with_capacity(total);
+        merged.returns    = Vec::with_capacity(total);
+        for buf in &env_buffers {
+            for step in &buf.steps {
+                merged.steps.push(*step);
+            }
+            merged.advantages.extend_from_slice(&buf.advantages);
+            merged.returns.extend_from_slice(&buf.returns);
+        }
+        merged.normalize_advantages();
 
         let mean_return = if episode_returns.is_empty() {
-            ep_ret / self.rollout_steps as f32
+            ep_ret.iter().sum::<f32>() / n as f32 / steps_per_env as f32
         } else {
             episode_returns.iter().sum::<f32>() / episode_returns.len() as f32
         };
-
         let mean_ep_len = if episode_lengths.is_empty() {
-            ep_len as f32
+            ep_len.iter().sum::<u32>() as f32 / n as f32
         } else {
             episode_lengths.iter().sum::<u32>() as f32 / episode_lengths.len() as f32
         };
 
-        (buffer, mean_return, mean_ep_len)
+        (merged, mean_return, mean_ep_len)
     }
 
     /// Run PPO gradient updates over the collected buffer.
@@ -262,13 +309,6 @@ impl<B: AutodiffBackend> PpoTrainer<B> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn obs_to_tensor<B: burn::tensor::backend::Backend>(
-    obs:    &Observation,
-    device: &B::Device,
-) -> Tensor<B, 2> {
-    Tensor::from_floats([*obs], device)
-}
-
 /// In-place Fisher-Yates shuffle using a linear congruential generator.
 fn lcg_shuffle(indices: &mut Vec<usize>, seed: &mut u64) {
     let n = indices.len();
@@ -331,6 +371,31 @@ mod tests {
         }
         for v in lp.into_data().to_vec::<f32>().unwrap() {
             assert!(v.is_finite(), "log_prob NaN after update: {v}");
+        }
+    }
+
+    #[test]
+    fn ppo_multi_env_no_nan() {
+        let device = Default::default();
+        let env = LevelHoldEnv::new(1000.0, 80.0, jet_cfg());
+        let mut trainer = PpoTrainer::<B>::with_n_envs(env, 4, device);
+        trainer.rollout_steps = 64;  // 16 steps_per_env × 4 envs
+        trainer.minibatch     = 64;
+        trainer.n_epochs      = 1;
+
+        let (buffer, _mean_ret, _ep_len) = trainer.collect_rollout();
+        assert_eq!(buffer.len(), 64);
+        let _ = trainer.update(&buffer);
+
+        let inner = trainer.model.valid();
+        let test_obs = Tensor::<<B as AutodiffBackend>::InnerBackend, 2>::zeros(
+            [1, 10], &inner.log_std.val().device());
+        let (action, lp) = inner.sample_action(test_obs);
+        for v in action.into_data().to_vec::<f32>().unwrap() {
+            assert!(v.is_finite(), "action NaN after multi-env update: {v}");
+        }
+        for v in lp.into_data().to_vec::<f32>().unwrap() {
+            assert!(v.is_finite(), "log_prob NaN after multi-env update: {v}");
         }
     }
 }
