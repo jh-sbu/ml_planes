@@ -39,6 +39,8 @@ pub struct PpoTrainer<B: AutodiffBackend> {
     pub minibatch:     usize,
     // Internal RNG seed for minibatch shuffling
     rng_seed:       u64,
+    // Last observations from the previous rollout — avoids hard-resetting all envs each call.
+    last_obs:       Option<Vec<Observation>>,
 }
 
 impl<B: AutodiffBackend> PpoTrainer<B> {
@@ -54,7 +56,11 @@ impl<B: AutodiffBackend> PpoTrainer<B> {
         let optimizer = AdamConfig::new()
             .with_grad_clipping(Some(GradientClippingConfig::Norm(0.5)))
             .init::<B, ActorCritic<B>>();
-        let envs = VecEnv::new((0..n).map(|_| template_env.clone()).collect());
+        let envs = VecEnv::new((0..n).map(|i| {
+            let mut e = template_env.clone();
+            if i > 0 { e.offset_rng_seed(i as u64 * 1_000); }
+            e
+        }).collect());
         Self {
             model,
             optimizer,
@@ -70,6 +76,7 @@ impl<B: AutodiffBackend> PpoTrainer<B> {
             n_epochs:      4,
             minibatch:     64,
             rng_seed:      12345,
+            last_obs:      None,
         }
     }
 
@@ -86,12 +93,15 @@ impl<B: AutodiffBackend> PpoTrainer<B> {
         let inference_model = self.model.valid();
         let inner_device = inference_model.log_std.val().device();
         let steps_per_env = self.rollout_steps / n;
+        assert!(steps_per_env > 0,
+            "rollout_steps ({}) must be >= n_envs ({})", self.rollout_steps, n);
 
         let mut env_buffers: Vec<RolloutBuffer> = (0..n)
             .map(|_| RolloutBuffer::with_capacity(steps_per_env))
             .collect();
 
-        let mut obs_batch: Vec<Observation> = self.envs.reset_all();
+        let mut obs_batch: Vec<Observation> = self.last_obs.take()
+            .unwrap_or_else(|| self.envs.reset_all());
         let mut episode_returns: Vec<f32> = Vec::with_capacity(8 * n);
         let mut episode_lengths: Vec<u32> = Vec::with_capacity(8 * n);
         let mut ep_ret: Vec<f32> = vec![0.0; n];
@@ -188,6 +198,8 @@ impl<B: AutodiffBackend> PpoTrainer<B> {
         } else {
             episode_lengths.iter().sum::<u32>() as f32 / episode_lengths.len() as f32
         };
+
+        self.last_obs = Some(obs_batch);
 
         (merged, mean_return, mean_ep_len)
     }
@@ -346,6 +358,26 @@ mod tests {
             thrust_max: 60000.0,
             aileron_limit: 0.4363, elevator_limit: 0.3491, rudder_limit: 0.2618,
         }
+    }
+
+    #[test]
+    fn n_envs_have_distinct_initial_obs() {
+        let env = LevelHoldEnv::new(1000.0, 80.0, jet_cfg());
+        let mut trainer = PpoTrainer::<B>::with_n_envs(env, 4, Default::default());
+        // First collect_rollout resets all envs; each should start from a distinct spawn.
+        let obs0 = trainer.envs.reset_all();
+        // All 4 observations must not all be identical.
+        let all_same = obs0.windows(2).all(|w| w[0] == w[1]);
+        assert!(!all_same, "all envs produced identical initial observations — RNG seeds are not offset");
+    }
+
+    #[test]
+    #[should_panic(expected = "rollout_steps")]
+    fn collect_rollout_panics_when_n_envs_exceeds_rollout_steps() {
+        let env = LevelHoldEnv::new(1000.0, 80.0, jet_cfg());
+        let mut trainer = PpoTrainer::<B>::with_n_envs(env, 4, Default::default());
+        trainer.rollout_steps = 2; // fewer steps than envs → steps_per_env = 0
+        let _ = trainer.collect_rollout();
     }
 
     #[test]

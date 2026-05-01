@@ -110,6 +110,12 @@ impl LevelHoldEnv {
         }
     }
 
+    /// Shift this env's RNG seed by `offset` so cloned envs get independent episode variation.
+    pub fn offset_rng_seed(&mut self, offset: u64) {
+        self.rng_seed = self.rng_seed.wrapping_add(offset);
+        self.rng = Lcg::new(self.rng_seed);
+    }
+
     // --- Physics step -------------------------------------------------------
 
     fn integrate(&mut self, inputs: &ControlInputs) {
