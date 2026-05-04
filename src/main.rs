@@ -328,8 +328,10 @@ fn apply_controller_switch(
         let profile_name = profile.as_deref().map(|p| p.0.as_str()).unwrap_or("normal");
         let tuning: Option<&dyn ControllerTuning> = tuning_handle
             .and_then(|h| tuning_assets.get(&h.0))
-            .and_then(|pt| pt.get_level_hold(profile_name))
-            .map(|t| t as &dyn ControllerTuning);
+            .and_then(|pt| match *kind {
+                ControllerKind::Orbit => pt.get_orbit(profile_name).map(|t| t as &dyn ControllerTuning),
+                _                     => pt.get_level_hold(profile_name).map(|t| t as &dyn ControllerTuning),
+            });
         controller.0 = kind.build(state, tuning, prev_inputs);
     }
 }

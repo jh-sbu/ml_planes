@@ -3,6 +3,7 @@ use std::f32::consts::FRAC_PI_3;
 use crate::controllers::level_hold::LevelHoldController;
 use crate::controllers::pid::PidController;
 use crate::controllers::traits::FlightController;
+use crate::controllers::tuning::OrbitTuning;
 use crate::plane::{ControlInputs, FlightState};
 
 const G: f32 = 9.81;
@@ -57,6 +58,25 @@ pub struct OrbitController {
 
 impl OrbitController {
     const DEFAULT_RADIUS: f32 = 1000.0;
+
+    /// Construct with bumpless engagement, applying per-plane tuning gains.
+    ///
+    /// Calls `from_state` for geometry and bank feedforward pre-seeding, then
+    /// overrides PID gains and rebuilds the inner controller with tuned gains.
+    pub fn with_tuning(state: &FlightState, tuning: &OrbitTuning, prev_inputs: &ControlInputs) -> Self {
+        let mut ctrl = Self::from_state(state, prev_inputs);
+        ctrl.radial_pid.kp  = tuning.radial_kp;
+        ctrl.radial_pid.kd  = tuning.radial_kd;
+        ctrl.heading_pid.kp = tuning.heading_kp;
+        ctrl.heading_pid.kd = tuning.heading_kd;
+        // Rebuild inner with tuned level-hold gains; preserve bank feedforward already seeded.
+        let target_roll = ctrl.inner.target_roll;
+        ctrl.inner = LevelHoldController::with_tuning(state, &tuning.inner, prev_inputs);
+        ctrl.inner.target_altitude = ctrl.target_altitude;
+        ctrl.inner.target_airspeed = ctrl.target_airspeed;
+        ctrl.inner.target_roll     = target_roll;
+        ctrl
+    }
 
     /// Construct with bumpless engagement from the current flight state.
     ///

@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::plane::{ControlInputs, FlightState};
 
 use super::level_hold::LevelHoldController;
+use super::orbit::OrbitController;
 use super::FlightController;
 
 // ---------------------------------------------------------------------------
@@ -79,6 +80,43 @@ impl ControllerTuning for LevelHoldTuning {
 }
 
 // ---------------------------------------------------------------------------
+// OrbitTuning
+// ---------------------------------------------------------------------------
+
+/// Tunable outer-loop gains for [`OrbitController`].
+#[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
+pub struct OrbitTuning {
+    /// Radial error [m] → heading offset [rad] proportional gain.
+    pub radial_kp: f32,
+    /// Radial error [m] → heading offset [rad] derivative gain.
+    pub radial_kd: f32,
+    /// Heading error [rad] → bank correction [rad] proportional gain.
+    pub heading_kp: f32,
+    /// Heading error [rad] → bank correction [rad] derivative gain.
+    pub heading_kd: f32,
+    /// Inner level-hold gains (altitude, airspeed, roll, beta loops).
+    pub inner: LevelHoldTuning,
+}
+
+impl Default for OrbitTuning {
+    fn default() -> Self {
+        Self {
+            radial_kp:  0.002,
+            radial_kd:  0.01,
+            heading_kp: 0.7,
+            heading_kd: 0.1,
+            inner:      LevelHoldTuning::default(),
+        }
+    }
+}
+
+impl ControllerTuning for OrbitTuning {
+    fn build(&self, state: &FlightState, prev_inputs: &ControlInputs) -> Box<dyn FlightController> {
+        Box::new(OrbitController::with_tuning(state, self, prev_inputs))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // PlaneTuning asset
 // ---------------------------------------------------------------------------
 
@@ -92,7 +130,9 @@ impl ControllerTuning for LevelHoldTuning {
 /// PlaneTuning(
 ///   level_hold: {
 ///     "normal": LevelHoldTuning(alt_kp: 0.01, alt_ki: 0.12, ...),
-///     "aggressive": LevelHoldTuning(alt_kp: 0.03, ...),
+///   },
+///   orbit: {
+///     "normal": OrbitTuning(radial_kp: 0.002, ...),
 ///   },
 /// )
 /// ```
@@ -101,12 +141,20 @@ pub struct PlaneTuning {
     /// Named tuning profiles for [`LevelHoldController`].
     #[serde(default)]
     pub level_hold: HashMap<String, LevelHoldTuning>,
+    /// Named tuning profiles for [`OrbitController`].
+    #[serde(default)]
+    pub orbit: HashMap<String, OrbitTuning>,
 }
 
 impl PlaneTuning {
     /// Return the named level-hold profile, or `None` if not present.
     pub fn get_level_hold(&self, profile: &str) -> Option<&LevelHoldTuning> {
         self.level_hold.get(profile)
+    }
+
+    /// Return the named orbit profile, or `None` if not present.
+    pub fn get_orbit(&self, profile: &str) -> Option<&OrbitTuning> {
+        self.orbit.get(profile)
     }
 }
 

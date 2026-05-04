@@ -1,7 +1,8 @@
 // Tuned PID gains for generic_jet.plane.ron
-// Profile "normal" — tuned 2026-04-20, 2 rounds
+// Profile "normal" — level_hold tuned 2026-04-20, 2 rounds
 // Passes all 5 scenarios (200m/80–2000m/130 m·s⁻¹ envelope).
 // throttle_ff_gain reduced 0.7→0.3 to fix FF-coupling airspeed failure at 70 m/s.
+// orbit.normal — 2026-05-04: hardcoded defaults promoted to tunable profile.
 PlaneTuning(
     level_hold: {
         "normal": LevelHoldTuning(
@@ -13,6 +14,24 @@ PlaneTuning(
             spd_kp: 0.010,
             spd_ki: 0.06,
             throttle_ff_gain: 0.3,
+        ),
+    },
+    orbit: {
+        "normal": OrbitTuning(
+            radial_kp:  0.002,
+            radial_kd:  0.01,
+            heading_kp: 0.7,
+            heading_kd: 0.1,
+            inner: LevelHoldTuning(
+                alt_kp:           0.015,
+                alt_ki:           0.22,
+                alt_kd:           0.14,
+                pitch_kp:         0.910,
+                pitch_kd:         0.764,
+                spd_kp:           0.010,
+                spd_ki:           0.06,
+                throttle_ff_gain: 0.3,
+            ),
         ),
     },
 )

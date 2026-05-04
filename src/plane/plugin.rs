@@ -3,7 +3,7 @@ use bevy::asset::{AssetApp, AssetLoader, LoadContext};
 use bevy::prelude::*;
 use bevy_rapier3d::prelude::PhysicsSet;
 
-use crate::controllers::tuning::{LevelHoldTuning, PlaneTuning};
+use crate::controllers::tuning::{LevelHoldTuning, OrbitTuning, PlaneTuning};
 use crate::controllers::feed_leader_state;
 use crate::plane::config::PlaneConfig;
 use super::systems::{apply_aerodynamic_forces, run_flight_controllers, sync_flight_state};
@@ -129,6 +129,7 @@ impl Plugin for PlanePlugin {
         app.init_asset::<PlaneTuning>();
         app.register_type::<PlaneTuning>();
         app.register_type::<LevelHoldTuning>();
+        app.register_type::<OrbitTuning>();
         app.register_type::<PlaneTuningHandle>();
         app.init_asset_loader::<PlaneTuningLoader>();
 
