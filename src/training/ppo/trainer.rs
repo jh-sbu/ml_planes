@@ -41,6 +41,9 @@ pub struct PpoTrainer<B: AutodiffBackend> {
     rng_seed:       u64,
     // Last observations from the previous rollout — avoids hard-resetting all envs each call.
     last_obs:       Option<Vec<Observation>>,
+    // Episode accounting spans rollout chunks when using multiple envs.
+    ep_returns:     Vec<f32>,
+    ep_lengths:     Vec<u32>,
 }
 
 impl<B: AutodiffBackend> PpoTrainer<B> {
@@ -77,6 +80,8 @@ impl<B: AutodiffBackend> PpoTrainer<B> {
             minibatch:     64,
             rng_seed:      12345,
             last_obs:      None,
+            ep_returns:    vec![0.0; n],
+            ep_lengths:    vec![0; n],
         }
     }
 
@@ -104,8 +109,6 @@ impl<B: AutodiffBackend> PpoTrainer<B> {
             .unwrap_or_else(|| self.envs.reset_all());
         let mut episode_returns: Vec<f32> = Vec::with_capacity(8 * n);
         let mut episode_lengths: Vec<u32> = Vec::with_capacity(8 * n);
-        let mut ep_ret: Vec<f32> = vec![0.0; n];
-        let mut ep_len: Vec<u32> = vec![0; n];
 
         for _ in 0..steps_per_env {
             // Batch [n, 10] obs tensor — one inference call for all envs.
@@ -139,13 +142,13 @@ impl<B: AutodiffBackend> PpoTrainer<B> {
                     value:    value_data[i],
                     done:     dones[i],
                 });
-                ep_ret[i] += rewards[i];
-                ep_len[i] += 1;
+                self.ep_returns[i] += rewards[i];
+                self.ep_lengths[i] += 1;
                 if dones[i] {
-                    episode_returns.push(ep_ret[i]);
-                    episode_lengths.push(ep_len[i]);
-                    ep_ret[i] = 0.0;
-                    ep_len[i] = 0;
+                    episode_returns.push(self.ep_returns[i]);
+                    episode_lengths.push(self.ep_lengths[i]);
+                    self.ep_returns[i] = 0.0;
+                    self.ep_lengths[i] = 0;
                 }
             }
 
@@ -189,12 +192,12 @@ impl<B: AutodiffBackend> PpoTrainer<B> {
         merged.normalize_advantages();
 
         let mean_return = if episode_returns.is_empty() {
-            ep_ret.iter().sum::<f32>() / n as f32 / steps_per_env as f32
+            self.ep_returns.iter().sum::<f32>() / n as f32
         } else {
             episode_returns.iter().sum::<f32>() / episode_returns.len() as f32
         };
         let mean_ep_len = if episode_lengths.is_empty() {
-            ep_len.iter().sum::<u32>() as f32 / n as f32
+            self.ep_lengths.iter().sum::<u32>() as f32 / n as f32
         } else {
             episode_lengths.iter().sum::<u32>() as f32 / episode_lengths.len() as f32
         };
@@ -378,6 +381,22 @@ mod tests {
         let mut trainer = PpoTrainer::<B>::with_n_envs(env, 4, Default::default());
         trainer.rollout_steps = 2; // fewer steps than envs → steps_per_env = 0
         let _ = trainer.collect_rollout();
+    }
+
+    #[test]
+    fn episode_metrics_continue_across_rollout_chunks() {
+        let env = LevelHoldEnv::new(1000.0, 80.0, jet_cfg());
+        let mut trainer = PpoTrainer::<B>::with_n_envs(env, 4, Default::default());
+        trainer.rollout_steps = 8; // 2 steps_per_env × 4 envs
+
+        let (buffer1, _ret1, ep_len1) = trainer.collect_rollout();
+        let (buffer2, _ret2, ep_len2) = trainer.collect_rollout();
+
+        assert_eq!(buffer1.len(), 8);
+        assert_eq!(buffer2.len(), 8);
+        assert_eq!(ep_len1, 2.0);
+        assert_eq!(ep_len2, 4.0);
+        assert_eq!(trainer.ep_lengths, vec![4; 4]);
     }
 
     #[test]
