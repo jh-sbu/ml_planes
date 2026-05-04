@@ -3,6 +3,7 @@ pub mod component;
 pub mod kind;
 pub mod level_hold;
 pub mod manual;
+pub mod orbit;
 pub mod pid;
 #[cfg(feature = "training")]
 pub mod rl_level_hold;
@@ -16,6 +17,7 @@ pub use component::ActiveController;
 pub use kind::ControllerKind;
 pub use level_hold::LevelHoldController;
 pub use manual::ManualController;
+pub use orbit::{OrbitController, OrbitDirection};
 pub use pid::PidController;
 #[cfg(feature = "training")]
 pub use rl_level_hold::RlLevelHoldController;

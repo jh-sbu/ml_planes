@@ -3,7 +3,7 @@ use bevy_egui::{egui, EguiContexts};
 use std::f32::consts::PI;
 
 use crate::camera::CameraMode;
-use crate::controllers::{ActiveController, AscentController, LevelHoldController, ControllerKind, LeaderRef, ModelLibrary, PlaneTuning, SelectedModel, SelectedTuningProfile};
+use crate::controllers::{ActiveController, AscentController, LevelHoldController, ControllerKind, LeaderRef, ModelLibrary, OrbitController, OrbitDirection, PlaneTuning, SelectedModel, SelectedTuningProfile};
 use crate::plane::{ControlInputs, FlightState, PlaneIndex, PlaneTuningHandle};
 
 #[allow(unused_variables, unused_mut)]
@@ -173,6 +173,74 @@ pub fn draw_flight_hud(
                             profile.0 = selected_profile;
                         }
                     }
+                }
+            }
+
+            if *kind == ControllerKind::Orbit {
+                if let Some(orbit) = controller.0.as_any_mut().downcast_mut::<OrbitController>() {
+                    ui.horizontal(|ui| {
+                        ui.label("Center X:");
+                        ui.add(
+                            egui::DragValue::new(&mut orbit.center_x)
+                                .speed(10.0)
+                                .range(-50_000.0..=50_000.0)
+                                .suffix(" m"),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Center Z:");
+                        ui.add(
+                            egui::DragValue::new(&mut orbit.center_z)
+                                .speed(10.0)
+                                .range(-50_000.0..=50_000.0)
+                                .suffix(" m"),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Radius:");
+                        ui.add(
+                            egui::DragValue::new(&mut orbit.target_radius)
+                                .speed(10.0)
+                                .range(500.0..=20_000.0)
+                                .suffix(" m"),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Target Alt:");
+                        ui.add(
+                            egui::DragValue::new(&mut orbit.target_altitude)
+                                .speed(10.0)
+                                .range(100.0..=15000.0)
+                                .suffix(" m"),
+                        );
+                    });
+                    let tgt_kts = orbit.target_airspeed * 1.944;
+                    ui.horizontal(|ui| {
+                        ui.label("Target Spd:");
+                        ui.add(
+                            egui::DragValue::new(&mut orbit.target_airspeed)
+                                .speed(1.0)
+                                .range(30.0..=200.0)
+                                .suffix(" m/s"),
+                        );
+                        ui.label(format!("({:.0} kts)", tgt_kts));
+                    });
+                    let dir_label = match orbit.direction {
+                        OrbitDirection::Clockwise        => "CW",
+                        OrbitDirection::CounterClockwise => "CCW",
+                    };
+                    if ui.button(format!("Dir: {}", dir_label)).clicked() {
+                        orbit.direction = match orbit.direction {
+                            OrbitDirection::Clockwise        => OrbitDirection::CounterClockwise,
+                            OrbitDirection::CounterClockwise => OrbitDirection::Clockwise,
+                        };
+                        orbit.radial_pid.reset();
+                        orbit.heading_pid.reset();
+                    }
+                    let rx = state.position.x - orbit.center_x;
+                    let rz = state.position.z - orbit.center_z;
+                    let r = (rx * rx + rz * rz).sqrt();
+                    ui.label(format!("Radius err: {:.1} m", r - orbit.target_radius));
                 }
             }
 

@@ -1,5 +1,6 @@
 use bevy::prelude::Component;
 
+use crate::controllers::orbit::OrbitController;
 use crate::controllers::tuning::ControllerTuning;
 use crate::controllers::{AscentController, FlightController, LevelHoldController, ManualController};
 use crate::plane::{ControlInputs, FlightState};
@@ -25,14 +26,16 @@ pub enum ControllerKind {
     /// `LevelHold` (generic factory cannot produce an RL controller without a
     /// model path).
     RlLevelHold,
+    /// Circular orbit around a configurable world-frame point.
+    Orbit,
 }
 
 impl ControllerKind {
     #[cfg(not(feature = "training"))]
-    pub const ALL: &'static [ControllerKind] = &[Self::Manual, Self::LevelHold, Self::Ascent];
+    pub const ALL: &'static [ControllerKind] = &[Self::Manual, Self::LevelHold, Self::Ascent, Self::Orbit];
 
     #[cfg(feature = "training")]
-    pub const ALL: &'static [ControllerKind] = &[Self::Manual, Self::LevelHold, Self::Ascent, Self::RlLevelHold];
+    pub const ALL: &'static [ControllerKind] = &[Self::Manual, Self::LevelHold, Self::Ascent, Self::RlLevelHold, Self::Orbit];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -41,6 +44,7 @@ impl ControllerKind {
             ControllerKind::Wingman     => "Wingman",
             ControllerKind::Ascent      => "Ascent",
             ControllerKind::RlLevelHold => "RL Level Hold",
+            ControllerKind::Orbit       => "Orbit",
         }
     }
 
@@ -85,6 +89,7 @@ impl ControllerKind {
         match self {
             ControllerKind::Manual => Box::new(ManualController::new()),
             ControllerKind::Ascent => Box::new(AscentController::new(state, state.altitude + 1000.0)),
+            ControllerKind::Orbit  => Box::new(OrbitController::from_state(state, prev_inputs)),
             // RlLevelHold requires a model path — fall back to LevelHold like Wingman.
             ControllerKind::LevelHold | ControllerKind::Wingman | ControllerKind::RlLevelHold => match tuning {
                 Some(t) => t.build(state, prev_inputs),
