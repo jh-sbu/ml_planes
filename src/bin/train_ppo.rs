@@ -3,14 +3,15 @@
 //! PPO training binary.  Build and run with:
 //!   cargo run --no-default-features --features training --bin train_ppo
 //!
-//! Trains a PPO level-hold controller for 2 000 000 environment steps and
-//! saves the policy under `models/level_hold/`.
+//! Trains a PPO controller for 2 000 000 environment steps and saves the
+//! policy under `models/<task>/`.
 //!
 //! Flags:
+//!   --task <level_hold|orbit>  Training task (default: level_hold).
 //!   --plain                   Print the traditional metrics table instead of the TUI display.
-//!   --output <stem>           Save the model to `models/level_hold/<stem>.mpk`.
+//!   --output <stem>           Save the model to `models/<task>/<stem>.mpk`.
 //!                             If omitted, auto-increments: ppo_level_hold_1.mpk,
-//!                             ppo_level_hold_2.mpk, … (never overwrites an existing file).
+//!                             ppo_orbit_1.mpk, … (never overwrites an existing file).
 //!   --backend <wgpu|ndarray>  Compute backend (default: wgpu).
 
 #[cfg(not(feature = "training"))]
@@ -27,81 +28,168 @@ fn main() {
 
     let args: Vec<String> = std::env::args().collect();
 
-    let output_stem: Option<String> = args.windows(2)
+    let task = args
+        .windows(2)
+        .find(|w| w[0] == "--task")
+        .map(|w| Task::parse(&w[1]))
+        .unwrap_or(Ok(Task::LevelHold))
+        .unwrap_or_else(|e| {
+            eprintln!("{e}");
+            std::process::exit(2);
+        });
+
+    let output_stem: Option<String> = args
+        .windows(2)
         .find(|w| w[0] == "--output")
         .map(|w| w[1].clone());
 
-    let backend_str: String = args.windows(2)
+    let backend_str: String = args
+        .windows(2)
         .find(|w| w[0] == "--backend")
         .map(|w| w[1].clone())
         .unwrap_or_else(|| "wgpu".to_string());
 
-    let save_path = match output_stem {
-        Some(stem) => format!("models/level_hold/{stem}"),
+    let save_path = save_path_for(task, output_stem);
+
+    match backend_str.as_str() {
+        "ndarray" | "cpu" => run::<Autodiff<NdArray>>(plain, save_path, task),
+        _ => run::<Autodiff<Wgpu>>(plain, save_path, task),
+    }
+}
+
+#[cfg(feature = "training")]
+#[derive(Clone, Copy)]
+enum Task {
+    LevelHold,
+    Orbit,
+}
+
+#[cfg(feature = "training")]
+impl Task {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "level_hold" => Ok(Self::LevelHold),
+            "orbit" => Ok(Self::Orbit),
+            other => Err(format!(
+                "Unsupported --task '{other}'. Use 'level_hold' or 'orbit'."
+            )),
+        }
+    }
+
+    fn model_dir(self) -> &'static str {
+        match self {
+            Self::LevelHold => "level_hold",
+            Self::Orbit => "orbit",
+        }
+    }
+
+    fn default_stem(self) -> &'static str {
+        match self {
+            Self::LevelHold => "ppo_level_hold",
+            Self::Orbit => "ppo_orbit",
+        }
+    }
+}
+
+#[cfg(feature = "training")]
+fn save_path_for(task: Task, output_stem: Option<String>) -> String {
+    let dir = task.model_dir();
+    match output_stem {
+        Some(stem) => format!("models/{dir}/{stem}"),
         None => {
             let mut n = 1u32;
             loop {
-                let candidate = format!("models/level_hold/ppo_level_hold_{n}");
+                let candidate = format!("models/{dir}/{}_{n}", task.default_stem());
                 if !std::path::Path::new(&format!("{candidate}.mpk")).exists() {
                     break candidate;
                 }
                 n += 1;
             }
         }
-    };
-
-    match backend_str.as_str() {
-        "ndarray" | "cpu" => run::<Autodiff<NdArray>>(plain, save_path),
-        _                  => run::<Autodiff<Wgpu>>(plain, save_path),
     }
 }
 
 #[cfg(feature = "training")]
-fn run<B>(plain: bool, save_path: String)
+fn run<B>(plain: bool, save_path: String, task: Task)
 where
     B: burn::tensor::backend::AutodiffBackend,
     B::Device: Default,
 {
-    use std::sync::Arc;
-    use std::time::Instant;
-
-    use burn::train::Interrupter;
-    use burn::train::metric::{MetricAttributes, MetricDefinition, MetricId, NumericAttributes};
-    use burn::train::renderer::{MetricsRenderer, TrainingProgress};
-    use burn::train::renderer::tui::TuiMetricsRenderer;
-    use burn::data::dataloader::Progress;
     use bevy::math::Vec3;
 
     use ml_planes::plane::config::PlaneConfig;
-    use ml_planes::training::LevelHoldEnv;
-    use ml_planes::training::ppo::PpoTrainer;
+    use ml_planes::training::{LevelHoldEnv, OrbitEnv};
 
     // Generic jet values matching assets/planes/generic_jet.plane.ron
     let cfg = PlaneConfig {
-        wing_area: 20.0, mean_chord: 2.0, wing_span: 10.0,
-        mass: 5000.0, inertia: Vec3::new(10000.0, 40000.0, 45000.0),
-        cl0: 0.1,   cl_alpha: 4.5,  cl_delta_e: 0.4,  cl_max: 1.4,
-        cd0: 0.02,  cd_induced: 0.05,
-        cm0: -0.02, cm_alpha: 0.6,  cm_q: -14.0,       cm_delta_e: -1.2,
-        cl_beta: -0.08, cl_p: -0.45, cl_r: 0.12, cl_delta_a: 0.18,
-        cn_beta: 0.10, cn_r: -0.12, cn_delta_r: -0.10,
+        wing_area: 20.0,
+        mean_chord: 2.0,
+        wing_span: 10.0,
+        mass: 5000.0,
+        inertia: Vec3::new(10000.0, 40000.0, 45000.0),
+        cl0: 0.1,
+        cl_alpha: 4.5,
+        cl_delta_e: 0.4,
+        cl_max: 1.4,
+        cd0: 0.02,
+        cd_induced: 0.05,
+        cm0: -0.02,
+        cm_alpha: 0.6,
+        cm_q: -14.0,
+        cm_delta_e: -1.2,
+        cl_beta: -0.08,
+        cl_p: -0.45,
+        cl_r: 0.12,
+        cl_delta_a: 0.18,
+        cn_beta: 0.10,
+        cn_r: -0.12,
+        cn_delta_r: -0.10,
         thrust_max: 60000.0,
-        aileron_limit: 0.4363, elevator_limit: 0.3491, rudder_limit: 0.2618,
+        aileron_limit: 0.4363,
+        elevator_limit: 0.3491,
+        rudder_limit: 0.2618,
     };
-    let env = LevelHoldEnv::new(1000.0, 100.0, cfg);
+
+    match task {
+        Task::LevelHold => {
+            run_training_loop::<B, _>(plain, save_path, LevelHoldEnv::new(1000.0, 100.0, cfg))
+        }
+        Task::Orbit => {
+            run_training_loop::<B, _>(plain, save_path, OrbitEnv::new(1000.0, 100.0, 1000.0, cfg))
+        }
+    }
+}
+
+#[cfg(feature = "training")]
+fn run_training_loop<B, E>(plain: bool, save_path: String, env: E)
+where
+    B: burn::tensor::backend::AutodiffBackend,
+    B::Device: Default,
+    E: ml_planes::training::TrainingEnv + Clone,
+{
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    use burn::data::dataloader::Progress;
+    use burn::train::metric::{MetricAttributes, MetricDefinition, MetricId, NumericAttributes};
+    use burn::train::renderer::tui::TuiMetricsRenderer;
+    use burn::train::renderer::{MetricsRenderer, TrainingProgress};
+    use burn::train::Interrupter;
+
+    use ml_planes::training::ppo::PpoTrainer;
 
     let device: B::Device = Default::default();
-    let trainer = PpoTrainer::<B>::with_n_envs(env, 8, device);
+    let trainer = PpoTrainer::<B, E>::with_n_envs(env, 8, device);
 
     let total_timesteps: usize = 2_000_000;
     let total_iterations = total_timesteps.div_ceil(trainer.rollout_steps);
 
     // --- metric IDs ---
-    let id_mean_return   = MetricId::new(Arc::new("mean_return".to_string()));
-    let id_ep_len        = MetricId::new(Arc::new("ep_len".to_string()));
-    let id_policy_loss   = MetricId::new(Arc::new("policy_loss".to_string()));
-    let id_value_loss    = MetricId::new(Arc::new("value_loss".to_string()));
-    let id_entropy       = MetricId::new(Arc::new("entropy".to_string()));
+    let id_mean_return = MetricId::new(Arc::new("mean_return".to_string()));
+    let id_ep_len = MetricId::new(Arc::new("ep_len".to_string()));
+    let id_policy_loss = MetricId::new(Arc::new("policy_loss".to_string()));
+    let id_value_loss = MetricId::new(Arc::new("value_loss".to_string()));
+    let id_entropy = MetricId::new(Arc::new("entropy".to_string()));
     let id_steps_per_sec = MetricId::new(Arc::new("steps_per_sec".to_string()));
 
     let interrupter = Interrupter::new();
@@ -126,37 +214,55 @@ where
             metric_id: id_mean_return.clone(),
             name: "Mean Return".into(),
             description: None,
-            attributes: MetricAttributes::Numeric(NumericAttributes { unit: None, higher_is_better: true }),
+            attributes: MetricAttributes::Numeric(NumericAttributes {
+                unit: None,
+                higher_is_better: true,
+            }),
         },
         MetricDefinition {
             metric_id: id_ep_len.clone(),
             name: "Ep Length".into(),
             description: None,
-            attributes: MetricAttributes::Numeric(NumericAttributes { unit: Some("steps".into()), higher_is_better: true }),
+            attributes: MetricAttributes::Numeric(NumericAttributes {
+                unit: Some("steps".into()),
+                higher_is_better: true,
+            }),
         },
         MetricDefinition {
             metric_id: id_policy_loss.clone(),
             name: "Policy Loss".into(),
             description: None,
-            attributes: MetricAttributes::Numeric(NumericAttributes { unit: None, higher_is_better: false }),
+            attributes: MetricAttributes::Numeric(NumericAttributes {
+                unit: None,
+                higher_is_better: false,
+            }),
         },
         MetricDefinition {
             metric_id: id_value_loss.clone(),
             name: "Value Loss".into(),
             description: None,
-            attributes: MetricAttributes::Numeric(NumericAttributes { unit: None, higher_is_better: false }),
+            attributes: MetricAttributes::Numeric(NumericAttributes {
+                unit: None,
+                higher_is_better: false,
+            }),
         },
         MetricDefinition {
             metric_id: id_entropy.clone(),
             name: "Entropy".into(),
             description: None,
-            attributes: MetricAttributes::Numeric(NumericAttributes { unit: None, higher_is_better: true }),
+            attributes: MetricAttributes::Numeric(NumericAttributes {
+                unit: None,
+                higher_is_better: true,
+            }),
         },
         MetricDefinition {
             metric_id: id_steps_per_sec.clone(),
             name: "Steps/s".into(),
             description: None,
-            attributes: MetricAttributes::Numeric(NumericAttributes { unit: Some("sps".into()), higher_is_better: true }),
+            attributes: MetricAttributes::Numeric(NumericAttributes {
+                unit: Some("sps".into()),
+                higher_is_better: true,
+            }),
         },
     ];
     for def in definitions {
@@ -176,15 +282,42 @@ where
 
         let steps_per_sec = steps as f64 / start.elapsed().as_secs_f64().max(1e-6);
 
-        renderer.update_train(numeric_state(id_mean_return.clone(), format!("{mean_return:.3}"), mean_return as f64));
-        renderer.update_train(numeric_state(id_ep_len.clone(), format!("{mean_ep_len:.0}"), mean_ep_len as f64));
-        renderer.update_train(numeric_state(id_policy_loss.clone(), format!("{:.4}", metrics.policy_loss), metrics.policy_loss as f64));
-        renderer.update_train(numeric_state(id_value_loss.clone(), format!("{:.4}", metrics.value_loss), metrics.value_loss as f64));
-        renderer.update_train(numeric_state(id_entropy.clone(), format!("{:.4}", metrics.entropy), metrics.entropy as f64));
-        renderer.update_train(numeric_state(id_steps_per_sec.clone(), format!("{steps_per_sec:.0}"), steps_per_sec));
+        renderer.update_train(numeric_state(
+            id_mean_return.clone(),
+            format!("{mean_return:.3}"),
+            mean_return as f64,
+        ));
+        renderer.update_train(numeric_state(
+            id_ep_len.clone(),
+            format!("{mean_ep_len:.0}"),
+            mean_ep_len as f64,
+        ));
+        renderer.update_train(numeric_state(
+            id_policy_loss.clone(),
+            format!("{:.4}", metrics.policy_loss),
+            metrics.policy_loss as f64,
+        ));
+        renderer.update_train(numeric_state(
+            id_value_loss.clone(),
+            format!("{:.4}", metrics.value_loss),
+            metrics.value_loss as f64,
+        ));
+        renderer.update_train(numeric_state(
+            id_entropy.clone(),
+            format!("{:.4}", metrics.entropy),
+            metrics.entropy as f64,
+        ));
+        renderer.update_train(numeric_state(
+            id_steps_per_sec.clone(),
+            format!("{steps_per_sec:.0}"),
+            steps_per_sec,
+        ));
 
         renderer.render_train(TrainingProgress {
-            progress: Progress { items_processed: steps, items_total: total_timesteps },
+            progress: Progress {
+                items_processed: steps,
+                items_total: total_timesteps,
+            },
             epoch: iteration,
             epoch_total: total_iterations,
             iteration,
@@ -204,7 +337,9 @@ where
         fmt_duration(elapsed_secs),
     );
 
-    let save_dir = std::path::Path::new(&save_path).parent().unwrap_or(std::path::Path::new("models"));
+    let save_dir = std::path::Path::new(&save_path)
+        .parent()
+        .unwrap_or(std::path::Path::new("models"));
     std::fs::create_dir_all(save_dir).expect("create model output dir");
     trainer.save_policy(&save_path);
 }
@@ -320,8 +455,17 @@ impl burn::train::renderer::MetricsRendererTraining for PlainMetricsRenderer {
         if self.rows_since_header == 0 {
             println!(
                 "{:<6}  {:<11}  {:>5}  {:>8}  {:>9}  {:>9}  {:>8}  {:>6}  {:>8}  {:>8}  {:>8}",
-                "iter", "steps", "pct", "steps/s", "elapsed", "eta",
-                "mean_ret", "ep_len", "p_loss", "v_loss", "entropy",
+                "iter",
+                "steps",
+                "pct",
+                "steps/s",
+                "elapsed",
+                "eta",
+                "mean_ret",
+                "ep_len",
+                "p_loss",
+                "v_loss",
+                "entropy",
             );
         }
 
@@ -361,7 +505,12 @@ impl burn::train::renderer::MetricsRendererTraining for PlainMetricsRenderer {
 
 #[cfg(feature = "training")]
 impl burn::train::renderer::MetricsRendererEvaluation for PlainMetricsRenderer {
-    fn update_test(&mut self, _name: burn::train::renderer::EvaluationName, _state: burn::train::renderer::MetricState) {}
+    fn update_test(
+        &mut self,
+        _name: burn::train::renderer::EvaluationName,
+        _state: burn::train::renderer::MetricState,
+    ) {
+    }
     fn render_test(&mut self, _item: burn::train::renderer::EvaluationProgress) {}
 }
 

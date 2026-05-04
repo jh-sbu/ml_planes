@@ -7,7 +7,7 @@
 use burn::{
     module::{Module, Param},
     nn::{Linear, LinearConfig},
-    tensor::{Distribution, Shape, Tensor, backend::Backend},
+    tensor::{backend::Backend, Distribution, Shape, Tensor},
 };
 
 // ---------------------------------------------------------------------------
@@ -22,9 +22,9 @@ pub struct PolicyNet<B: Backend> {
 }
 
 impl<B: Backend> PolicyNet<B> {
-    pub fn new(device: &B::Device) -> Self {
+    pub fn new(device: &B::Device, obs_dim: usize) -> Self {
         Self {
-            fc1: LinearConfig::new(10, 64).init(device),
+            fc1: LinearConfig::new(obs_dim, 64).init(device),
             fc2: LinearConfig::new(64, 64).init(device),
             out: LinearConfig::new(64, 4).init(device),
         }
@@ -50,9 +50,9 @@ pub struct ValueNet<B: Backend> {
 }
 
 impl<B: Backend> ValueNet<B> {
-    pub fn new(device: &B::Device) -> Self {
+    pub fn new(device: &B::Device, obs_dim: usize) -> Self {
         Self {
-            fc1: LinearConfig::new(10, 64).init(device),
+            fc1: LinearConfig::new(obs_dim, 64).init(device),
             fc2: LinearConfig::new(64, 64).init(device),
             out: LinearConfig::new(64, 1).init(device),
         }
@@ -73,17 +73,17 @@ impl<B: Backend> ValueNet<B> {
 #[derive(Module, Debug)]
 pub struct ActorCritic<B: Backend> {
     pub policy: PolicyNet<B>,
-    pub value:  ValueNet<B>,
+    pub value: ValueNet<B>,
     /// Learnable log-std shared across batch, shape [4], init = -0.5.
     pub log_std: Param<Tensor<B, 1>>,
 }
 
 impl<B: Backend> ActorCritic<B> {
-    pub fn new(device: &B::Device) -> Self {
+    pub fn new(device: &B::Device, obs_dim: usize) -> Self {
         let log_std_init = Tensor::<B, 1>::full([4], -0.5, device);
         Self {
-            policy:  PolicyNet::new(device),
-            value:   ValueNet::new(device),
+            policy: PolicyNet::new(device, obs_dim),
+            value: ValueNet::new(device, obs_dim),
             log_std: Param::from_tensor(log_std_init),
         }
     }
@@ -101,8 +101,10 @@ impl<B: Backend> ActorCritic<B> {
         let device = self.log_std.val().device();
 
         let pre_tanh_mean = self.policy.forward(obs);
-        let std = self.log_std.val()
-            .unsqueeze::<2>()                     // [1, 4]
+        let std = self
+            .log_std
+            .val()
+            .unsqueeze::<2>() // [1, 4]
             .expand([batch, 4])
             .exp();
 
@@ -113,7 +115,8 @@ impl<B: Backend> ActorCritic<B> {
         );
         let pre_tanh_sample = pre_tanh_mean.clone() + noise * std.clone();
         let action = pre_tanh_sample.clone().tanh();
-        let log_prob = gaussian_log_prob_squashed(pre_tanh_sample, pre_tanh_mean, std, action.clone());
+        let log_prob =
+            gaussian_log_prob_squashed(pre_tanh_sample, pre_tanh_mean, std, action.clone());
         (action, log_prob)
     }
 
@@ -122,32 +125,22 @@ impl<B: Backend> ActorCritic<B> {
     /// `old_actions` are tanh-squashed values in [-1, 1] as stored in the rollout.
     pub fn evaluate_actions(
         &self,
-        obs:         Tensor<B, 2>,
+        obs: Tensor<B, 2>,
         old_actions: Tensor<B, 2>,
     ) -> (Tensor<B, 1>, Tensor<B, 1>) {
         let batch = obs.dims()[0];
         let pre_tanh_mean = self.policy.forward(obs);
-        let std = self.log_std.val()
-            .unsqueeze::<2>()
-            .expand([batch, 4])
-            .exp();
+        let std = self.log_std.val().unsqueeze::<2>().expand([batch, 4]).exp();
 
         // Recover pre-tanh value from stored actions via atanh.
         // Clamp to avoid atanh(±1) = ±∞.
         let a_clamped = old_actions.clamp(-1.0_f32 + 1e-6, 1.0_f32 - 1e-6);
         // atanh(a) = 0.5 * ln((1+a)/(1-a))
         let one = Tensor::<B, 2>::ones_like(&a_clamped);
-        let pre_tanh = ((one.clone() + a_clamped.clone())
-            / (one - a_clamped.clone()))
-            .log()
-            * 0.5_f32;
+        let pre_tanh =
+            ((one.clone() + a_clamped.clone()) / (one - a_clamped.clone())).log() * 0.5_f32;
 
-        let log_prob = gaussian_log_prob_squashed(
-            pre_tanh,
-            pre_tanh_mean,
-            std.clone(),
-            a_clamped,
-        );
+        let log_prob = gaussian_log_prob_squashed(pre_tanh, pre_tanh_mean, std.clone(), a_clamped);
 
         // Entropy of the pre-squash Gaussian (closed form):
         //   H = sum_i [ 0.5 * (1 + ln(2π)) + ln(σ_i) ]
@@ -173,9 +166,9 @@ impl<B: Backend> ActorCritic<B> {
 /// where u = pre_tanh_sample, a = tanh(u).
 fn gaussian_log_prob_squashed<B: Backend>(
     pre_tanh_sample: Tensor<B, 2>,
-    pre_tanh_mean:   Tensor<B, 2>,
-    std:             Tensor<B, 2>,
-    action:          Tensor<B, 2>,
+    pre_tanh_mean: Tensor<B, 2>,
+    std: Tensor<B, 2>,
+    action: Tensor<B, 2>,
 ) -> Tensor<B, 1> {
     // Gaussian log-density (per element)
     let diff = (pre_tanh_sample - pre_tanh_mean) / std.clone();
@@ -184,13 +177,13 @@ fn gaussian_log_prob_squashed<B: Backend>(
         - 0.5_f32 * (2.0 * std::f32::consts::PI).ln();
 
     // Tanh-squash correction (per element): -ln(1 - a² + ε)
-    let correction = (Tensor::<B, 2>::ones_like(&action)
-        - action.powf_scalar(2.0)
-        + 1e-6_f32)
-        .log();
+    let correction =
+        (Tensor::<B, 2>::ones_like(&action) - action.powf_scalar(2.0) + 1e-6_f32).log();
 
     // Sum over action dim → [batch]
-    (log_density + correction).sum_dim(1).squeeze_dims::<1>(&[1])
+    (log_density + correction)
+        .sum_dim(1)
+        .squeeze_dims::<1>(&[1])
 }
 
 // ---------------------------------------------------------------------------
@@ -210,7 +203,7 @@ mod tests {
 
     #[test]
     fn actor_critic_output_shapes() {
-        let model = ActorCritic::<B>::new(&device());
+        let model = ActorCritic::<B>::new(&device(), 10);
         let obs = Tensor::<B, 2>::zeros([4, 10], &device());
         let (action, log_prob) = model.sample_action(obs.clone());
         assert_eq!(action.dims(), [4, 4]);
@@ -220,23 +213,31 @@ mod tests {
     }
 
     #[test]
+    fn actor_critic_accepts_dynamic_obs_dim() {
+        let model = ActorCritic::<B>::new(&device(), 12);
+        let obs = Tensor::<B, 2>::zeros([3, 12], &device());
+        let (action, log_prob) = model.sample_action(obs.clone());
+        assert_eq!(action.dims(), [3, 4]);
+        assert_eq!(log_prob.dims(), [3]);
+        let value = model.value.forward(obs).squeeze_dims::<1>(&[1]);
+        assert_eq!(value.dims(), [3]);
+    }
+
+    #[test]
     fn policy_output_in_range() {
-        let model = ActorCritic::<B>::new(&device());
+        let model = ActorCritic::<B>::new(&device(), 10);
         let obs = Tensor::<B, 2>::random([8, 10], Distribution::Normal(0.0, 1.0), &device());
         let (action, _) = model.sample_action(obs);
         let data = action.into_data().to_vec::<f32>().unwrap();
         for v in &data {
-            assert!(
-                v.abs() <= 1.0 + 1e-5,
-                "action out of [-1,1]: {v}"
-            );
+            assert!(v.abs() <= 1.0 + 1e-5, "action out of [-1,1]: {v}");
             assert!(v.is_finite(), "action is NaN/inf: {v}");
         }
     }
 
     #[test]
     fn log_std_init() {
-        let model = ActorCritic::<B>::new(&device());
+        let model = ActorCritic::<B>::new(&device(), 10);
         let vals = model.log_std.val().into_data().to_vec::<f32>().unwrap();
         assert_eq!(vals.len(), 4);
         for v in vals {
@@ -246,7 +247,7 @@ mod tests {
 
     #[test]
     fn evaluate_actions_shapes() {
-        let model = ActorCritic::<B>::new(&device());
+        let model = ActorCritic::<B>::new(&device(), 10);
         let obs = Tensor::<B, 2>::zeros([4, 10], &device());
         let (action, _) = model.sample_action(obs.clone());
         let (log_prob, entropy) = model.evaluate_actions(obs, action);
@@ -256,7 +257,7 @@ mod tests {
 
     #[test]
     fn log_prob_is_finite() {
-        let model = ActorCritic::<B>::new(&device());
+        let model = ActorCritic::<B>::new(&device(), 10);
         let obs = Tensor::<B, 2>::random([4, 10], Distribution::Normal(0.0, 1.0), &device());
         let (action, log_prob) = model.sample_action(obs.clone());
         let (log_prob2, entropy) = model.evaluate_actions(obs, action);

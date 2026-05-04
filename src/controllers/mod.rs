@@ -7,6 +7,8 @@ pub mod orbit;
 pub mod pid;
 #[cfg(feature = "training")]
 pub mod rl_level_hold;
+#[cfg(feature = "training")]
+pub mod rl_orbit;
 pub mod selected_model;
 pub mod traits;
 pub mod tuning;
@@ -21,6 +23,8 @@ pub use orbit::{OrbitController, OrbitDirection};
 pub use pid::PidController;
 #[cfg(feature = "training")]
 pub use rl_level_hold::RlLevelHoldController;
+#[cfg(feature = "training")]
+pub use rl_orbit::{RlOrbitConfig, RlOrbitController};
 pub use selected_model::{ModelLibrary, SelectedModel};
 pub use traits::FlightController;
 pub use tuning::{ControllerTuning, LevelHoldTuning, PlaneTuning, SelectedTuningProfile};

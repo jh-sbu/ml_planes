@@ -19,12 +19,105 @@ pub enum OrbitDirection {
 
 impl OrbitDirection {
     /// +1.0 for CW (right bank), -1.0 for CCW (left bank).
-    fn sign(self) -> f32 {
+    pub fn sign(self) -> f32 {
         match self {
             OrbitDirection::Clockwise => 1.0,
             OrbitDirection::CounterClockwise => -1.0,
         }
     }
+}
+
+pub(crate) const ORBIT_OBS_DIM: usize = 12;
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct OrbitObservationTerms {
+    pub radial_error: f32,
+    pub heading_error: f32,
+    pub bank_ff: f32,
+}
+
+pub(crate) fn orbit_observation_terms(
+    state: &FlightState,
+    center_x: f32,
+    center_z: f32,
+    target_radius: f32,
+    direction: OrbitDirection,
+) -> OrbitObservationTerms {
+    let rx = state.position.x - center_x;
+    let rz = state.position.z - center_z;
+    let current_radius = (rx * rx + rz * rz).sqrt();
+    let safe_radius = current_radius.max(1.0);
+
+    let (tang_x, tang_z) = match direction {
+        OrbitDirection::CounterClockwise => (-rz / safe_radius, rx / safe_radius),
+        OrbitDirection::Clockwise => (rz / safe_radius, -rx / safe_radius),
+    };
+
+    let speed_xz = (state.velocity.x.powi(2) + state.velocity.z.powi(2)).sqrt();
+    let (head_x, head_z) = if speed_xz > 1.0 {
+        (state.velocity.x / speed_xz, state.velocity.z / speed_xz)
+    } else {
+        (tang_x, tang_z)
+    };
+
+    let cross = tang_x * head_z - tang_z * head_x;
+    let dot = tang_x * head_x + tang_z * head_z;
+    let heading_error = cross.atan2(dot);
+    let radius = target_radius.max(1.0);
+    let bank_ff = direction.sign() * (state.airspeed.powi(2) / (G * radius)).atan();
+
+    OrbitObservationTerms {
+        radial_error: current_radius - target_radius,
+        heading_error,
+        bank_ff,
+    }
+}
+
+pub(crate) fn build_orbit_observation(
+    state: &FlightState,
+    center_x: f32,
+    center_z: f32,
+    target_radius: f32,
+    target_altitude: f32,
+    target_airspeed: f32,
+    direction: OrbitDirection,
+) -> Vec<f32> {
+    let terms = orbit_observation_terms(state, center_x, center_z, target_radius, direction);
+    let alt_err = state.altitude - target_altitude;
+    let speed_err = state.airspeed - target_airspeed;
+    let roll = roll_angle(state.attitude);
+    let pitch = pitch_angle(state.attitude);
+    let p = state.angular_velocity.x;
+    let q = state.angular_velocity.y;
+    let r = state.angular_velocity.z;
+
+    vec![
+        terms.radial_error / 500.0,
+        terms.heading_error / 0.5,
+        terms.bank_ff / FRAC_PI_3,
+        alt_err / 200.0,
+        speed_err / 50.0,
+        state.alpha / 0.5,
+        pitch / 0.5,
+        q / 1.0,
+        roll / 0.5,
+        p / 1.0,
+        state.beta / 0.5,
+        r / 1.0,
+    ]
+}
+
+fn roll_angle(attitude: bevy::math::Quat) -> f32 {
+    let right_world = attitude * bevy::math::Vec3::Y;
+    let up_world = attitude * bevy::math::Vec3::Z;
+    right_world.y.atan2(up_world.y)
+}
+
+fn pitch_angle(attitude: bevy::math::Quat) -> f32 {
+    let fwd_world = attitude * bevy::math::Vec3::X;
+    fwd_world
+        .y
+        .atan2((fwd_world.x * fwd_world.x + fwd_world.z * fwd_world.z).sqrt())
 }
 
 /// PID-based circular orbit controller around a fixed world-frame point.
@@ -63,10 +156,14 @@ impl OrbitController {
     ///
     /// Calls `from_state` for geometry and bank feedforward pre-seeding, then
     /// overrides PID gains and rebuilds the inner controller with tuned gains.
-    pub fn with_tuning(state: &FlightState, tuning: &OrbitTuning, prev_inputs: &ControlInputs) -> Self {
+    pub fn with_tuning(
+        state: &FlightState,
+        tuning: &OrbitTuning,
+        prev_inputs: &ControlInputs,
+    ) -> Self {
         let mut ctrl = Self::from_state(state, prev_inputs);
-        ctrl.radial_pid.kp  = tuning.radial_kp;
-        ctrl.radial_pid.kd  = tuning.radial_kd;
+        ctrl.radial_pid.kp = tuning.radial_kp;
+        ctrl.radial_pid.kd = tuning.radial_kd;
         ctrl.heading_pid.kp = tuning.heading_kp;
         ctrl.heading_pid.kd = tuning.heading_kd;
         // Rebuild inner with tuned level-hold gains; preserve bank feedforward already seeded.
@@ -74,7 +171,7 @@ impl OrbitController {
         ctrl.inner = LevelHoldController::with_tuning(state, &tuning.inner, prev_inputs);
         ctrl.inner.target_altitude = ctrl.target_altitude;
         ctrl.inner.target_airspeed = ctrl.target_airspeed;
-        ctrl.inner.target_roll     = target_roll;
+        ctrl.inner.target_roll = target_roll;
         ctrl
     }
 
@@ -169,8 +266,8 @@ impl FlightController for OrbitController {
         let heading_error = cross.atan2(dot);
 
         // Curvature feedforward holds steady orbit bank; PID corrects perturbations.
-        let bank_ff = self.direction.sign()
-            * (state.airspeed.powi(2) / (G * self.target_radius)).atan();
+        let bank_ff =
+            self.direction.sign() * (state.airspeed.powi(2) / (G * self.target_radius)).atan();
         let heading_correction = self.heading_pid.update(heading_error, dt);
         let target_roll = (bank_ff + heading_correction).clamp(-FRAC_PI_3, FRAC_PI_3);
 
@@ -180,8 +277,12 @@ impl FlightController for OrbitController {
         self.inner.update(state, dt)
     }
 
-    fn name(&self) -> &'static str { "Orbit" }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    fn name(&self) -> &'static str {
+        "Orbit"
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }
 
 #[cfg(test)]
@@ -214,7 +315,12 @@ mod tests {
     const ALT: f32 = 1000.0;
 
     /// Build an OrbitController with an explicit center/radius/direction, bypassing auto-center.
-    fn make_orbit(center_x: f32, center_z: f32, radius: f32, direction: OrbitDirection) -> OrbitController {
+    fn make_orbit(
+        center_x: f32,
+        center_z: f32,
+        radius: f32,
+        direction: OrbitDirection,
+    ) -> OrbitController {
         let seed_state = make_state(Vec3::new(0.0, ALT, 0.0), Vec3::new(V, 0.0, 0.0));
         let mut ctrl = OrbitController::from_state(&seed_state, &ControlInputs::default());
         ctrl.center_x = center_x;
@@ -254,8 +360,11 @@ mod tests {
         let state = make_state(Vec3::new(0.0, ALT, -R), Vec3::new(V, 0.0, 0.0));
         ctrl.update(&state, 1.0 / 60.0);
         let expected = OrbitDirection::CounterClockwise.sign() * (V * V / (G * R)).atan();
-        assert!((ctrl.inner.target_roll - expected).abs() < 0.05,
-            "inner.target_roll={} expected≈{expected}", ctrl.inner.target_roll);
+        assert!(
+            (ctrl.inner.target_roll - expected).abs() < 0.05,
+            "inner.target_roll={} expected≈{expected}",
+            ctrl.inner.target_roll
+        );
     }
 
     #[test]
@@ -268,8 +377,11 @@ mod tests {
         let state = make_state(Vec3::new(0.0, ALT, -(R + extra)), Vec3::new(V, 0.0, 0.0));
         ctrl.update(&state, 1.0 / 60.0);
         let bank_ff = OrbitDirection::CounterClockwise.sign() * (V * V / (G * R)).atan();
-        assert!(ctrl.inner.target_roll < bank_ff,
-            "inner.target_roll={} should be < bank_ff={bank_ff} (more left bank)", ctrl.inner.target_roll);
+        assert!(
+            ctrl.inner.target_roll < bank_ff,
+            "inner.target_roll={} should be < bank_ff={bank_ff} (more left bank)",
+            ctrl.inner.target_roll
+        );
     }
 
     #[test]
@@ -286,11 +398,74 @@ mod tests {
         ctrl_ccw.update(&state_ccw, 1.0 / 60.0);
         ctrl_cw.update(&state_cw, 1.0 / 60.0);
 
-        assert!(ctrl_ccw.inner.target_roll < 0.0,
-            "CCW should bank left, got {}", ctrl_ccw.inner.target_roll);
-        assert!(ctrl_cw.inner.target_roll > 0.0,
-            "CW should bank right, got {}", ctrl_cw.inner.target_roll);
-        assert!((ctrl_ccw.inner.target_roll + ctrl_cw.inner.target_roll).abs() < 0.05,
-            "CW and CCW rolls should be symmetric: {} vs {}", ctrl_cw.inner.target_roll, ctrl_ccw.inner.target_roll);
+        assert!(
+            ctrl_ccw.inner.target_roll < 0.0,
+            "CCW should bank left, got {}",
+            ctrl_ccw.inner.target_roll
+        );
+        assert!(
+            ctrl_cw.inner.target_roll > 0.0,
+            "CW should bank right, got {}",
+            ctrl_cw.inner.target_roll
+        );
+        assert!(
+            (ctrl_ccw.inner.target_roll + ctrl_cw.inner.target_roll).abs() < 0.05,
+            "CW and CCW rolls should be symmetric: {} vs {}",
+            ctrl_cw.inner.target_roll,
+            ctrl_ccw.inner.target_roll
+        );
+    }
+
+    #[test]
+    fn direction_sign_values_match_bank_convention() {
+        assert_eq!(OrbitDirection::Clockwise.sign(), 1.0);
+        assert_eq!(OrbitDirection::CounterClockwise.sign(), -1.0);
+    }
+
+    #[test]
+    fn orbit_observation_geometry_zero_error() {
+        let state = make_state(Vec3::new(0.0, ALT, -R), Vec3::new(V, 0.0, 0.0));
+        let obs = build_orbit_observation(
+            &state,
+            0.0,
+            0.0,
+            R,
+            ALT,
+            V,
+            OrbitDirection::CounterClockwise,
+        );
+        assert_eq!(obs.len(), ORBIT_OBS_DIM);
+        assert!(
+            obs.iter().all(|v| v.is_finite()),
+            "obs contains NaN/inf: {obs:?}"
+        );
+        assert!(obs[0].abs() < 1e-5, "radial obs={}", obs[0]);
+        assert!(obs[1].abs() < 1e-5, "heading obs={}", obs[1]);
+        assert!(
+            obs[2] < 0.0,
+            "CCW bank feedforward should be negative, got {}",
+            obs[2]
+        );
+    }
+
+    #[test]
+    fn orbit_observation_direction_reverses_bank_ff() {
+        let state_ccw = make_state(Vec3::new(0.0, ALT, -R), Vec3::new(V, 0.0, 0.0));
+        let state_cw = make_state(Vec3::new(0.0, ALT, R), Vec3::new(V, 0.0, 0.0));
+        let obs_ccw = build_orbit_observation(
+            &state_ccw,
+            0.0,
+            0.0,
+            R,
+            ALT,
+            V,
+            OrbitDirection::CounterClockwise,
+        );
+        let obs_cw =
+            build_orbit_observation(&state_cw, 0.0, 0.0, R, ALT, V, OrbitDirection::Clockwise);
+        assert!(
+            (obs_ccw[2] + obs_cw[2]).abs() < 1e-5,
+            "bank feedforward should be symmetric"
+        );
     }
 }

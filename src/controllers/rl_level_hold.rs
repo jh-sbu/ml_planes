@@ -5,13 +5,13 @@
 
 use std::any::Any;
 
+use bevy::math::Quat;
 use burn::{
     backend::NdArray,
     module::Module,
     record::{DefaultFileRecorder, FullPrecisionSettings},
-    tensor::{Tensor, TensorData, backend::Backend},
+    tensor::{backend::Backend, Tensor, TensorData},
 };
-use bevy::math::Quat;
 
 use crate::controllers::FlightController;
 use crate::plane::{ControlInputs, FlightState};
@@ -24,8 +24,8 @@ type InfB = NdArray;
 /// `ActorCritic<NdArray>` is not `Sync` (burn's `Param` uses `OnceCell`),
 /// so we wrap in `Mutex` to satisfy `FlightController: Sync`.
 pub struct RlLevelHoldController {
-    model:           std::sync::Mutex<ActorCritic<InfB>>,
-    device:          <InfB as Backend>::Device,
+    model: std::sync::Mutex<ActorCritic<InfB>>,
+    device: <InfB as Backend>::Device,
     pub target_altitude: f32,
     pub target_airspeed: f32,
 }
@@ -38,12 +38,11 @@ impl RlLevelHoldController {
         target_airspeed: f32,
     ) -> Result<Self, burn::record::RecorderError> {
         let device: <InfB as Backend>::Device = Default::default();
-        let model = ActorCritic::<InfB>::new(&device)
-            .load_file(
-                path,
-                &DefaultFileRecorder::<FullPrecisionSettings>::default(),
-                &device,
-            )?;
+        let model = ActorCritic::<InfB>::new(&device, 10).load_file(
+            path,
+            &DefaultFileRecorder::<FullPrecisionSettings>::default(),
+            &device,
+        )?;
         Ok(Self {
             model: std::sync::Mutex::new(model),
             device,
@@ -56,41 +55,45 @@ impl RlLevelHoldController {
 impl FlightController for RlLevelHoldController {
     fn update(&mut self, state: &FlightState, _dt: f32) -> ControlInputs {
         let obs = build_obs(state, self.target_altitude, self.target_airspeed);
-        let obs_t = Tensor::<InfB, 2>::from_data(
-            TensorData::new(obs, vec![1, 10]),
-            &self.device,
-        );
+        let obs_t = Tensor::<InfB, 2>::from_data(TensorData::new(obs, vec![1, 10]), &self.device);
         // Deterministic inference: use mean action (no sampling noise).
         let action_t = self.model.lock().unwrap().mean_action(obs_t);
-        let action = action_t.into_data().to_vec::<f32>().expect("rl action data");
+        let action = action_t
+            .into_data()
+            .to_vec::<f32>()
+            .expect("rl action data");
 
         // action = [elevator, throttle_norm, aileron, rudder]
         // throttle_norm in [-1,1] → throttle in [0,1]
         let mut inputs = ControlInputs {
             elevator: action[0],
             throttle: (action[1] + 1.0) / 2.0,
-            aileron:  action[2],
-            rudder:   action[3],
+            aileron: action[2],
+            rudder: action[3],
         };
         inputs.clamp();
         inputs
     }
 
-    fn name(&self) -> &'static str { "RlLevelHold" }
+    fn name(&self) -> &'static str {
+        "RlLevelHold"
+    }
 
-    fn as_any_mut(&mut self) -> &mut dyn Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
 }
 
 /// Build normalized 10-dim observation matching `LevelHoldEnv::build_observation`.
 fn build_obs(state: &FlightState, target_alt: f32, target_spd: f32) -> Vec<f32> {
-    let alt_err   = state.altitude - target_alt;
-    let speed_err = state.airspeed  - target_spd;
-    let roll      = roll_angle(state.attitude);
+    let alt_err = state.altitude - target_alt;
+    let speed_err = state.airspeed - target_spd;
+    let roll = roll_angle(state.attitude);
     let p = state.angular_velocity.x;
     let q = state.angular_velocity.y;
     let r = state.angular_velocity.z;
     vec![
-        alt_err   / 200.0,
+        alt_err / 200.0,
         speed_err / 50.0,
         state.alpha / 0.5,
         q / 1.0,
@@ -105,11 +108,13 @@ fn build_obs(state: &FlightState, target_alt: f32, target_spd: f32) -> Vec<f32> 
 
 fn roll_angle(attitude: Quat) -> f32 {
     let right_world = attitude * bevy::math::Vec3::Y;
-    let up_world    = attitude * bevy::math::Vec3::Z;
+    let up_world = attitude * bevy::math::Vec3::Z;
     right_world.y.atan2(up_world.y)
 }
 
 fn pitch_angle(attitude: Quat) -> f32 {
     let fwd_world = attitude * bevy::math::Vec3::X;
-    fwd_world.y.atan2((fwd_world.x * fwd_world.x + fwd_world.z * fwd_world.z).sqrt())
+    fwd_world
+        .y
+        .atan2((fwd_world.x * fwd_world.x + fwd_world.z * fwd_world.z).sqrt())
 }

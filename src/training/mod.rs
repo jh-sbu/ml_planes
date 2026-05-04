@@ -1,11 +1,14 @@
 pub mod env;
+mod flight_env;
 pub mod level_hold_env;
-pub mod vec_env;
+pub mod orbit_env;
 #[cfg(feature = "training")]
 pub mod ppo;
+pub mod vec_env;
 
 pub use env::{Observation, SpawnSpec, StepInfo, TrainingEnv};
 pub use level_hold_env::LevelHoldEnv;
-pub use vec_env::VecEnv;
+pub use orbit_env::OrbitEnv;
 #[cfg(feature = "training")]
 pub use ppo::{ActorCritic, PpoTrainer, RolloutBuffer};
+pub use vec_env::VecEnv;

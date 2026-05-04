@@ -9,7 +9,7 @@ pub struct SpawnSpec {
     pub angular_velocity: Option<Vec3>,
 }
 
-pub type Observation = [f32; 10];
+pub type Observation = Vec<f32>;
 
 #[derive(Debug, Clone, Default)]
 pub struct StepInfo {
@@ -26,6 +26,9 @@ pub trait TrainingEnv: Send + Sync + 'static {
 
     fn observation_dim(&self) -> usize;
     fn action_dim(&self) -> usize;
+
+    /// Shift deterministic episode variation for cloned vectorized envs.
+    fn offset_rng_seed(&mut self, _offset: u64) {}
 }
 
 #[cfg(test)]

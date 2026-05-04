@@ -2,17 +2,21 @@ use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
 
 use ml_planes::controllers::{
-    ControllerKind, LevelHoldController, ModelLibrary, WingmanController,
-    FormationOffset, LeaderRef, LeaderState,
+    ControllerKind, FormationOffset, LeaderRef, LeaderState, LevelHoldController, ModelLibrary,
+    WingmanController,
 };
 #[cfg(feature = "training")]
 use ml_planes::controllers::{RlLevelHoldController, SelectedModel};
-use ml_planes::environment::{EnvironmentPlugin, spawn_plane};
+#[cfg(all(feature = "visual", feature = "training"))]
+use ml_planes::controllers::{RlOrbitConfig, RlOrbitController};
+use ml_planes::environment::{spawn_plane, EnvironmentPlugin};
 use ml_planes::plane::{config::PlaneConfig, FlightState, PlaneIndex, PlanePlugin};
 use ml_planes::training::SpawnSpec;
 
 #[cfg(feature = "visual")]
-use ml_planes::controllers::{ActiveController, ControllerTuning, PlaneTuning, SelectedTuningProfile};
+use ml_planes::controllers::{
+    ActiveController, ControllerTuning, PlaneTuning, SelectedTuningProfile,
+};
 #[cfg(feature = "visual")]
 use ml_planes::plane::ControlInputs;
 #[cfg(feature = "visual")]
@@ -60,10 +64,13 @@ fn main() {
     #[cfg(feature = "visual")]
     app.add_systems(PostUpdate, apply_controller_switch);
     #[cfg(all(feature = "visual", feature = "training"))]
-    app.add_systems(PostUpdate, (
-        apply_rl_controller_switch.after(apply_controller_switch),
-        apply_model_switch,
-    ));
+    app.add_systems(
+        PostUpdate,
+        (
+            apply_rl_controller_switch.after(apply_controller_switch),
+            apply_model_switch,
+        ),
+    );
 
     app.run();
 }
@@ -73,15 +80,32 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     // Only used for AdditionalMassProperties at spawn time.
     // Aerodynamic coefficients are ignored here; the async-loaded handle drives aero.
     let cfg = PlaneConfig {
-        wing_area: 20.0, mean_chord: 2.0, wing_span: 10.0,
-        mass: 5000.0, inertia: Vec3::new(10000.0, 40000.0, 45000.0),
-        cl0: 0.0, cl_alpha: 0.0, cl_delta_e: 0.0, cl_max: 1.4,
-        cd0: 0.0, cd_induced: 0.0,
-        cm0: 0.0, cm_alpha: 0.0, cm_q: 0.0, cm_delta_e: 0.0,
-        cl_beta: 0.0, cl_p: 0.0, cl_r: 0.0, cl_delta_a: 0.0,
-        cn_beta: 0.0, cn_r: 0.0, cn_delta_r: 0.0,
+        wing_area: 20.0,
+        mean_chord: 2.0,
+        wing_span: 10.0,
+        mass: 5000.0,
+        inertia: Vec3::new(10000.0, 40000.0, 45000.0),
+        cl0: 0.0,
+        cl_alpha: 0.0,
+        cl_delta_e: 0.0,
+        cl_max: 1.4,
+        cd0: 0.0,
+        cd_induced: 0.0,
+        cm0: 0.0,
+        cm_alpha: 0.0,
+        cm_q: 0.0,
+        cm_delta_e: 0.0,
+        cl_beta: 0.0,
+        cl_p: 0.0,
+        cl_r: 0.0,
+        cl_delta_a: 0.0,
+        cn_beta: 0.0,
+        cn_r: 0.0,
+        cn_delta_r: 0.0,
         thrust_max: 0.0,
-        aileron_limit: 0.4363, elevator_limit: 0.3491, rudder_limit: 0.2618,
+        aileron_limit: 0.4363,
+        elevator_limit: 0.3491,
+        rudder_limit: 0.2618,
     };
 
     // --- Leader plane: LevelHold at 1000 m / 100 m/s ---
@@ -114,8 +138,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
 
     #[cfg(feature = "visual")]
     {
-        let tuning_handle: Handle<PlaneTuning> =
-            asset_server.load("planes/generic_jet.tuning.ron");
+        let tuning_handle: Handle<PlaneTuning> = asset_server.load("planes/generic_jet.tuning.ron");
         commands.entity(leader).insert((
             PlaneTuningHandle(tuning_handle),
             SelectedTuningProfile("normal".to_string()),
@@ -124,7 +147,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
 
     // --- Wingman plane: trails 20 m behind, 15 m to the right ---
     let offset = FormationOffset::default(); // (-20, 15, 0) in leader body frame
-    // With rotation_x(-π/2): body +Y (right) maps to world +Z, body +X (fwd) maps to world +X.
+                                             // With rotation_x(-π/2): body +Y (right) maps to world +Z, body +X (fwd) maps to world +X.
     let wingman_pos = leader_pos + leader_attitude * offset.offset_body;
     let own_initial = FlightState {
         position: wingman_pos,
@@ -143,7 +166,11 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
             velocity: Some(leader_vel),
             ..Default::default()
         },
-        Box::new(WingmanController::new(&leader_initial, &own_initial, offset.clone())),
+        Box::new(WingmanController::new(
+            &leader_initial,
+            &own_initial,
+            offset.clone(),
+        )),
         ControllerKind::Wingman,
         &cfg,
     );
@@ -176,10 +203,9 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
                         ControllerKind::RlLevelHold,
                         &cfg,
                     );
-                    commands.entity(rl_plane).insert((
-                        PlaneIndex(3),
-                        SelectedModel(model_path.to_string()),
-                    ));
+                    commands
+                        .entity(rl_plane)
+                        .insert((PlaneIndex(3), SelectedModel(model_path.to_string())));
                 }
                 Err(e) => eprintln!("Failed to load RL model from {model_path}.mpk: {e}"),
             }
@@ -219,13 +245,16 @@ fn scan_models(mut commands: Commands) {
     let mut lib: std::collections::HashMap<String, Vec<String>> = Default::default();
     if let Ok(categories) = std::fs::read_dir("models/") {
         for cat in categories.flatten() {
-            if !cat.file_type().map(|t| t.is_dir()).unwrap_or(false) { continue; }
+            if !cat.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
             let cat_name = match cat.file_name().into_string() {
                 Ok(s) => s,
                 Err(_) => continue,
             };
             if let Ok(files) = std::fs::read_dir(cat.path()) {
-                let mut stems: Vec<String> = files.flatten()
+                let mut stems: Vec<String> = files
+                    .flatten()
                     .filter_map(|f| {
                         let name = f.file_name().into_string().ok()?;
                         let stem = name.strip_suffix(".mpk")?;
@@ -246,57 +275,169 @@ fn scan_models(mut commands: Commands) {
 #[cfg(all(feature = "visual", feature = "training"))]
 fn apply_model_switch(
     mut query: Query<
-        (&mut ActiveController, &SelectedModel),
+        (
+            &FlightState,
+            &mut ActiveController,
+            &ControllerKind,
+            &SelectedModel,
+        ),
         Changed<SelectedModel>,
     >,
 ) {
-    for (mut ctrl, sel) in query.iter_mut() {
-        let (target_alt, target_spd) = ctrl.0
-            .as_any_mut()
-            .downcast_mut::<RlLevelHoldController>()
-            .map(|r| (r.target_altitude, r.target_airspeed))
-            .unwrap_or((1000.0, 100.0));
-        match RlLevelHoldController::load(&sel.0, target_alt, target_spd) {
-            Ok(new_ctrl) => ctrl.0 = Box::new(new_ctrl),
-            Err(e) => eprintln!("Failed to load model {}: {e}", sel.0),
+    for (state, mut ctrl, kind, sel) in query.iter_mut() {
+        let Some(dir) = kind.model_dir() else {
+            continue;
+        };
+        if !model_path_matches_dir(&sel.0, dir) {
+            eprintln!("Ignoring model '{}' for controller {}", sel.0, kind.name());
+            continue;
+        }
+
+        match *kind {
+            ControllerKind::RlLevelHold => {
+                let (target_alt, target_spd) = level_hold_targets_from_controller(&mut ctrl, state);
+                match RlLevelHoldController::load(&sel.0, target_alt, target_spd) {
+                    Ok(new_ctrl) => ctrl.0 = Box::new(new_ctrl),
+                    Err(e) => eprintln!("Failed to load model {}: {e}", sel.0),
+                }
+            }
+            ControllerKind::RlOrbit => {
+                let config = orbit_config_from_controller(&mut ctrl, state);
+                match RlOrbitController::load(&sel.0, config) {
+                    Ok(new_ctrl) => ctrl.0 = Box::new(new_ctrl),
+                    Err(e) => eprintln!("Failed to load model {}: {e}", sel.0),
+                }
+            }
+            _ => {}
         }
     }
 }
 
-/// When `ControllerKind` changes to `RlLevelHold`, load the actual RL model,
-/// overriding the `LevelHold` fallback that `apply_controller_switch` produces.
+/// When `ControllerKind` changes to an RL kind, load the actual RL model,
+/// overriding the PID fallback that `apply_controller_switch` produces.
 /// If the entity lacks `SelectedModel`, inserts a default so `apply_model_switch`
 /// loads the controller on the next frame.
 #[cfg(all(feature = "visual", feature = "training"))]
 fn apply_rl_controller_switch(
     mut commands: Commands,
     mut query: Query<
-        (Entity, &FlightState, &mut ActiveController, Ref<ControllerKind>, Option<&SelectedModel>),
+        (
+            Entity,
+            &FlightState,
+            &mut ActiveController,
+            Mut<ControllerKind>,
+            Option<&SelectedModel>,
+        ),
         Changed<ControllerKind>,
     >,
     model_lib: Res<ModelLibrary>,
 ) {
-    for (entity, state, mut controller, kind, sel) in query.iter_mut() {
-        if *kind != ControllerKind::RlLevelHold || kind.is_added() {
+    for (entity, state, mut controller, mut kind, sel) in query.iter_mut() {
+        if kind.is_added()
+            || !matches!(*kind, ControllerKind::RlLevelHold | ControllerKind::RlOrbit)
+        {
             continue;
         }
-        if let Some(sel) = sel {
-            let (tgt_alt, tgt_spd) = controller.0
-                .as_any_mut()
-                .downcast_mut::<RlLevelHoldController>()
-                .map(|r| (r.target_altitude, r.target_airspeed))
-                .unwrap_or((state.altitude, state.airspeed));
-            match RlLevelHoldController::load(&sel.0, tgt_alt, tgt_spd) {
-                Ok(rl) => controller.0 = Box::new(rl),
-                Err(e) => eprintln!("Failed to load RL model '{}': {e}", sel.0),
+
+        let Some(path) = selected_or_default_model_path(*kind, sel, &model_lib) else {
+            if *kind == ControllerKind::RlOrbit {
+                kind.set_if_neq(ControllerKind::Orbit);
             }
-        } else if let Some(paths) = model_lib.0.get("level_hold") {
-            if let Some(path) = paths.first() {
-                commands.entity(entity).insert(SelectedModel(path.clone()));
-                // apply_model_switch will load the controller next frame
+            continue;
+        };
+
+        if sel.map(|s| s.0.as_str()) != Some(path.as_str()) {
+            commands.entity(entity).insert(SelectedModel(path.clone()));
+        }
+
+        match *kind {
+            ControllerKind::RlLevelHold => {
+                let (tgt_alt, tgt_spd) = level_hold_targets_from_controller(&mut controller, state);
+                match RlLevelHoldController::load(&path, tgt_alt, tgt_spd) {
+                    Ok(rl) => controller.0 = Box::new(rl),
+                    Err(e) => eprintln!("Failed to load RL model '{}': {e}", path),
+                }
             }
+            ControllerKind::RlOrbit => {
+                let config = orbit_config_from_controller(&mut controller, state);
+                match RlOrbitController::load(&path, config) {
+                    Ok(rl) => controller.0 = Box::new(rl),
+                    Err(e) => {
+                        eprintln!("Failed to load RL orbit model '{}': {e}", path);
+                        kind.set_if_neq(ControllerKind::Orbit);
+                    }
+                }
+            }
+            _ => {}
         }
     }
+}
+
+#[cfg(all(feature = "visual", feature = "training"))]
+fn selected_or_default_model_path(
+    kind: ControllerKind,
+    selected: Option<&SelectedModel>,
+    model_lib: &ModelLibrary,
+) -> Option<String> {
+    let dir = kind.model_dir()?;
+    if let Some(sel) = selected {
+        if model_path_matches_dir(&sel.0, dir) {
+            return Some(sel.0.clone());
+        }
+    }
+    model_lib
+        .0
+        .get(dir)
+        .and_then(|paths| paths.first().cloned())
+}
+
+#[cfg(all(feature = "visual", feature = "training"))]
+fn model_path_matches_dir(path: &str, dir: &str) -> bool {
+    path.starts_with(&format!("models/{dir}/"))
+}
+
+#[cfg(all(feature = "visual", feature = "training"))]
+fn level_hold_targets_from_controller(
+    controller: &mut ActiveController,
+    state: &FlightState,
+) -> (f32, f32) {
+    if let Some(rl) = controller
+        .0
+        .as_any_mut()
+        .downcast_mut::<RlLevelHoldController>()
+    {
+        return (rl.target_altitude, rl.target_airspeed);
+    }
+    if let Some(lh) = controller
+        .0
+        .as_any_mut()
+        .downcast_mut::<LevelHoldController>()
+    {
+        return (lh.target_altitude, lh.target_airspeed);
+    }
+    (state.altitude, state.airspeed)
+}
+
+#[cfg(all(feature = "visual", feature = "training"))]
+fn orbit_config_from_controller(
+    controller: &mut ActiveController,
+    state: &FlightState,
+) -> RlOrbitConfig {
+    if let Some(rl) = controller
+        .0
+        .as_any_mut()
+        .downcast_mut::<RlOrbitController>()
+    {
+        return rl.config();
+    }
+    if let Some(orbit) = controller
+        .0
+        .as_any_mut()
+        .downcast_mut::<ml_planes::controllers::OrbitController>()
+    {
+        return RlOrbitConfig::from_orbit(orbit);
+    }
+    RlOrbitConfig::from_state(state)
 }
 
 /// Rebuild `ActiveController` whenever `ControllerKind` or `SelectedTuningProfile` changes.
@@ -321,7 +462,10 @@ fn apply_controller_switch(
         // Skip entities that matched only because components were just inserted at spawn —
         // their controllers were already constructed correctly before spawning.
         let kind_mutated = kind.is_changed() && !kind.is_added();
-        let profile_mutated = profile.as_ref().map(|p| p.is_changed() && !p.is_added()).unwrap_or(false);
+        let profile_mutated = profile
+            .as_ref()
+            .map(|p| p.is_changed() && !p.is_added())
+            .unwrap_or(false);
         if !kind_mutated && !profile_mutated {
             continue;
         }
@@ -329,8 +473,12 @@ fn apply_controller_switch(
         let tuning: Option<&dyn ControllerTuning> = tuning_handle
             .and_then(|h| tuning_assets.get(&h.0))
             .and_then(|pt| match *kind {
-                ControllerKind::Orbit => pt.get_orbit(profile_name).map(|t| t as &dyn ControllerTuning),
-                _                     => pt.get_level_hold(profile_name).map(|t| t as &dyn ControllerTuning),
+                ControllerKind::Orbit | ControllerKind::RlOrbit => pt
+                    .get_orbit(profile_name)
+                    .map(|t| t as &dyn ControllerTuning),
+                _ => pt
+                    .get_level_hold(profile_name)
+                    .map(|t| t as &dyn ControllerTuning),
             });
         controller.0 = kind.build(state, tuning, prev_inputs);
     }

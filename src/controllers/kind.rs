@@ -2,7 +2,9 @@ use bevy::prelude::Component;
 
 use crate::controllers::orbit::OrbitController;
 use crate::controllers::tuning::ControllerTuning;
-use crate::controllers::{AscentController, FlightController, LevelHoldController, ManualController};
+use crate::controllers::{
+    AscentController, FlightController, LevelHoldController, ManualController,
+};
 use crate::plane::{ControlInputs, FlightState};
 
 /// Identifies which controller implementation is active on a plane entity.
@@ -28,23 +30,36 @@ pub enum ControllerKind {
     RlLevelHold,
     /// Circular orbit around a configurable world-frame point.
     Orbit,
+    /// ML-based circular orbit (PPO policy). Controller must be constructed
+    /// explicitly via `RlOrbitController::load()`; `build()` falls back to
+    /// `Orbit` when no model is available.
+    RlOrbit,
 }
 
 impl ControllerKind {
     #[cfg(not(feature = "training"))]
-    pub const ALL: &'static [ControllerKind] = &[Self::Manual, Self::LevelHold, Self::Ascent, Self::Orbit];
+    pub const ALL: &'static [ControllerKind] =
+        &[Self::Manual, Self::LevelHold, Self::Ascent, Self::Orbit];
 
     #[cfg(feature = "training")]
-    pub const ALL: &'static [ControllerKind] = &[Self::Manual, Self::LevelHold, Self::Ascent, Self::RlLevelHold, Self::Orbit];
+    pub const ALL: &'static [ControllerKind] = &[
+        Self::Manual,
+        Self::LevelHold,
+        Self::Ascent,
+        Self::RlLevelHold,
+        Self::Orbit,
+        Self::RlOrbit,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
-            ControllerKind::Manual      => "Manual",
-            ControllerKind::LevelHold   => "Level Hold",
-            ControllerKind::Wingman     => "Wingman",
-            ControllerKind::Ascent      => "Ascent",
+            ControllerKind::Manual => "Manual",
+            ControllerKind::LevelHold => "Level Hold",
+            ControllerKind::Wingman => "Wingman",
+            ControllerKind::Ascent => "Ascent",
             ControllerKind::RlLevelHold => "RL Level Hold",
-            ControllerKind::Orbit       => "Orbit",
+            ControllerKind::Orbit => "Orbit",
+            ControllerKind::RlOrbit => "RL Orbit",
         }
     }
 
@@ -53,6 +68,7 @@ impl ControllerKind {
     pub fn model_dir(self) -> Option<&'static str> {
         match self {
             ControllerKind::RlLevelHold => Some("level_hold"),
+            ControllerKind::RlOrbit => Some("orbit"),
             _ => None,
         }
     }
@@ -88,16 +104,54 @@ impl ControllerKind {
     ) -> Box<dyn FlightController> {
         match self {
             ControllerKind::Manual => Box::new(ManualController::new()),
-            ControllerKind::Ascent => Box::new(AscentController::new(state, state.altitude + 1000.0)),
-            ControllerKind::Orbit => match tuning {
+            ControllerKind::Ascent => {
+                Box::new(AscentController::new(state, state.altitude + 1000.0))
+            }
+            ControllerKind::Orbit | ControllerKind::RlOrbit => match tuning {
                 Some(t) => t.build(state, prev_inputs),
-                None    => Box::new(OrbitController::from_state(state, prev_inputs)),
+                None => Box::new(OrbitController::from_state(state, prev_inputs)),
             },
             // RlLevelHold requires a model path — fall back to LevelHold like Wingman.
-            ControllerKind::LevelHold | ControllerKind::Wingman | ControllerKind::RlLevelHold => match tuning {
-                Some(t) => t.build(state, prev_inputs),
-                None    => Box::new(LevelHoldController::from_state(state, prev_inputs)),
-            },
+            ControllerKind::LevelHold | ControllerKind::Wingman | ControllerKind::RlLevelHold => {
+                match tuning {
+                    Some(t) => t.build(state, prev_inputs),
+                    None => Box::new(LevelHoldController::from_state(state, prev_inputs)),
+                }
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::math::{Quat, Vec3};
+
+    fn state() -> FlightState {
+        FlightState {
+            position: Vec3::new(0.0, 1000.0, 0.0),
+            velocity: Vec3::new(100.0, 0.0, 0.0),
+            attitude: Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
+            airspeed: 100.0,
+            altitude: 1000.0,
+            ..Default::default()
+        }
+    }
+
+    #[cfg(feature = "training")]
+    #[test]
+    fn rl_orbit_uses_orbit_model_dir() {
+        assert_eq!(ControllerKind::RlOrbit.model_dir(), Some("orbit"));
+        assert!(ControllerKind::ALL.contains(&ControllerKind::RlOrbit));
+    }
+
+    #[test]
+    fn rl_orbit_builds_pid_orbit_fallback() {
+        let mut controller =
+            ControllerKind::RlOrbit.build(&state(), None, &ControlInputs::default());
+        assert!(controller
+            .as_any_mut()
+            .downcast_mut::<OrbitController>()
+            .is_some());
     }
 }
