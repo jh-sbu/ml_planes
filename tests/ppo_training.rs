@@ -13,6 +13,7 @@ use ml_planes::training::ppo::PpoTrainer;
 use ml_planes::training::{LevelHoldEnv, OrbitEnv};
 
 type B = Autodiff<NdArray>;
+const ORBIT_OBS_DIM: usize = 13;
 
 fn jet_cfg() -> PlaneConfig {
     PlaneConfig {
@@ -104,19 +105,19 @@ fn orbit_ppo_short_loop_no_nan() {
     trainer.n_epochs = 1;
 
     let reset_obs = trainer.envs.reset_all();
-    assert_eq!(reset_obs[0].len(), 12);
+    assert_eq!(reset_obs[0].len(), ORBIT_OBS_DIM);
     trainer.envs.reset_at(0);
 
     for _ in 0..3 {
         let (buffer, _mean_ret, _ep_len) = trainer.collect_rollout();
-        assert_eq!(buffer.steps[0].obs.len(), 12);
+        assert_eq!(buffer.steps[0].obs.len(), ORBIT_OBS_DIM);
         let _ = trainer.update(&buffer);
     }
 
     let inner = trainer.model.valid();
     let inner_device = inner.log_std.val().device();
     let test_obs = Tensor::<<B as burn::tensor::backend::AutodiffBackend>::InnerBackend, 2>::zeros(
-        [1, 12],
+        [1, ORBIT_OBS_DIM],
         &inner_device,
     );
     let (action, lp) = inner.sample_action(test_obs);

@@ -1,9 +1,9 @@
 //! Training environment for direct-control circular orbit.
 //!
-//! Observation (dim = 12, normalized):
+//! Observation (dim = 13, normalized):
 //!   [radial_err/500, heading_err/0.5, bank_ff/60deg,
 //!    alt_err/200, speed_err/50, alpha/0.5, pitch/0.5, pitch_rate/1,
-//!    roll/0.5, roll_rate/1, beta/0.5, yaw_rate/1]
+//!    roll/0.5, roll_rate/1, beta/0.5, yaw_rate/1, vertical_speed/30]
 //!
 //! Action (dim = 4, each in [-1, 1]):
 //!   [elevator, throttle_norm, aileron, rudder]
@@ -12,7 +12,8 @@
 use bevy::math::{Mat3, Quat, Vec3};
 
 use crate::controllers::orbit::{
-    build_orbit_observation, orbit_observation_terms, OrbitDirection, ORBIT_OBS_DIM,
+    build_orbit_observation, build_orbit_observation_from_terms, orbit_observation_terms,
+    OrbitDirection, OrbitObservationTerms, ORBIT_OBS_DIM,
 };
 use crate::plane::{FlightState, PlaneConfig};
 use crate::training::flight_env::{direct_action_to_inputs, integrate_state, roll_angle, Lcg};
@@ -22,6 +23,12 @@ const TWO_PI: f32 = std::f32::consts::PI * 2.0;
 const HEADING_PERTURB_RANGE: f32 = 25.0 * std::f32::consts::PI / 180.0;
 const ANG_VEL_RANGE: f32 = 5.0 * std::f32::consts::PI / 180.0;
 const VVEL_RANGE: f32 = 2.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminationReason {
+    Failure,
+    Timeout,
+}
 
 #[derive(Clone)]
 pub struct OrbitEnv {
@@ -54,6 +61,24 @@ pub struct OrbitEnv {
 }
 
 impl OrbitEnv {
+    const RADIAL_REWARD_SCALE: f32 = 500.0;
+    const RADIAL_REWARD_WEIGHT: f32 = 1.4;
+    const HEADING_REWARD_SCALE: f32 = 0.5;
+    const HEADING_REWARD_WEIGHT: f32 = 1.2;
+    const ALTITUDE_REWARD_SCALE: f32 = 200.0;
+    const ALTITUDE_REWARD_WEIGHT: f32 = 1.0;
+    const SPEED_REWARD_SCALE: f32 = 50.0;
+    const SPEED_REWARD_WEIGHT: f32 = 0.4;
+    const ROLL_REWARD_SCALE: f32 = 0.8;
+    const ROLL_REWARD_WEIGHT: f32 = 0.1;
+    const BETA_REWARD_SCALE: f32 = 0.5;
+    const BETA_REWARD_WEIGHT: f32 = 0.1;
+    const ALIVE_REWARD: f32 = 0.01;
+    const TERMINAL_FAILURE_PENALTY: f32 = -25.0;
+    const MIN_ALTITUDE: f32 = 10.0;
+    const MAX_ALTITUDE_ERROR: f32 = 700.0;
+    const MIN_AIRSPEED: f32 = 20.0;
+
     pub fn new(
         target_altitude: f32,
         target_airspeed: f32,
@@ -93,14 +118,26 @@ impl OrbitEnv {
         )
     }
 
-    fn compute_reward(&self) -> f32 {
-        let terms = orbit_observation_terms(
+    fn current_terms(&self) -> OrbitObservationTerms {
+        orbit_observation_terms(
             &self.state,
             self.center_x,
             self.center_z,
             self.target_radius,
             self.direction,
-        );
+        )
+    }
+
+    fn build_observation_from_terms(&self, terms: &OrbitObservationTerms) -> Observation {
+        build_orbit_observation_from_terms(
+            &self.state,
+            self.target_altitude,
+            self.target_airspeed,
+            terms,
+        )
+    }
+
+    fn compute_base_reward(&self, terms: &OrbitObservationTerms) -> f32 {
         let radial_err = terms.radial_error.abs();
         let heading_err = terms.heading_error.abs();
         let alt_err = (self.state.altitude - self.target_altitude).abs();
@@ -108,28 +145,39 @@ impl OrbitEnv {
         let roll = roll_angle(self.state.attitude).abs();
         let beta = self.state.beta.abs();
 
-        -(radial_err / 500.0) * 1.0
-            - (heading_err / 0.5) * 0.8
-            - (alt_err / 200.0) * 0.4
-            - (speed_err / 50.0) * 0.2
-            - (roll / 0.8) * 0.1
-            - (beta / 0.5) * 0.1
-            + 0.01
+        -(radial_err / Self::RADIAL_REWARD_SCALE) * Self::RADIAL_REWARD_WEIGHT
+            - (heading_err / Self::HEADING_REWARD_SCALE) * Self::HEADING_REWARD_WEIGHT
+            - (alt_err / Self::ALTITUDE_REWARD_SCALE) * Self::ALTITUDE_REWARD_WEIGHT
+            - (speed_err / Self::SPEED_REWARD_SCALE) * Self::SPEED_REWARD_WEIGHT
+            - (roll / Self::ROLL_REWARD_SCALE) * Self::ROLL_REWARD_WEIGHT
+            - (beta / Self::BETA_REWARD_SCALE) * Self::BETA_REWARD_WEIGHT
+            + Self::ALIVE_REWARD
     }
 
-    fn is_done(&self) -> bool {
-        let terms = orbit_observation_terms(
-            &self.state,
-            self.center_x,
-            self.center_z,
-            self.target_radius,
-            self.direction,
-        );
-        self.state.altitude < 10.0
-            || (self.state.altitude - self.target_altitude).abs() > 700.0
+    #[cfg(test)]
+    fn compute_reward(&self) -> f32 {
+        let terms = self.current_terms();
+        self.compute_base_reward(&terms)
+    }
+
+    fn termination_reason(&self, terms: &OrbitObservationTerms) -> Option<TerminationReason> {
+        if self.state.altitude < Self::MIN_ALTITUDE
+            || (self.state.altitude - self.target_altitude).abs() > Self::MAX_ALTITUDE_ERROR
             || terms.radial_error.abs() > self.target_radius.max(500.0)
-            || self.state.airspeed < 20.0
-            || self.episode_step >= self.max_episode_steps
+            || self.state.airspeed < Self::MIN_AIRSPEED
+        {
+            Some(TerminationReason::Failure)
+        } else if self.episode_step >= self.max_episode_steps {
+            Some(TerminationReason::Timeout)
+        } else {
+            None
+        }
+    }
+
+    #[cfg(test)]
+    fn is_done(&self) -> bool {
+        let terms = self.current_terms();
+        self.termination_reason(&terms).is_some()
     }
 }
 
@@ -223,9 +271,14 @@ impl TrainingEnv for OrbitEnv {
         integrate_state(&mut self.state, &inputs, &self.cfg, self.dt);
         self.episode_step += 1;
 
-        let obs = self.build_observation();
-        let reward = self.compute_reward();
-        let done = self.is_done();
+        let terms = self.current_terms();
+        let obs = self.build_observation_from_terms(&terms);
+        let termination = self.termination_reason(&terms);
+        let mut reward = self.compute_base_reward(&terms);
+        if termination == Some(TerminationReason::Failure) {
+            reward += Self::TERMINAL_FAILURE_PENALTY;
+        }
+        let done = termination.is_some();
         let info = StepInfo {
             episode_step: self.episode_step,
             ..Default::default()
@@ -313,6 +366,7 @@ mod tests {
     #[test]
     fn dimensions_are_correct() {
         let env = OrbitEnv::new(1000.0, 100.0, 1000.0, jet_cfg());
+        assert_eq!(ORBIT_OBS_DIM, 13);
         assert_eq!(env.observation_dim(), ORBIT_OBS_DIM);
         assert_eq!(env.action_dim(), 4);
     }
@@ -365,5 +419,40 @@ mod tests {
         env.state = state_at(1000.0, Vec3::X);
         env.episode_step = env.max_episode_steps;
         assert!(env.is_done(), "max episode steps should terminate");
+    }
+
+    #[test]
+    fn failure_terminal_reward_includes_penalty() {
+        let mut env = OrbitEnv::new(1000.0, 100.0, 1000.0, jet_cfg());
+        env.state = state_at(1000.0, Vec3::X);
+        env.state.position.y = 5.0;
+        env.state.altitude = 5.0;
+
+        let (_obs, reward, done, _info) = env.step(&[0.0, 0.0, 0.0, 0.0]);
+
+        assert!(done, "low altitude should terminate");
+        let terms = env.current_terms();
+        let expected = env.compute_base_reward(&terms) + OrbitEnv::TERMINAL_FAILURE_PENALTY;
+        assert!(
+            (reward - expected).abs() < 1e-4,
+            "reward={reward} expected={expected}"
+        );
+    }
+
+    #[test]
+    fn timeout_terminal_reward_does_not_include_failure_penalty() {
+        let mut env = OrbitEnv::new(1000.0, 100.0, 1000.0, jet_cfg());
+        env.state = state_at(1000.0, Vec3::X);
+        env.max_episode_steps = 1;
+
+        let (_obs, reward, done, _info) = env.step(&[0.0, 0.0, 0.0, 0.0]);
+
+        assert!(done, "max episode steps should terminate");
+        let terms = env.current_terms();
+        let expected = env.compute_base_reward(&terms);
+        assert!(
+            (reward - expected).abs() < 1e-4,
+            "reward={reward} expected={expected}"
+        );
     }
 }

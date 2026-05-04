@@ -27,7 +27,7 @@ impl OrbitDirection {
     }
 }
 
-pub(crate) const ORBIT_OBS_DIM: usize = 12;
+pub(crate) const ORBIT_OBS_DIM: usize = 13;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct OrbitObservationTerms {
@@ -83,6 +83,15 @@ pub(crate) fn build_orbit_observation(
     direction: OrbitDirection,
 ) -> Vec<f32> {
     let terms = orbit_observation_terms(state, center_x, center_z, target_radius, direction);
+    build_orbit_observation_from_terms(state, target_altitude, target_airspeed, &terms)
+}
+
+pub(crate) fn build_orbit_observation_from_terms(
+    state: &FlightState,
+    target_altitude: f32,
+    target_airspeed: f32,
+    terms: &OrbitObservationTerms,
+) -> Vec<f32> {
     let alt_err = state.altitude - target_altitude;
     let speed_err = state.airspeed - target_airspeed;
     let roll = roll_angle(state.attitude);
@@ -104,6 +113,7 @@ pub(crate) fn build_orbit_observation(
         p / 1.0,
         state.beta / 0.5,
         r / 1.0,
+        state.velocity.y / 30.0,
     ]
 }
 
@@ -445,6 +455,26 @@ mod tests {
             obs[2] < 0.0,
             "CCW bank feedforward should be negative, got {}",
             obs[2]
+        );
+    }
+
+    #[test]
+    fn orbit_observation_appends_vertical_speed() {
+        let state = make_state(Vec3::new(0.0, ALT, -R), Vec3::new(V, 15.0, 0.0));
+        let obs = build_orbit_observation(
+            &state,
+            0.0,
+            0.0,
+            R,
+            ALT,
+            state.airspeed,
+            OrbitDirection::CounterClockwise,
+        );
+        assert_eq!(obs.len(), ORBIT_OBS_DIM);
+        assert!(
+            (obs[ORBIT_OBS_DIM - 1] - 0.5).abs() < 1e-5,
+            "vertical speed obs={}",
+            obs[ORBIT_OBS_DIM - 1]
         );
     }
 
