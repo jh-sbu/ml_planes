@@ -54,6 +54,7 @@ pub fn draw_flight_hud(
             let knots = state.airspeed * 1.944;
             ui.label(format!("Airspeed:  {:.1} m/s  ({:.0} kts)", state.airspeed, knots));
             ui.label(format!("Altitude:  {:.1} m", state.altitude));
+            ui.label(format!("Position:  ({:.1}, {:.1}, {:.1})", state.position.x, state.position.y, state.position.z));
 
             let alpha_deg = state.alpha * 180.0 / PI;
             let beta_deg = state.beta * 180.0 / PI;
