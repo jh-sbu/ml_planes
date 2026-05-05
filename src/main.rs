@@ -3,22 +3,20 @@ use bevy_rapier3d::prelude::*;
 
 use ml_planes::controllers::{
     ControllerKind, FormationOffset, LeaderRef, LeaderState, LevelHoldController, ModelLibrary,
-    WingmanController,
+    OrbitController, OrbitDirection, WingmanController,
 };
 #[cfg(feature = "training")]
-use ml_planes::controllers::{RlLevelHoldController, SelectedModel};
-#[cfg(all(feature = "visual", feature = "training"))]
-use ml_planes::controllers::{RlOrbitConfig, RlOrbitController};
+use ml_planes::controllers::{
+    RlLevelHoldController, RlOrbitConfig, RlOrbitController, SelectedModel,
+};
 use ml_planes::environment::{spawn_plane, EnvironmentPlugin};
-use ml_planes::plane::{config::PlaneConfig, FlightState, PlaneIndex, PlanePlugin};
+use ml_planes::plane::{config::PlaneConfig, ControlInputs, FlightState, PlaneIndex, PlanePlugin};
 use ml_planes::training::SpawnSpec;
 
 #[cfg(feature = "visual")]
 use ml_planes::controllers::{
     ActiveController, ControllerTuning, PlaneTuning, SelectedTuningProfile,
 };
-#[cfg(feature = "visual")]
-use ml_planes::plane::ControlInputs;
 #[cfg(feature = "visual")]
 use ml_planes::plane::PlaneTuningHandle;
 
@@ -182,6 +180,98 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         PlaneIndex(2),
     ));
 
+    // --- PID orbit plane: 3000 m radius around origin at 1200 m / 100 m/s ---
+    let orbit_radius = 3000.0;
+    let orbit_speed = 100.0;
+    let orbit_direction = OrbitDirection::CounterClockwise;
+
+    let pid_orbit_pos = Vec3::new(0.0, 1200.0, -orbit_radius);
+    let pid_orbit_vel = Vec3::new(orbit_speed, 0.0, 0.0);
+    let pid_orbit_attitude = level_attitude_for_heading(pid_orbit_vel.x, pid_orbit_vel.z);
+    let mut pid_orbit_state = FlightState {
+        position: pid_orbit_pos,
+        velocity: pid_orbit_vel,
+        attitude: pid_orbit_attitude,
+        angular_velocity: Vec3::ZERO,
+        ..Default::default()
+    };
+    pid_orbit_state.update_air_data();
+
+    let mut pid_orbit_controller =
+        OrbitController::from_state(&pid_orbit_state, &ControlInputs::default());
+    configure_origin_orbit(
+        &mut pid_orbit_controller,
+        orbit_radius,
+        pid_orbit_state.altitude,
+        orbit_speed,
+        orbit_direction,
+    );
+
+    let pid_orbit = spawn_plane(
+        &mut commands,
+        &asset_server,
+        &SpawnSpec {
+            position: Some(pid_orbit_pos),
+            velocity: Some(pid_orbit_vel),
+            attitude: Some(pid_orbit_attitude),
+            ..Default::default()
+        },
+        Box::new(pid_orbit_controller),
+        ControllerKind::Orbit,
+        &cfg,
+    );
+    commands.entity(pid_orbit).insert(PlaneIndex(3));
+
+    #[cfg(feature = "visual")]
+    {
+        let tuning_handle: Handle<PlaneTuning> = asset_server.load("planes/generic_jet.tuning.ron");
+        commands.entity(pid_orbit).insert((
+            PlaneTuningHandle(tuning_handle),
+            SelectedTuningProfile("normal".to_string()),
+        ));
+    }
+
+    // --- Optional RL orbit plane: 3000 m radius around origin at 800 m / 100 m/s ---
+    #[cfg(feature = "training")]
+    {
+        let model_path = "models/orbit/ppo_orbit_1";
+        if std::path::Path::new(&format!("{model_path}.mpk")).exists() {
+            let rl_orbit_pos = Vec3::new(0.0, 800.0, orbit_radius);
+            let rl_orbit_vel = Vec3::new(-orbit_speed, 0.0, 0.0);
+            let rl_orbit_attitude = level_attitude_for_heading(rl_orbit_vel.x, rl_orbit_vel.z);
+            let config = RlOrbitConfig {
+                center_x: 0.0,
+                center_z: 0.0,
+                target_radius: orbit_radius,
+                target_altitude: rl_orbit_pos.y,
+                target_airspeed: orbit_speed,
+                direction: orbit_direction,
+            };
+
+            match RlOrbitController::load(model_path, config) {
+                Ok(rl_ctrl) => {
+                    let rl_orbit = spawn_plane(
+                        &mut commands,
+                        &asset_server,
+                        &SpawnSpec {
+                            position: Some(rl_orbit_pos),
+                            velocity: Some(rl_orbit_vel),
+                            attitude: Some(rl_orbit_attitude),
+                            ..Default::default()
+                        },
+                        Box::new(rl_ctrl),
+                        ControllerKind::RlOrbit,
+                        &cfg,
+                    );
+                    commands
+                        .entity(rl_orbit)
+                        .insert((PlaneIndex(4), SelectedModel(model_path.to_string())));
+                }
+                Err(e) => eprintln!("Failed to load RL orbit model from {model_path}.mpk: {e}"),
+            }
+        }
+    }
+
     // --- Optional RL comparison plane (requires `training` feature + trained weights) ---
     #[cfg(feature = "training")]
     {
@@ -205,12 +295,54 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
                     );
                     commands
                         .entity(rl_plane)
-                        .insert((PlaneIndex(3), SelectedModel(model_path.to_string())));
+                        .insert((PlaneIndex(5), SelectedModel(model_path.to_string())));
                 }
                 Err(e) => eprintln!("Failed to load RL model from {model_path}.mpk: {e}"),
             }
         }
     }
+}
+
+fn configure_origin_orbit(
+    orbit: &mut OrbitController,
+    radius: f32,
+    altitude: f32,
+    airspeed: f32,
+    direction: OrbitDirection,
+) {
+    orbit.center_x = 0.0;
+    orbit.center_z = 0.0;
+    orbit.target_radius = radius;
+    orbit.target_altitude = altitude;
+    orbit.target_airspeed = airspeed;
+    orbit.direction = direction;
+    orbit.inner.target_altitude = altitude;
+    orbit.inner.target_airspeed = airspeed;
+    orbit.inner.target_roll = steady_orbit_bank(airspeed, radius, direction);
+    orbit.radial_pid.reset();
+    orbit.heading_pid.reset();
+}
+
+fn steady_orbit_bank(airspeed: f32, radius: f32, direction: OrbitDirection) -> f32 {
+    const G: f32 = 9.81;
+    direction.sign() * (airspeed.powi(2) / (G * radius.max(1.0))).atan()
+}
+
+fn level_attitude_for_heading(head_x: f32, head_z: f32) -> Quat {
+    let forward = Vec3::new(head_x, 0.0, head_z).normalize_or_zero();
+    let forward = if forward.length_squared() > 0.0 {
+        forward
+    } else {
+        Vec3::X
+    };
+    let up = Vec3::Y;
+    let right = up.cross(forward).normalize_or_zero();
+    let right = if right.length_squared() > 0.0 {
+        right
+    } else {
+        Vec3::NEG_Z
+    };
+    Quat::from_mat3(&Mat3::from_cols(forward, right, up)).normalize()
 }
 
 #[cfg(feature = "visual")]
