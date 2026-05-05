@@ -27,16 +27,16 @@ impl OrbitDirection {
     }
 }
 
-pub(crate) const ORBIT_OBS_DIM: usize = 13;
+pub const ORBIT_OBS_DIM: usize = 13;
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct OrbitObservationTerms {
+pub struct OrbitObservationTerms {
     pub radial_error: f32,
     pub heading_error: f32,
     pub bank_ff: f32,
 }
 
-pub(crate) fn orbit_observation_terms(
+pub fn orbit_observation_terms(
     state: &FlightState,
     center_x: f32,
     center_z: f32,
@@ -73,7 +73,7 @@ pub(crate) fn orbit_observation_terms(
     }
 }
 
-pub(crate) fn build_orbit_observation(
+pub fn build_orbit_observation(
     state: &FlightState,
     center_x: f32,
     center_z: f32,
@@ -86,7 +86,7 @@ pub(crate) fn build_orbit_observation(
     build_orbit_observation_from_terms(state, target_altitude, target_airspeed, &terms)
 }
 
-pub(crate) fn build_orbit_observation_from_terms(
+pub fn build_orbit_observation_from_terms(
     state: &FlightState,
     target_altitude: f32,
     target_airspeed: f32,

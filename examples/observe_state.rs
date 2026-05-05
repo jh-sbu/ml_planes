@@ -9,10 +9,12 @@
 //!   --tuning-file PATH   Path to a .tuning.ron file; loads gains for --profile
 //!   --profile NAME       Named tuning profile to use (default: "normal")
 //!   --steps N            Total simulation steps at 60 Hz (default: 600 = 10 s)
-//!   --controller NAME    level_hold (default) | manual (zero inputs)
+//!   --controller NAME    level_hold (default) | orbit | manual (zero inputs)
 //!   --interval N         Print every Nth step (default: 10)
 //!   --altitude F         Target altitude [m] and spawn altitude (default: 500)
 //!   --airspeed F         Target airspeed [m/s] (default: 100)
+//!
+//! Level-hold gain overrides:
 //!   --alt-kp F           Altitude outer loop Kp override
 //!   --alt-ki F           Altitude outer loop Ki override
 //!   --alt-kd F           Altitude outer loop Kd override
@@ -21,7 +23,15 @@
 //!   --spd-kp F           Airspeed loop Kp override
 //!   --spd-ki F           Airspeed loop Ki override
 //!
+//! Orbit geometry (only used with --controller orbit):
+//!   --center-x F         Orbit center X [m] (default: auto from spawn)
+//!   --center-z F         Orbit center Z [m] (default: auto from spawn)
+//!   --radius F           Orbit radius [m] (default: 1000)
+//!   --direction NAME     ccw (default) | cw
+//!
 //! Individual gain flags override values loaded from --tuning-file.
+//!
+//! Output columns for orbit mode append: radial_error_m, heading_error_rad, bank_ff_rad
 
 use std::f32::consts::FRAC_PI_2;
 use std::time::Duration;
@@ -32,7 +42,8 @@ use bevy_rapier3d::prelude::*;
 
 use ml_planes::{
     controllers::{
-        ActiveController, FlightController, LevelHoldController, ManualController, PlaneTuning,
+        orbit_observation_terms, ActiveController, FlightController, LevelHoldController,
+        ManualController, OrbitController, OrbitDirection, OrbitTuning, PlaneTuning,
     },
     plane::{ControlInputs, FlightState, PlaneConfig, PlaneConfigHandle, PlanePlugin},
 };
@@ -40,7 +51,12 @@ use ml_planes::{
 fn main() {
     let args = parse_args();
 
-    println!("step,time_s,altitude_m,airspeed_ms,alpha_deg,beta_deg,pitch_rate,roll_rate,yaw_rate,elevator,throttle,aileron,rudder");
+    let header = if args.controller == "orbit" {
+        "step,time_s,altitude_m,airspeed_ms,alpha_deg,beta_deg,pitch_rate,roll_rate,yaw_rate,elevator,throttle,aileron,rudder,radial_error_m,heading_error_rad,bank_ff_rad"
+    } else {
+        "step,time_s,altitude_m,airspeed_ms,alpha_deg,beta_deg,pitch_rate,roll_rate,yaw_rate,elevator,throttle,aileron,rudder"
+    };
+    println!("{header}");
 
     let mut app = App::new();
     app.add_plugins(MinimalPlugins)
@@ -105,8 +121,32 @@ fn main() {
             Box::new(LevelHoldController::with_tuning(
                 &state,
                 &tuning,
-                &ml_planes::plane::ControlInputs::default(),
+                &ControlInputs::default(),
             ))
+        }
+        "orbit" => {
+            let tuning: OrbitTuning = args
+                .tuning_file
+                .as_deref()
+                .map(load_plan_tuning)
+                .and_then(|pt| pt.get_orbit(&args.profile).cloned())
+                .unwrap_or_default();
+            let seed_state = FlightState {
+                altitude: args.altitude,
+                airspeed: args.airspeed,
+                ..FlightState::default()
+            };
+            let mut ctrl =
+                OrbitController::with_tuning(&seed_state, &tuning, &ControlInputs::default());
+            ctrl.center_x = args.center_x;
+            ctrl.center_z = args.center_z;
+            ctrl.target_radius = args.radius;
+            ctrl.direction = args.direction;
+            ctrl.target_altitude = args.altitude;
+            ctrl.target_airspeed = args.airspeed;
+            ctrl.radial_pid.reset();
+            ctrl.heading_pid.reset();
+            Box::new(ctrl)
         }
         _ => Box::new(ManualController::new()),
     };
@@ -135,6 +175,8 @@ fn main() {
         Transform::from_translation(Vec3::new(0.0, args.altitude, 0.0)).with_rotation(attitude),
     ));
 
+    let is_orbit = args.controller == "orbit";
+
     for step in 0..args.steps {
         app.update();
 
@@ -154,22 +196,51 @@ fn main() {
                 let aileron = inputs.aileron;
                 let rudder = inputs.rudder;
 
-                println!(
-                    "{},{:.3},{:.2},{:.2},{:.3},{:.3},{:.4},{:.4},{:.4},{:.3},{:.3},{:.3},{:.3}",
-                    step,
-                    step as f32 / 60.0,
-                    altitude,
-                    airspeed,
-                    alpha_deg,
-                    beta_deg,
-                    av.y, // q = pitch rate
-                    av.x, // p = roll rate
-                    av.z, // r = yaw rate
-                    elevator,
-                    throttle,
-                    aileron,
-                    rudder,
-                );
+                if is_orbit {
+                    let terms = orbit_observation_terms(
+                        state,
+                        args.center_x,
+                        args.center_z,
+                        args.radius,
+                        args.direction,
+                    );
+                    println!(
+                        "{},{:.3},{:.2},{:.2},{:.3},{:.3},{:.4},{:.4},{:.4},{:.3},{:.3},{:.3},{:.3},{:.3},{:.4},{:.4}",
+                        step,
+                        step as f32 / 60.0,
+                        altitude,
+                        airspeed,
+                        alpha_deg,
+                        beta_deg,
+                        av.y, // q = pitch rate
+                        av.x, // p = roll rate
+                        av.z, // r = yaw rate
+                        elevator,
+                        throttle,
+                        aileron,
+                        rudder,
+                        terms.radial_error,
+                        terms.heading_error,
+                        terms.bank_ff,
+                    );
+                } else {
+                    println!(
+                        "{},{:.3},{:.2},{:.2},{:.3},{:.3},{:.4},{:.4},{:.4},{:.3},{:.3},{:.3},{:.3}",
+                        step,
+                        step as f32 / 60.0,
+                        altitude,
+                        airspeed,
+                        alpha_deg,
+                        beta_deg,
+                        av.y, // q = pitch rate
+                        av.x, // p = roll rate
+                        av.z, // r = yaw rate
+                        elevator,
+                        throttle,
+                        aileron,
+                        rudder,
+                    );
+                }
             }
         }
     }
@@ -188,6 +259,7 @@ struct Args {
     interval: usize,
     altitude: f32,
     airspeed: f32,
+    // level_hold gain overrides
     alt_kp: Option<f32>,
     alt_ki: Option<f32>,
     alt_kd: Option<f32>,
@@ -195,6 +267,11 @@ struct Args {
     pitch_kd: Option<f32>,
     spd_kp: Option<f32>,
     spd_ki: Option<f32>,
+    // orbit geometry
+    center_x: f32,
+    center_z: f32,
+    radius: f32,
+    direction: OrbitDirection,
 }
 
 fn parse_args() -> Args {
@@ -223,6 +300,19 @@ fn parse_args() -> Args {
         pitch_kd: get_arg(&args, "--pitch-kd").and_then(|v| v.parse().ok()),
         spd_kp: get_arg(&args, "--spd-kp").and_then(|v| v.parse().ok()),
         spd_ki: get_arg(&args, "--spd-ki").and_then(|v| v.parse().ok()),
+        center_x: get_arg(&args, "--center-x")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.0),
+        center_z: get_arg(&args, "--center-z")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.0),
+        radius: get_arg(&args, "--radius")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1000.0),
+        direction: match get_arg(&args, "--direction").as_deref() {
+            Some("cw") => OrbitDirection::Clockwise,
+            _ => OrbitDirection::CounterClockwise,
+        },
     }
 }
 
