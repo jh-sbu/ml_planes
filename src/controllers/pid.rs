@@ -31,8 +31,8 @@ impl PidController {
     }
 
     pub fn update(&mut self, error: f32, dt: f32) -> f32 {
-        self.integral = (self.integral + error * dt)
-            .clamp(-self.integral_clamp, self.integral_clamp);
+        self.integral =
+            (self.integral + error * dt).clamp(-self.integral_clamp, self.integral_clamp);
 
         let derivative = match self.prev_error {
             Some(prev) => (error - prev) / dt,
@@ -55,8 +55,8 @@ impl PidController {
     /// frame-to-frame (output of an outer PID), or for any loop with direct
     /// access to the relevant body rate.
     pub fn update_dom(&mut self, error: f32, measured_rate: f32, dt: f32) -> f32 {
-        self.integral = (self.integral + error * dt)
-            .clamp(-self.integral_clamp, self.integral_clamp);
+        self.integral =
+            (self.integral + error * dt).clamp(-self.integral_clamp, self.integral_clamp);
         let output = self.kp * error + self.ki * self.integral - self.kd * measured_rate;
         output.clamp(self.output_min, self.output_max)
     }
@@ -98,7 +98,12 @@ mod tests {
         }
         // integral = error * dt * steps = 0.5, output = ki * integral = 0.5
         let expected = 1.0 * dt * steps as f32;
-        assert!((out - expected).abs() < 1e-5, "out={} expected={}", out, expected);
+        assert!(
+            (out - expected).abs() < 1e-5,
+            "out={} expected={}",
+            out,
+            expected
+        );
     }
 
     #[test]
@@ -117,17 +122,29 @@ mod tests {
     fn output_clamped_to_limits() {
         let mut pid = PidController::new(100.0, 0.0, 0.0, 100.0, -1.0, 1.0);
         let out = pid.update(5.0, 0.1);
-        assert!((out - 1.0).abs() < 1e-6, "out={} should be clamped to 1.0", out);
+        assert!(
+            (out - 1.0).abs() < 1e-6,
+            "out={} should be clamped to 1.0",
+            out
+        );
 
         let out = pid.update(-5.0, 0.1);
-        assert!((out - (-1.0)).abs() < 1e-6, "out={} should be clamped to -1.0", out);
+        assert!(
+            (out - (-1.0)).abs() < 1e-6,
+            "out={} should be clamped to -1.0",
+            out
+        );
     }
 
     #[test]
     fn derivative_zero_on_first_call() {
         let mut pid = PidController::new(0.0, 0.0, 10.0, 100.0, -1000.0, 1000.0);
         let out = pid.update(5.0, 0.1);
-        assert!((out).abs() < 1e-6, "first call derivative should be 0, out={}", out);
+        assert!(
+            (out).abs() < 1e-6,
+            "first call derivative should be 0, out={}",
+            out
+        );
     }
 
     #[test]
@@ -160,13 +177,21 @@ mod tests {
         // After reset: integral=0, prev_error=None
         // p_only output (kp*e=1.0), ki*0=0, kd*0=0 (no prev_error) → 1.0
         let out = pid.update(1.0, 0.1);
-        assert!((out - 1.0 - 1.0 * 0.1).abs() < 1e-5, "after reset out={}", out);
+        assert!(
+            (out - 1.0 - 1.0 * 0.1).abs() < 1e-5,
+            "after reset out={}",
+            out
+        );
 
         // Specifically check derivative is zero by using kp=0, ki=0, kd=1
         let mut pid2 = PidController::new(0.0, 0.0, 1.0, 100.0, -1000.0, 1000.0);
         pid2.update(5.0, 0.1); // set prev_error
         pid2.reset();
         let out2 = pid2.update(5.0, 0.1); // after reset, derivative should be 0
-        assert!((out2).abs() < 1e-6, "derivative after reset should be 0, out={}", out2);
+        assert!(
+            (out2).abs() < 1e-6,
+            "derivative after reset should be 0, out={}",
+            out2
+        );
     }
 }

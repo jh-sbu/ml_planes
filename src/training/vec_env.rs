@@ -29,8 +29,8 @@ impl<E: TrainingEnv> VecEnv<E> {
     /// Step all N environments and return (obs[N], reward[N], done[N]).
     pub fn step_batch(&mut self, actions: &[[f32; 4]]) -> (Vec<Observation>, Vec<f32>, Vec<bool>) {
         debug_assert_eq!(actions.len(), self.envs.len());
-        let mut obs_out  = Vec::with_capacity(self.envs.len());
-        let mut rew_out  = Vec::with_capacity(self.envs.len());
+        let mut obs_out = Vec::with_capacity(self.envs.len());
+        let mut rew_out = Vec::with_capacity(self.envs.len());
         let mut done_out = Vec::with_capacity(self.envs.len());
         for (env, action) in self.envs.iter_mut().zip(actions.iter()) {
             let (obs, rew, done, _) = env.step(action);
@@ -45,21 +45,38 @@ impl<E: TrainingEnv> VecEnv<E> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::training::LevelHoldEnv;
     use crate::plane::config::PlaneConfig;
+    use crate::training::LevelHoldEnv;
     use bevy::math::Vec3;
 
     fn jet_cfg() -> PlaneConfig {
         PlaneConfig {
-            wing_area: 20.0, mean_chord: 2.0, wing_span: 10.0,
-            mass: 5000.0, inertia: Vec3::new(10000.0, 40000.0, 45000.0),
-            cl0: 0.1, cl_alpha: 4.5, cl_delta_e: 0.4, cl_max: 1.4,
-            cd0: 0.02, cd_induced: 0.05,
-            cm0: -0.02, cm_alpha: 0.6, cm_q: -14.0, cm_delta_e: -1.2,
-            cl_beta: -0.08, cl_p: -0.45, cl_r: 0.12, cl_delta_a: 0.18,
-            cn_beta: 0.10, cn_r: -0.12, cn_delta_r: -0.10,
+            wing_area: 20.0,
+            mean_chord: 2.0,
+            wing_span: 10.0,
+            mass: 5000.0,
+            inertia: Vec3::new(10000.0, 40000.0, 45000.0),
+            cl0: 0.1,
+            cl_alpha: 4.5,
+            cl_delta_e: 0.4,
+            cl_max: 1.4,
+            cd0: 0.02,
+            cd_induced: 0.05,
+            cm0: -0.02,
+            cm_alpha: 0.6,
+            cm_q: -14.0,
+            cm_delta_e: -1.2,
+            cl_beta: -0.08,
+            cl_p: -0.45,
+            cl_r: 0.12,
+            cl_delta_a: 0.18,
+            cn_beta: 0.10,
+            cn_r: -0.12,
+            cn_delta_r: -0.10,
             thrust_max: 60000.0,
-            aileron_limit: 0.4363, elevator_limit: 0.3491, rudder_limit: 0.2618,
+            aileron_limit: 0.4363,
+            elevator_limit: 0.3491,
+            rudder_limit: 0.2618,
         }
     }
 
@@ -85,7 +102,9 @@ mod tests {
     #[test]
     fn vec_env_n_envs_step() {
         let cfg = jet_cfg();
-        let envs: Vec<_> = (0..4).map(|_| LevelHoldEnv::new(1000.0, 80.0, cfg.clone())).collect();
+        let envs: Vec<_> = (0..4)
+            .map(|_| LevelHoldEnv::new(1000.0, 80.0, cfg.clone()))
+            .collect();
         let mut vec = VecEnv::new(envs);
         assert_eq!(vec.n(), 4);
         let obs = vec.reset_all();
@@ -101,7 +120,9 @@ mod tests {
     #[test]
     fn reset_at_produces_new_obs() {
         let cfg = jet_cfg();
-        let envs: Vec<_> = (0..2).map(|_| LevelHoldEnv::new(1000.0, 80.0, cfg.clone())).collect();
+        let envs: Vec<_> = (0..2)
+            .map(|_| LevelHoldEnv::new(1000.0, 80.0, cfg.clone()))
+            .collect();
         let mut vec = VecEnv::new(envs);
         vec.reset_all();
         let obs_after_reset = vec.reset_at(0);

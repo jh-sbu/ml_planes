@@ -7,12 +7,12 @@ use serde::{Deserialize, Serialize};
 #[derive(bevy::asset::Asset, Reflect, Serialize, Deserialize, Debug, Clone)]
 pub struct PlaneConfig {
     // Geometry
-    pub wing_area: f32,       // S  [m²]
-    pub mean_chord: f32,      // c̄  [m]
-    pub wing_span: f32,       // b  [m]
+    pub wing_area: f32,  // S  [m²]
+    pub mean_chord: f32, // c̄  [m]
+    pub wing_span: f32,  // b  [m]
     // Mass / Inertia
-    pub mass: f32,            // [kg]
-    pub inertia: Vec3,        // Ixx, Iyy, Izz  [kg·m²]
+    pub mass: f32,     // [kg]
+    pub inertia: Vec3, // Ixx, Iyy, Izz  [kg·m²]
     // Longitudinal aero
     pub cl0: f32,
     pub cl_alpha: f32,
@@ -33,9 +33,9 @@ pub struct PlaneConfig {
     pub cn_r: f32,
     pub cn_delta_r: f32,
     // Engine
-    pub thrust_max: f32,      // [N]
+    pub thrust_max: f32, // [N]
     // Control limits
-    pub aileron_limit: f32,   // [rad]
-    pub elevator_limit: f32,  // [rad]
-    pub rudder_limit: f32,    // [rad]
+    pub aileron_limit: f32,  // [rad]
+    pub elevator_limit: f32, // [rad]
+    pub rudder_limit: f32,   // [rad]
 }

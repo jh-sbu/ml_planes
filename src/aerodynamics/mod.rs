@@ -1,2 +1,2 @@
 pub mod model;
-pub use model::{AeroForces, compute_aero_forces};
+pub use model::{compute_aero_forces, AeroForces};

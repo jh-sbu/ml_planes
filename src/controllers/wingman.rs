@@ -30,7 +30,9 @@ pub struct FormationOffset {
 
 impl Default for FormationOffset {
     fn default() -> Self {
-        Self { offset_body: Vec3::new(-20.0, 15.0, 0.0) }
+        Self {
+            offset_body: Vec3::new(-20.0, 15.0, 0.0),
+        }
     }
 }
 
@@ -76,8 +78,7 @@ impl WingmanController {
         let mut inner = LevelHoldController::from_state(own_initial, &ControlInputs::default());
         // Pre-seed altitude/airspeed targets from formation geometry so the
         // inner PIDs don't see a step command on the very first tick.
-        let desired_pos = leader_initial.position
-            + leader_initial.attitude * offset.offset_body;
+        let desired_pos = leader_initial.position + leader_initial.attitude * offset.offset_body;
         inner.target_altitude = desired_pos.y;
         inner.target_airspeed = leader_initial.airspeed;
 
@@ -85,8 +86,8 @@ impl WingmanController {
             cached_leader: Some(leader_initial.clone()),
             offset,
             inner,
-            range_pid:   PidController::new(0.2,   0.02, 0.5,  15.0, -10.0, 10.0),
-            lateral_pid: PidController::new(0.008, 0.001, 0.04,  0.5,  -0.52, 0.52),
+            range_pid: PidController::new(0.2, 0.02, 0.5, 15.0, -10.0, 10.0),
+            lateral_pid: PidController::new(0.008, 0.001, 0.04, 0.5, -0.52, 0.52),
         }
     }
 }
@@ -100,19 +101,19 @@ impl FlightController for WingmanController {
 
         // 1. Desired formation position in world frame.
         let target_pos = leader.position + leader.attitude * self.offset.offset_body;
-        let pos_error  = target_pos - state.position;
+        let pos_error = target_pos - state.position;
 
         // 2. Altitude: set inner target directly from formation geometry.
         self.inner.target_altitude = target_pos.y;
 
         // 3. Range (fore-aft along leader heading) → airspeed correction.
-        let leader_fwd  = leader.attitude * Vec3::X;
+        let leader_fwd = leader.attitude * Vec3::X;
         let range_error = pos_error.dot(leader_fwd);
-        let delta_spd   = self.range_pid.update(range_error, dt);
+        let delta_spd = self.range_pid.update(range_error, dt);
         self.inner.target_airspeed = (leader.airspeed + delta_spd).max(20.0);
 
         // 4. Lateral (cross-track along leader right-wing axis) → bank command.
-        let leader_right  = leader.attitude * Vec3::Y;
+        let leader_right = leader.attitude * Vec3::Y;
         let lateral_error = pos_error.dot(leader_right);
         self.inner.target_roll = self.lateral_pid.update(lateral_error, dt);
 
@@ -120,9 +121,13 @@ impl FlightController for WingmanController {
         self.inner.update(state, dt)
     }
 
-    fn name(&self) -> &'static str { "Wingman" }
+    fn name(&self) -> &'static str {
+        "Wingman"
+    }
 
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -140,7 +145,11 @@ pub fn feed_leader_state(
     for (leader_ref, mut controller) in wingman_query.iter_mut() {
         let leader_state = leader_query.get(leader_ref.0).ok().cloned();
 
-        if let Some(wc) = controller.0.as_any_mut().downcast_mut::<WingmanController>() {
+        if let Some(wc) = controller
+            .0
+            .as_any_mut()
+            .downcast_mut::<WingmanController>()
+        {
             wc.cached_leader = leader_state;
         }
     }
@@ -184,7 +193,9 @@ mod tests {
         // At level flight with identity-ish attitude, desired slot ≈ (-20, 1000, 15).
         // Spawn wingman exactly at that slot — error should be zero.
         let leader = level_state(Vec3::new(0.0, 1000.0, 0.0), 100.0);
-        let offset = FormationOffset { offset_body: Vec3::new(-20.0, 15.0, 0.0) };
+        let offset = FormationOffset {
+            offset_body: Vec3::new(-20.0, 15.0, 0.0),
+        };
 
         // With rotation_x(-π/2): body +X maps to world +X, body +Y maps to world +Z,
         // body +Z maps to world -Y. So desired slot = (0,1000,0) + (-20, 0, 15) = (-20, 1000, 15).
@@ -204,7 +215,9 @@ mod tests {
     fn lateral_error_commands_correct_bank_direction() {
         // Wingman is 5 m too far left (negative lateral error relative to leader right).
         let leader = level_state(Vec3::new(0.0, 1000.0, 0.0), 100.0);
-        let offset = FormationOffset { offset_body: Vec3::new(-20.0, 15.0, 0.0) };
+        let offset = FormationOffset {
+            offset_body: Vec3::new(-20.0, 15.0, 0.0),
+        };
         let desired = leader.position + leader.attitude * offset.offset_body;
 
         // Shift wingman 5 m to the left (world -Z with this attitude convention).
@@ -216,14 +229,20 @@ mod tests {
         ctrl.update(&own, 1.0 / 60.0);
 
         // Positive lateral error (wingman left of slot) should command positive bank (right).
-        assert!(ctrl.inner.target_roll > 0.0, "target_roll={}", ctrl.inner.target_roll);
+        assert!(
+            ctrl.inner.target_roll > 0.0,
+            "target_roll={}",
+            ctrl.inner.target_roll
+        );
     }
 
     #[test]
     fn range_error_commands_higher_airspeed() {
         // Wingman is 10 m too far behind leader — should speed up.
         let leader = level_state(Vec3::new(0.0, 1000.0, 0.0), 100.0);
-        let offset = FormationOffset { offset_body: Vec3::new(-20.0, 15.0, 0.0) };
+        let offset = FormationOffset {
+            offset_body: Vec3::new(-20.0, 15.0, 0.0),
+        };
         let desired = leader.position + leader.attitude * offset.offset_body;
 
         // Move wingman 10 m further behind (negative leader forward).
@@ -236,7 +255,8 @@ mod tests {
 
         assert!(
             ctrl.inner.target_airspeed > leader.airspeed,
-            "target_airspeed={}", ctrl.inner.target_airspeed,
+            "target_airspeed={}",
+            ctrl.inner.target_airspeed,
         );
     }
 }

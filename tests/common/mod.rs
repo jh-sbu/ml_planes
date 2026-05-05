@@ -22,9 +22,9 @@ pub fn build_headless_app() -> App {
         .add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
         .add_plugins(PlanePlugin);
 
-    app.insert_resource(TimeUpdateStrategy::ManualDuration(
-        Duration::from_secs_f32(1.0 / 60.0),
-    ));
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(
+        1.0 / 60.0,
+    )));
 
     // Finalize plugin setup — equivalent to what app.run() does internally.
     // Required when driving the app manually via app.update().

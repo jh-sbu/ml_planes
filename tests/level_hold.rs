@@ -12,12 +12,7 @@ use ml_planes::plane::{ControlInputs, FlightState, PlaneConfig, PlaneConfigHandl
 ///
 /// Level-flight orientation: body +Z (cockpit up) aligns with world +Y (up).
 /// `Quat::from_rotation_x(-FRAC_PI_2)` achieves this mapping.
-fn spawn_plane(
-    app: &mut App,
-    pos: Vec3,
-    velocity: Vec3,
-    controller: LevelHoldController,
-) {
+fn spawn_plane(app: &mut App, pos: Vec3, velocity: Vec3, controller: LevelHoldController) {
     let cfg = common::generic_jet_config();
     let handle: Handle<PlaneConfig> = app
         .world_mut()
@@ -29,7 +24,10 @@ fn spawn_plane(
     app.world_mut().spawn((
         RigidBody::Dynamic,
         Collider::cuboid(1.0, 0.5, 3.0),
-        Velocity { linvel: velocity, angvel: Vec3::ZERO },
+        Velocity {
+            linvel: velocity,
+            angvel: Vec3::ZERO,
+        },
         ExternalForce::default(),
         AdditionalMassProperties::MassProperties(MassProperties {
             local_center_of_mass: Vec3::ZERO,
@@ -67,9 +65,9 @@ fn read_state(app: &mut App) -> FlightState {
 /// component default) and exit prematurely.
 #[test]
 fn altitude_hold_prevents_crash() {
-    let target_alt  = 1000.0_f32;
-    let target_spd  =   80.0_f32;
-    let spawn_alt   =  900.0_f32; // 100 m below target
+    let target_alt = 1000.0_f32;
+    let target_spd = 80.0_f32;
+    let spawn_alt = 900.0_f32; // 100 m below target
 
     let mut app = common::build_headless_app();
     let ctrl = LevelHoldController::new(target_alt, target_spd);
@@ -121,8 +119,8 @@ fn altitude_hold_prevents_crash() {
 #[test]
 fn large_altitude_offset_does_not_stall() {
     let target_alt = 1000.0_f32;
-    let target_spd =   80.0_f32;
-    let spawn_alt  =  500.0_f32; // 500 m below target
+    let target_spd = 80.0_f32;
+    let spawn_alt = 500.0_f32; // 500 m below target
 
     let mut app = common::build_headless_app();
     let ctrl = LevelHoldController::new(target_alt, target_spd);
@@ -162,7 +160,7 @@ fn large_altitude_offset_does_not_stall() {
 #[test]
 fn airspeed_hold_maintains_speed() {
     let target_alt = 1000.0_f32;
-    let target_spd =   80.0_f32;
+    let target_spd = 80.0_f32;
 
     let mut app = common::build_headless_app();
     let ctrl = LevelHoldController::new(target_alt, target_spd);

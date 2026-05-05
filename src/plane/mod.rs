@@ -6,7 +6,7 @@ pub mod systems;
 
 pub use config::PlaneConfig;
 pub use inputs::ControlInputs;
-pub use plugin::{PlaneConfigHandle, PlaneTuningHandle, PlanePlugin};
+pub use plugin::{PlaneConfigHandle, PlanePlugin, PlaneTuningHandle};
 pub use state::FlightState;
 
 /// Explicit stable ordering for plane entities (1 = leader, 2 = wingman, …).

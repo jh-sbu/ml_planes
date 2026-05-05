@@ -31,7 +31,9 @@ use bevy::time::TimeUpdateStrategy;
 use bevy_rapier3d::prelude::*;
 
 use ml_planes::{
-    controllers::{ActiveController, FlightController, LevelHoldController, ManualController, PlaneTuning},
+    controllers::{
+        ActiveController, FlightController, LevelHoldController, ManualController, PlaneTuning,
+    },
     plane::{ControlInputs, FlightState, PlaneConfig, PlaneConfigHandle, PlanePlugin},
 };
 
@@ -47,9 +49,9 @@ fn main() {
         .add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
         .add_plugins(PlanePlugin);
 
-    app.insert_resource(TimeUpdateStrategy::ManualDuration(
-        Duration::from_secs_f32(1.0 / 60.0),
-    ));
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(
+        1.0 / 60.0,
+    )));
 
     // finish() initialises plugin resources; required before manual app.update() driving.
     app.finish();
@@ -58,7 +60,7 @@ fn main() {
     // (Mirrors the pattern in tests/common/mod.rs — bypasses async asset loading.)
     let cfg = match &args.plane {
         Some(path) => load_plane_config(path),
-        None       => generic_jet_config(),
+        None => generic_jet_config(),
     };
     let handle = app
         .world_mut()
@@ -68,19 +70,43 @@ fn main() {
     let controller: Box<dyn FlightController> = match args.controller.as_str() {
         "level_hold" => {
             // Start from file tuning (or defaults), then apply individual flag overrides.
-            let mut tuning = args.tuning_file.as_deref()
+            let mut tuning = args
+                .tuning_file
+                .as_deref()
                 .map(load_plan_tuning)
                 .and_then(|pt| pt.get_level_hold(&args.profile).cloned())
                 .unwrap_or_default();
-            if let Some(v) = args.alt_kp   { tuning.alt_kp           = v; }
-            if let Some(v) = args.alt_ki   { tuning.alt_ki           = v; }
-            if let Some(v) = args.alt_kd   { tuning.alt_kd           = v; }
-            if let Some(v) = args.pitch_kp { tuning.pitch_kp         = v; }
-            if let Some(v) = args.pitch_kd { tuning.pitch_kd         = v; }
-            if let Some(v) = args.spd_kp   { tuning.spd_kp           = v; }
-            if let Some(v) = args.spd_ki   { tuning.spd_ki           = v; }
-            let state = FlightState { altitude: args.altitude, airspeed: args.airspeed, ..FlightState::default() };
-            Box::new(LevelHoldController::with_tuning(&state, &tuning, &ml_planes::plane::ControlInputs::default()))
+            if let Some(v) = args.alt_kp {
+                tuning.alt_kp = v;
+            }
+            if let Some(v) = args.alt_ki {
+                tuning.alt_ki = v;
+            }
+            if let Some(v) = args.alt_kd {
+                tuning.alt_kd = v;
+            }
+            if let Some(v) = args.pitch_kp {
+                tuning.pitch_kp = v;
+            }
+            if let Some(v) = args.pitch_kd {
+                tuning.pitch_kd = v;
+            }
+            if let Some(v) = args.spd_kp {
+                tuning.spd_kp = v;
+            }
+            if let Some(v) = args.spd_ki {
+                tuning.spd_ki = v;
+            }
+            let state = FlightState {
+                altitude: args.altitude,
+                airspeed: args.airspeed,
+                ..FlightState::default()
+            };
+            Box::new(LevelHoldController::with_tuning(
+                &state,
+                &tuning,
+                &ml_planes::plane::ControlInputs::default(),
+            ))
         }
         _ => Box::new(ManualController::new()),
     };
@@ -174,21 +200,29 @@ struct Args {
 fn parse_args() -> Args {
     let args: Vec<String> = std::env::args().collect();
     Args {
-        plane:        get_arg(&args, "--plane"),
-        tuning_file:  get_arg(&args, "--tuning-file"),
-        profile:      get_arg(&args, "--profile").unwrap_or_else(|| "normal".to_string()),
-        steps:        get_arg(&args, "--steps")      .and_then(|v| v.parse().ok()).unwrap_or(600),
-        controller:   get_arg(&args, "--controller") .unwrap_or_else(|| "level_hold".to_string()),
-        interval:     get_arg(&args, "--interval")   .and_then(|v| v.parse().ok()).unwrap_or(10),
-        altitude:     get_arg(&args, "--altitude")   .and_then(|v| v.parse().ok()).unwrap_or(500.0),
-        airspeed:     get_arg(&args, "--airspeed")   .and_then(|v| v.parse().ok()).unwrap_or(100.0),
-        alt_kp:       get_arg(&args, "--alt-kp")     .and_then(|v| v.parse().ok()),
-        alt_ki:       get_arg(&args, "--alt-ki")     .and_then(|v| v.parse().ok()),
-        alt_kd:       get_arg(&args, "--alt-kd")     .and_then(|v| v.parse().ok()),
-        pitch_kp:     get_arg(&args, "--pitch-kp")   .and_then(|v| v.parse().ok()),
-        pitch_kd:     get_arg(&args, "--pitch-kd")   .and_then(|v| v.parse().ok()),
-        spd_kp:       get_arg(&args, "--spd-kp")     .and_then(|v| v.parse().ok()),
-        spd_ki:       get_arg(&args, "--spd-ki")     .and_then(|v| v.parse().ok()),
+        plane: get_arg(&args, "--plane"),
+        tuning_file: get_arg(&args, "--tuning-file"),
+        profile: get_arg(&args, "--profile").unwrap_or_else(|| "normal".to_string()),
+        steps: get_arg(&args, "--steps")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(600),
+        controller: get_arg(&args, "--controller").unwrap_or_else(|| "level_hold".to_string()),
+        interval: get_arg(&args, "--interval")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10),
+        altitude: get_arg(&args, "--altitude")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(500.0),
+        airspeed: get_arg(&args, "--airspeed")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100.0),
+        alt_kp: get_arg(&args, "--alt-kp").and_then(|v| v.parse().ok()),
+        alt_ki: get_arg(&args, "--alt-ki").and_then(|v| v.parse().ok()),
+        alt_kd: get_arg(&args, "--alt-kd").and_then(|v| v.parse().ok()),
+        pitch_kp: get_arg(&args, "--pitch-kp").and_then(|v| v.parse().ok()),
+        pitch_kd: get_arg(&args, "--pitch-kd").and_then(|v| v.parse().ok()),
+        spd_kp: get_arg(&args, "--spd-kp").and_then(|v| v.parse().ok()),
+        spd_ki: get_arg(&args, "--spd-ki").and_then(|v| v.parse().ok()),
     }
 }
 
@@ -203,15 +237,14 @@ fn get_arg(args: &[String], flag: &str) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 fn load_plan_tuning(path: &str) -> PlaneTuning {
-    let bytes = std::fs::read(path)
-        .unwrap_or_else(|e| panic!("Cannot read tuning file '{path}': {e}"));
-    ron::de::from_bytes(&bytes)
-        .unwrap_or_else(|e| panic!("Cannot parse tuning file '{path}': {e}"))
+    let bytes =
+        std::fs::read(path).unwrap_or_else(|e| panic!("Cannot read tuning file '{path}': {e}"));
+    ron::de::from_bytes(&bytes).unwrap_or_else(|e| panic!("Cannot parse tuning file '{path}': {e}"))
 }
 
 fn load_plane_config(path: &str) -> PlaneConfig {
-    let bytes = std::fs::read(path)
-        .unwrap_or_else(|e| panic!("Cannot read plane config '{path}': {e}"));
+    let bytes =
+        std::fs::read(path).unwrap_or_else(|e| panic!("Cannot read plane config '{path}': {e}"));
     ron::de::from_bytes(&bytes)
         .unwrap_or_else(|e| panic!("Cannot parse plane config '{path}': {e}"))
 }

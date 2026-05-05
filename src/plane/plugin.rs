@@ -3,10 +3,10 @@ use bevy::asset::{AssetApp, AssetLoader, LoadContext};
 use bevy::prelude::*;
 use bevy_rapier3d::prelude::PhysicsSet;
 
-use crate::controllers::tuning::{LevelHoldTuning, OrbitTuning, PlaneTuning};
-use crate::controllers::feed_leader_state;
-use crate::plane::config::PlaneConfig;
 use super::systems::{apply_aerodynamic_forces, run_flight_controllers, sync_flight_state};
+use crate::controllers::feed_leader_state;
+use crate::controllers::tuning::{LevelHoldTuning, OrbitTuning, PlaneTuning};
+use crate::plane::config::PlaneConfig;
 
 // --- PlaneConfigHandle component ---
 
@@ -36,15 +36,23 @@ pub enum PlaneConfigLoaderError {
 impl std::fmt::Display for PlaneConfigLoaderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Io(e)  => write!(f, "PlaneConfig I/O error: {e}"),
+            Self::Io(e) => write!(f, "PlaneConfig I/O error: {e}"),
             Self::Ron(e) => write!(f, "PlaneConfig RON parse error: {e}"),
         }
     }
 }
 impl std::error::Error for PlaneConfigLoaderError {}
 
-impl From<std::io::Error>           for PlaneConfigLoaderError { fn from(e: std::io::Error)           -> Self { Self::Io(e) } }
-impl From<ron::error::SpannedError> for PlaneConfigLoaderError { fn from(e: ron::error::SpannedError) -> Self { Self::Ron(e) } }
+impl From<std::io::Error> for PlaneConfigLoaderError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+impl From<ron::error::SpannedError> for PlaneConfigLoaderError {
+    fn from(e: ron::error::SpannedError) -> Self {
+        Self::Ron(e)
+    }
+}
 
 // --- PlaneTuning loader ---
 
@@ -57,24 +65,32 @@ pub enum PlaneTuningLoaderError {
 impl std::fmt::Display for PlaneTuningLoaderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Io(e)  => write!(f, "PlaneTuning I/O error: {e}"),
+            Self::Io(e) => write!(f, "PlaneTuning I/O error: {e}"),
             Self::Ron(e) => write!(f, "PlaneTuning RON parse error: {e}"),
         }
     }
 }
 impl std::error::Error for PlaneTuningLoaderError {}
 
-impl From<std::io::Error>           for PlaneTuningLoaderError { fn from(e: std::io::Error)           -> Self { Self::Io(e) } }
-impl From<ron::error::SpannedError> for PlaneTuningLoaderError { fn from(e: ron::error::SpannedError) -> Self { Self::Ron(e) } }
+impl From<std::io::Error> for PlaneTuningLoaderError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+impl From<ron::error::SpannedError> for PlaneTuningLoaderError {
+    fn from(e: ron::error::SpannedError) -> Self {
+        Self::Ron(e)
+    }
+}
 
 /// Loads `.tuning.ron` files as [`PlaneTuning`] assets.
 #[derive(Default, bevy::reflect::TypePath)]
 pub struct PlaneTuningLoader;
 
 impl AssetLoader for PlaneTuningLoader {
-    type Asset    = PlaneTuning;
+    type Asset = PlaneTuning;
     type Settings = ();
-    type Error    = PlaneTuningLoaderError;
+    type Error = PlaneTuningLoaderError;
 
     async fn load(
         &self,
@@ -87,7 +103,9 @@ impl AssetLoader for PlaneTuningLoader {
         Ok(ron::de::from_bytes(&bytes)?)
     }
 
-    fn extensions(&self) -> &[&str] { &["tuning.ron"] }
+    fn extensions(&self) -> &[&str] {
+        &["tuning.ron"]
+    }
 }
 
 // --- PlaneConfig loader ---
@@ -97,9 +115,9 @@ impl AssetLoader for PlaneTuningLoader {
 pub struct PlaneConfigLoader;
 
 impl AssetLoader for PlaneConfigLoader {
-    type Asset    = PlaneConfig;
+    type Asset = PlaneConfig;
     type Settings = ();
-    type Error    = PlaneConfigLoaderError;
+    type Error = PlaneConfigLoaderError;
 
     async fn load(
         &self,
@@ -112,7 +130,9 @@ impl AssetLoader for PlaneConfigLoader {
         Ok(ron::de::from_bytes(&bytes)?)
     }
 
-    fn extensions(&self) -> &[&str] { &["plane.ron"] }
+    fn extensions(&self) -> &[&str] {
+        &["plane.ron"]
+    }
 }
 
 // --- Plugin ---
@@ -135,7 +155,12 @@ impl Plugin for PlanePlugin {
 
         app.add_systems(
             FixedUpdate,
-            (sync_flight_state, feed_leader_state, run_flight_controllers, apply_aerodynamic_forces)
+            (
+                sync_flight_state,
+                feed_leader_state,
+                run_flight_controllers,
+                apply_aerodynamic_forces,
+            )
                 .into_configs()
                 .chain()
                 .before(PhysicsSet::StepSimulation),

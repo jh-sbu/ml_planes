@@ -1,5 +1,5 @@
-use bevy::prelude::*;
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
+use bevy::prelude::*;
 use std::f32::consts::{FRAC_PI_2, PI};
 
 use super::mode::CameraMode;
@@ -13,7 +13,10 @@ pub struct FreeLookCamera {
 
 impl Default for FreeLookCamera {
     fn default() -> Self {
-        Self { yaw: 0.0, pitch: 0.0 }
+        Self {
+            yaw: 0.0,
+            pitch: 0.0,
+        }
     }
 }
 
@@ -63,7 +66,11 @@ pub fn cycle_camera_mode(
 
     *mode = if forward {
         match *mode {
-            CameraMode::FreeLook => sorted.first().copied().map(CameraMode::Follow).unwrap_or(CameraMode::FreeLook),
+            CameraMode::FreeLook => sorted
+                .first()
+                .copied()
+                .map(CameraMode::Follow)
+                .unwrap_or(CameraMode::FreeLook),
             CameraMode::Follow(current) => {
                 let idx = sorted.iter().position(|&e| e == current);
                 match idx {
@@ -74,7 +81,11 @@ pub fn cycle_camera_mode(
         }
     } else {
         match *mode {
-            CameraMode::FreeLook => sorted.last().copied().map(CameraMode::Follow).unwrap_or(CameraMode::FreeLook),
+            CameraMode::FreeLook => sorted
+                .last()
+                .copied()
+                .map(CameraMode::Follow)
+                .unwrap_or(CameraMode::FreeLook),
             CameraMode::Follow(current) => {
                 let idx = sorted.iter().position(|&e| e == current);
                 match idx {
@@ -99,7 +110,9 @@ pub fn update_free_look_camera(
         return;
     }
 
-    let Ok((mut transform, mut look)) = query.single_mut() else { return };
+    let Ok((mut transform, mut look)) = query.single_mut() else {
+        return;
+    };
 
     const SENSITIVITY: f32 = 0.003;
     look.yaw -= accumulated.delta.x * SENSITIVITY;
@@ -119,7 +132,9 @@ pub fn handle_follow_camera_input(
     if !matches!(*mode, CameraMode::Follow(_)) {
         return;
     }
-    let Ok(mut follow) = query.single_mut() else { return };
+    let Ok(mut follow) = query.single_mut() else {
+        return;
+    };
 
     let scroll = accumulated_scroll.delta.y;
     if scroll != 0.0 {
@@ -140,10 +155,16 @@ pub fn update_follow_camera(
     target_query: Query<&Transform, Without<Camera3d>>,
     mut camera_query: Query<(&mut Transform, &FollowCamera), With<Camera3d>>,
 ) {
-    let CameraMode::Follow(target_entity) = *mode else { return };
+    let CameraMode::Follow(target_entity) = *mode else {
+        return;
+    };
 
-    let Ok(target_transform) = target_query.get(target_entity) else { return };
-    let Ok((mut cam_transform, follow)) = camera_query.single_mut() else { return };
+    let Ok(target_transform) = target_query.get(target_entity) else {
+        return;
+    };
+    let Ok((mut cam_transform, follow)) = camera_query.single_mut() else {
+        return;
+    };
 
     let target_pos = target_transform.translation;
     let target_rot = target_transform.rotation;
@@ -182,7 +203,10 @@ mod tests {
 
     #[test]
     fn yaw_90_puts_camera_to_right() {
-        let follow = FollowCamera { yaw: FRAC_PI_2, ..FollowCamera::default() };
+        let follow = FollowCamera {
+            yaw: FRAC_PI_2,
+            ..FollowCamera::default()
+        };
         let offset = orbit_offset(follow.yaw, follow.pitch, follow.distance);
         assert!(offset.x.abs() < 0.1, "x={} expected≈0", offset.x);
         assert!(offset.y > 0.0, "y={} expected>0 (right side)", offset.y);

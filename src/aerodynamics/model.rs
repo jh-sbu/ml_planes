@@ -1,13 +1,13 @@
+use crate::plane::{ControlInputs, FlightState, PlaneConfig};
 use bevy::math::Vec3;
-use crate::plane::{PlaneConfig, FlightState, ControlInputs};
 
 const AIR_DENSITY: f32 = 1.225; // kg/m³ at sea level
 
 /// Aerodynamic and thrust forces/torques in the body frame.
 #[derive(Debug, Clone, Default)]
 pub struct AeroForces {
-    pub force_body: Vec3,   // [N]   body frame (+X fwd, +Y right, +Z up)
-    pub torque_body: Vec3,  // [N·m] body frame
+    pub force_body: Vec3,  // [N]   body frame (+X fwd, +Y right, +Z up)
+    pub torque_body: Vec3, // [N·m] body frame
 }
 
 /// Compute aerodynamic forces and torques given the current flight state,
@@ -29,9 +29,9 @@ pub fn compute_aero_forces(
     let q_bar = 0.5 * AIR_DENSITY * v * v;
 
     // Control surface deflections [rad]
-    let delta_a = inputs.aileron  * cfg.aileron_limit;
+    let delta_a = inputs.aileron * cfg.aileron_limit;
     let delta_e = inputs.elevator * cfg.elevator_limit;
-    let delta_r = inputs.rudder   * cfg.rudder_limit;
+    let delta_r = inputs.rudder * cfg.rudder_limit;
 
     // Angular rates from body frame
     let p = state.angular_velocity.x; // roll rate
@@ -39,7 +39,7 @@ pub fn compute_aero_forces(
     let r = state.angular_velocity.z; // yaw rate
 
     let alpha = state.alpha;
-    let beta  = state.beta;
+    let beta = state.beta;
     let b = cfg.wing_span;
     let c = cfg.mean_chord;
 
@@ -51,8 +51,8 @@ pub fn compute_aero_forces(
     let cd = cfg.cd0 + cfg.cd_induced * cl * cl;
 
     // --- Forces ---
-    let lift   = q_bar * cfg.wing_area * cl;
-    let drag   = q_bar * cfg.wing_area * cd;
+    let lift = q_bar * cfg.wing_area * cl;
+    let drag = q_bar * cfg.wing_area * cd;
     let thrust = inputs.throttle * cfg.thrust_max;
 
     // Rotate from wind axes (aligned with velocity) to body axes using alpha.
@@ -70,29 +70,28 @@ pub fn compute_aero_forces(
     );
 
     // --- Moment coefficients ---
-    let cm = cfg.cm0
-        + cfg.cm_alpha   * alpha
-        + cfg.cm_q       * (q * c / (2.0 * v))
-        + cfg.cm_delta_e * delta_e;
+    let cm =
+        cfg.cm0 + cfg.cm_alpha * alpha + cfg.cm_q * (q * c / (2.0 * v)) + cfg.cm_delta_e * delta_e;
 
     // Local name `cl_coef` avoids shadowing the longitudinal `cl` above.
-    let cl_coef = cfg.cl_beta    * beta
-        + cfg.cl_p       * (p * b / (2.0 * v))
-        + cfg.cl_r       * (r * b / (2.0 * v))
+    let cl_coef = cfg.cl_beta * beta
+        + cfg.cl_p * (p * b / (2.0 * v))
+        + cfg.cl_r * (r * b / (2.0 * v))
         + cfg.cl_delta_a * delta_a;
 
-    let cn = cfg.cn_beta    * beta
-        + cfg.cn_r       * (r * b / (2.0 * v))
-        + cfg.cn_delta_r * delta_r;
+    let cn = cfg.cn_beta * beta + cfg.cn_r * (r * b / (2.0 * v)) + cfg.cn_delta_r * delta_r;
 
     // --- Moments ---
-    let roll_moment  = q_bar * cfg.wing_area * b * cl_coef;
+    let roll_moment = q_bar * cfg.wing_area * b * cl_coef;
     let pitch_moment = q_bar * cfg.wing_area * c * cm;
-    let yaw_moment   = q_bar * cfg.wing_area * b * cn;
+    let yaw_moment = q_bar * cfg.wing_area * b * cn;
 
     let torque_body = Vec3::new(roll_moment, pitch_moment, yaw_moment);
 
-    AeroForces { force_body, torque_body }
+    AeroForces {
+        force_body,
+        torque_body,
+    }
 }
 
 #[cfg(test)]
@@ -102,32 +101,32 @@ mod tests {
     /// Returns a `PlaneConfig` matching `assets/planes/generic_jet.plane.ron`.
     fn jet_config() -> PlaneConfig {
         PlaneConfig {
-            wing_area:      20.0,
-            mean_chord:      2.0,
-            wing_span:      10.0,
-            mass:         5000.0,
+            wing_area: 20.0,
+            mean_chord: 2.0,
+            wing_span: 10.0,
+            mass: 5000.0,
             inertia: Vec3::new(10000.0, 40000.0, 45000.0),
-            cl0:          0.1,
-            cl_alpha:     4.5,
-            cl_delta_e:   0.4,
-            cl_max:       1.4,
-            cd0:          0.02,
-            cd_induced:   0.05,
-            cm0:         -0.02,
-            cm_alpha:     0.6,
-            cm_q:        -8.0,
-            cm_delta_e:  -1.2,
-            cl_beta:     -0.08,
-            cl_p:        -0.45,
-            cl_r:         0.12,
-            cl_delta_a:   0.18,
-            cn_beta:      0.10,
-            cn_r:        -0.12,
-            cn_delta_r:  -0.10,
-            thrust_max:  60000.0,
-            aileron_limit:  0.4363,
+            cl0: 0.1,
+            cl_alpha: 4.5,
+            cl_delta_e: 0.4,
+            cl_max: 1.4,
+            cd0: 0.02,
+            cd_induced: 0.05,
+            cm0: -0.02,
+            cm_alpha: 0.6,
+            cm_q: -8.0,
+            cm_delta_e: -1.2,
+            cl_beta: -0.08,
+            cl_p: -0.45,
+            cl_r: 0.12,
+            cl_delta_a: 0.18,
+            cn_beta: 0.10,
+            cn_r: -0.12,
+            cn_delta_r: -0.10,
+            thrust_max: 60000.0,
+            aileron_limit: 0.4363,
             elevator_limit: 0.3491,
-            rudder_limit:   0.2618,
+            rudder_limit: 0.2618,
         }
     }
 
@@ -143,7 +142,7 @@ mod tests {
     fn zero_airspeed_returns_zero() {
         let state = zero_state(); // airspeed == 0.0
         let forces = compute_aero_forces(&state, &zero_inputs(), &jet_config());
-        assert_eq!(forces.force_body,  Vec3::ZERO);
+        assert_eq!(forces.force_body, Vec3::ZERO);
         assert_eq!(forces.torque_body, Vec3::ZERO);
     }
 
@@ -155,7 +154,7 @@ mod tests {
         let cfg = jet_config();
         let mut state = zero_state();
         state.airspeed = 100.0;
-        state.alpha    = 0.0667;
+        state.alpha = 0.0667;
 
         let forces = compute_aero_forces(&state, &zero_inputs(), &cfg);
         let lift = forces.force_body.z;
@@ -170,7 +169,7 @@ mod tests {
         let cfg = jet_config();
         let mut state = zero_state();
         state.airspeed = 100.0;
-        state.alpha    = 0.05;
+        state.alpha = 0.05;
 
         let forces = compute_aero_forces(&state, &zero_inputs(), &cfg);
         // drag = thrust - force_body.x  (thrust=0 here)
@@ -199,7 +198,7 @@ mod tests {
         let cfg = jet_config();
         let mut state = zero_state();
         state.airspeed = 100.0;
-        state.alpha    = 0.05;
+        state.alpha = 0.05;
 
         let f0 = compute_aero_forces(&state, &zero_inputs(), &cfg);
 
@@ -210,13 +209,15 @@ mod tests {
         assert!(
             f1.force_body.z > f0.force_body.z,
             "elevator up should increase lift: {:.1} vs {:.1}",
-            f1.force_body.z, f0.force_body.z
+            f1.force_body.z,
+            f0.force_body.z
         );
         // cm_delta_e = -1.2 → more negative Cm → more negative pitch torque (nose-up)
         assert!(
             f1.torque_body.y < f0.torque_body.y,
             "elevator up should produce more negative pitch moment: {:.1} vs {:.1}",
-            f1.torque_body.y, f0.torque_body.y
+            f1.torque_body.y,
+            f0.torque_body.y
         );
     }
 
@@ -231,28 +232,32 @@ mod tests {
         let cfg = jet_config();
         let mut state = zero_state();
         state.airspeed = 50.0;
-        state.alpha    = 1.0;
+        state.alpha = 1.0;
 
-        let forces       = compute_aero_forces(&state, &zero_inputs(), &cfg);
-        let q_bar        = 0.5 * AIR_DENSITY * 50.0f32 * 50.0;
-        let lift_clamped = q_bar * cfg.wing_area * cfg.cl_max;          // CL = 1.4
-        let lift_raw     = q_bar * cfg.wing_area * (cfg.cl0 + cfg.cl_alpha * 1.0); // CL = 4.6
-        // After the wind-to-body rotation the z-component scales with cos(alpha),
-        // so clamping should result in a smaller Fz than if CL_raw were used.
+        let forces = compute_aero_forces(&state, &zero_inputs(), &cfg);
+        let q_bar = 0.5 * AIR_DENSITY * 50.0f32 * 50.0;
+        let lift_clamped = q_bar * cfg.wing_area * cfg.cl_max; // CL = 1.4
+        let lift_raw = q_bar * cfg.wing_area * (cfg.cl0 + cfg.cl_alpha * 1.0); // CL = 4.6
+                                                                               // After the wind-to-body rotation the z-component scales with cos(alpha),
+                                                                               // so clamping should result in a smaller Fz than if CL_raw were used.
         let drag = q_bar * cfg.wing_area * (cfg.cd0 + cfg.cd_induced * cfg.cl_max * cfg.cl_max);
         let expected_fz = lift_clamped * 1.0f32.cos() + drag * 1.0f32.sin();
         let unclamped_fz = lift_raw * 1.0f32.cos()
-            + q_bar * cfg.wing_area * (cfg.cd0 + cfg.cd_induced * (cfg.cl0 + cfg.cl_alpha * 1.0).powi(2))
-            * 1.0f32.sin();
+            + q_bar
+                * cfg.wing_area
+                * (cfg.cd0 + cfg.cd_induced * (cfg.cl0 + cfg.cl_alpha * 1.0).powi(2))
+                * 1.0f32.sin();
         assert!(
             forces.force_body.z < unclamped_fz,
             "clamped Fz={:.1} should be less than unclamped {:.1}",
-            forces.force_body.z, unclamped_fz
+            forces.force_body.z,
+            unclamped_fz
         );
         assert!(
             (forces.force_body.z - expected_fz).abs() < 1.0,
             "Fz={:.1} should match expected {:.1} (wind-to-body rotation of clamped lift)",
-            forces.force_body.z, expected_fz
+            forces.force_body.z,
+            expected_fz
         );
     }
 

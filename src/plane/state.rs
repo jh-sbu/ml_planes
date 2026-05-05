@@ -5,20 +5,20 @@
 //!   +Y = right wing
 //!   +Z = up through cockpit
 
-use bevy::math::{Quat, Vec3};
 use bevy::ecs::component::Component;
+use bevy::math::{Quat, Vec3};
 
 /// Full 6-DOF kinematic state of a plane, updated each physics tick.
 #[derive(Component, Default, Debug, Clone)]
 pub struct FlightState {
-    pub position: Vec3,          // world frame [m]
-    pub velocity: Vec3,          // world frame [m/s]
-    pub attitude: Quat,          // body→world rotation  (matches Bevy Transform.rotation)
-    pub angular_velocity: Vec3,  // body frame [rad/s]  p, q, r
-    pub alpha: f32,              // angle of attack [rad]
-    pub beta: f32,               // sideslip angle [rad]
-    pub airspeed: f32,           // |velocity| [m/s]
-    pub altitude: f32,           // position.y [m]
+    pub position: Vec3,         // world frame [m]
+    pub velocity: Vec3,         // world frame [m/s]
+    pub attitude: Quat,         // body→world rotation  (matches Bevy Transform.rotation)
+    pub angular_velocity: Vec3, // body frame [rad/s]  p, q, r
+    pub alpha: f32,             // angle of attack [rad]
+    pub beta: f32,              // sideslip angle [rad]
+    pub airspeed: f32,          // |velocity| [m/s]
+    pub altitude: f32,          // position.y [m]
 }
 
 impl FlightState {
@@ -70,7 +70,7 @@ mod tests {
     #[test]
     fn ten_deg_nose_up() {
         let angle = 10.0_f32 * PI / 180.0; // 0.17453 rad
-        // velocity in XZ plane tilted 10° below X axis — nose 10° above velocity vector (standard positive AoA)
+                                           // velocity in XZ plane tilted 10° below X axis — nose 10° above velocity vector (standard positive AoA)
         let mut s = default_state();
         s.velocity = Vec3::new(angle.cos(), 0.0, -angle.sin()) * 100.0;
         s.update_air_data();

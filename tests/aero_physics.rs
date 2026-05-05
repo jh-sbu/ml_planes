@@ -51,7 +51,9 @@ fn energy_conservation_5s() {
     }
 
     let mut q = app.world_mut().query::<&FlightState>();
-    let state = q.single(app.world()).expect("expected exactly one FlightState entity");
+    let state = q
+        .single(app.world())
+        .expect("expected exactly one FlightState entity");
 
     // With ManualController (zero throttle, zero deflections) at 100 m/s, lift is
     // much less than weight, so the plane falls under gravity. The important check

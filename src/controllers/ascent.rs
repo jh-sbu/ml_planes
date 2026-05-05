@@ -57,8 +57,12 @@ impl FlightController for AscentController {
         self.inner.update(state, dt)
     }
 
-    fn name(&self) -> &'static str { "Ascent" }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    fn name(&self) -> &'static str {
+        "Ascent"
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -73,12 +77,12 @@ mod tests {
 
     fn level_state(altitude: f32, airspeed: f32) -> FlightState {
         FlightState {
-            position:         Vec3::new(0.0, altitude, 0.0),
-            velocity:         Vec3::new(airspeed, 0.0, 0.0),
-            attitude:         Quat::from_rotation_x(-FRAC_PI_2),
+            position: Vec3::new(0.0, altitude, 0.0),
+            velocity: Vec3::new(airspeed, 0.0, 0.0),
+            attitude: Quat::from_rotation_x(-FRAC_PI_2),
             angular_velocity: Vec3::ZERO,
-            alpha:            0.0,
-            beta:             0.0,
+            alpha: 0.0,
+            beta: 0.0,
             airspeed,
             altitude,
         }
@@ -97,7 +101,10 @@ mod tests {
         let state = level_state(995.0, 100.0); // 5 m below target, inside 10 m threshold
         let mut ctrl = AscentController::new(&state, 1000.0);
         ctrl.update(&state, 1.0 / 60.0);
-        assert!(ctrl.complete, "expected complete=true at altitude 995 with target 1000");
+        assert!(
+            ctrl.complete,
+            "expected complete=true at altitude 995 with target 1000"
+        );
     }
 
     #[test]
@@ -105,7 +112,10 @@ mod tests {
         let state = level_state(800.0, 100.0);
         let mut ctrl = AscentController::new(&state, 1000.0);
         ctrl.update(&state, 1.0 / 60.0);
-        assert!(!ctrl.complete, "expected complete=false at altitude 800 with target 1000");
+        assert!(
+            !ctrl.complete,
+            "expected complete=false at altitude 800 with target 1000"
+        );
     }
 
     #[test]
@@ -128,6 +138,9 @@ mod tests {
         // Simulate a temporary dip back below threshold (e.g. phugoid).
         let below = level_state(985.0, 100.0);
         ctrl.update(&below, 1.0 / 60.0);
-        assert!(ctrl.complete, "complete should remain latched after leaving threshold");
+        assert!(
+            ctrl.complete,
+            "complete should remain latched after leaving threshold"
+        );
     }
 }

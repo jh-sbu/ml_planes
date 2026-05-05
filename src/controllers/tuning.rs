@@ -61,13 +61,13 @@ impl Default for LevelHoldTuning {
     fn default() -> Self {
         // Values match the hardcoded defaults in LevelHoldController::new().
         Self {
-            alt_kp:           0.01,
-            alt_ki:           0.12,
-            alt_kd:           0.04,
-            pitch_kp:         1.0,
-            pitch_kd:         0.5,
-            spd_kp:           0.01,
-            spd_ki:           0.06,
+            alt_kp: 0.01,
+            alt_ki: 0.12,
+            alt_kd: 0.04,
+            pitch_kp: 1.0,
+            pitch_kd: 0.5,
+            spd_kp: 0.01,
+            spd_ki: 0.06,
             throttle_ff_gain: 0.7,
         }
     }
@@ -101,11 +101,11 @@ pub struct OrbitTuning {
 impl Default for OrbitTuning {
     fn default() -> Self {
         Self {
-            radial_kp:  0.002,
-            radial_kd:  0.01,
+            radial_kp: 0.002,
+            radial_kd: 0.01,
             heading_kp: 0.7,
             heading_kd: 0.1,
-            inner:      LevelHoldTuning::default(),
+            inner: LevelHoldTuning::default(),
         }
     }
 }
@@ -202,7 +202,9 @@ mod tests {
             },
         )"#;
         let pt: PlaneTuning = ron::de::from_str(src).expect("PlaneTuning should parse");
-        let t = pt.get_level_hold("normal").expect("'normal' profile should exist");
+        let t = pt
+            .get_level_hold("normal")
+            .expect("'normal' profile should exist");
         assert!((t.alt_kp - 0.015).abs() < 1e-6);
         assert!((t.pitch_kp - 2.0).abs() < 1e-6);
         assert!(pt.get_level_hold("missing").is_none());
@@ -216,8 +218,8 @@ mod tests {
 
     #[test]
     fn controller_tuning_build_applies_gains() {
-        use std::f32::consts::FRAC_PI_2;
         use bevy::math::{Quat, Vec3};
+        use std::f32::consts::FRAC_PI_2;
 
         let tuning = LevelHoldTuning {
             alt_kp: 0.03,
@@ -230,14 +232,14 @@ mod tests {
             throttle_ff_gain: 0.5,
         };
         let state = FlightState {
-            position:         Vec3::new(0.0, 500.0, 0.0),
-            velocity:         Vec3::new(100.0, 0.0, 0.0),
-            attitude:         Quat::from_rotation_x(-FRAC_PI_2),
+            position: Vec3::new(0.0, 500.0, 0.0),
+            velocity: Vec3::new(100.0, 0.0, 0.0),
+            attitude: Quat::from_rotation_x(-FRAC_PI_2),
             angular_velocity: Vec3::ZERO,
-            alpha:            0.0,
-            beta:             0.0,
-            airspeed:         100.0,
-            altitude:         500.0,
+            alpha: 0.0,
+            beta: 0.0,
+            airspeed: 100.0,
+            altitude: 500.0,
         };
         let ctrl = LevelHoldController::with_tuning(&state, &tuning, &ControlInputs::default());
         assert!((ctrl.altitude_pid.kp - 0.03).abs() < 1e-6, "alt_kp");
@@ -248,7 +250,13 @@ mod tests {
         assert!((ctrl.airspeed_pid.kp - 0.02).abs() < 1e-6, "spd_kp");
         assert!((ctrl.airspeed_pid.ki - 0.15).abs() < 1e-6, "spd_ki");
         assert!((ctrl.throttle_ff_gain - 0.5).abs() < 1e-6, "ff_gain");
-        assert!((ctrl.target_altitude - 500.0).abs() < 1e-3, "target_altitude");
-        assert!((ctrl.target_airspeed - 100.0).abs() < 1e-3, "target_airspeed");
+        assert!(
+            (ctrl.target_altitude - 500.0).abs() < 1e-3,
+            "target_altitude"
+        );
+        assert!(
+            (ctrl.target_airspeed - 100.0).abs() < 1e-3,
+            "target_airspeed"
+        );
     }
 }
