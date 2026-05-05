@@ -23,11 +23,15 @@
 src/
   aerodynamics/   # coefficient model, force/torque computation
   plane/          # PlaneConfig asset, FlightState, ControlInputs, physics systems
-  controllers/    # FlightController trait, PID, LevelHold, Manual
+  controllers/    # FlightController trait, PID, LevelHold, Ascent, Orbit, Wingman, RL variants, ControllerKind
   environment/    # infinite ground collider + shader, plane spawner
   camera/         # FreeLook and Follow camera modes
   ui/             # egui HUD, extensible info panel
-  training/       # TrainingEnv trait, episode management
+  training/
+    ppo/            # PPO trainer, rollout buffer, ActorCritic model
+    flight_env.rs   # shared 6-DOF Euler physics integration (integrate_state)
+    level_hold_env.rs
+    orbit_env.rs
 ```
 
 ### Key Types
@@ -41,6 +45,11 @@ src/
 | `PidController<T>` | generic struct | PID with integral wind-up clamp and output limits |
 | `TrainingEnv` | trait | `reset()`, `step(action) -> (obs, reward, done, info)` |
 | `PlaneConfigHandle` | ECS component | Newtype wrapping `Handle<PlaneConfig>` — required because `Handle<T>` is not a `Component` in Bevy 0.18 |
+| `ControllerKind` | enum | Factory selector for all controller types; `build()` does bumpless integral seeding |
+| `OrbitController` | struct | 3-level cascade PID orbit around a fixed world-frame point |
+| `RlOrbitController` | struct | Burn ActorCritic policy for orbit (obs dim=13); training-gated |
+| `WingmanController` | struct | Formation flight; holds a fixed offset in the leader's body frame |
+| `AscentController` | struct | Climbs to target altitude then latches to level hold |
 
 ### Physics Layering
 
@@ -85,13 +94,42 @@ The aerodynamic model maps whichever representation to net force and torque befo
 ```toml
 [features]
 default = ["visual"]
-visual = ["bevy/default", "bevy_egui"]
-training = []
+visual = ["bevy/default", "bevy_egui", "bevy_rapier3d/debug-render-3d"]
+training = ["burn"]
 ```
 
-- `visual` (default): full Bevy rendering pipeline + egui HUD
-- `training`: no rendering, max-speed simulation (no `visual`)
+- `visual` (default): full Bevy rendering pipeline + egui HUD + Rapier debug renderer
+- `training`: pulls in `burn`; no rendering, max-speed simulation (no `visual`)
 - All tests run with `--no-default-features` (headless); no rendering in CI
+
+### Orbit Controller Architecture
+
+3-level cascade for circular orbit around a fixed world-frame point:
+
+1. **Radial guidance** — position error in world frame → heading offset
+2. **Heading guidance** — heading error → bank angle correction
+3. **Bank feedforward** — `atan(V² / (g·R)) · direction_sign` (gravity-based centripetal law)
+4. **Inner stabilization** — delegates to `LevelHoldController` with overridden targets
+
+`from_state()` auto-centers the orbit perpendicular to current velocity for bumpless engagement.
+
+### Training Physics (Self-Contained)
+
+Training environments (`LevelHoldEnv`, `OrbitEnv`) do **not** use Bevy or Rapier. Instead:
+
+- `training/flight_env.rs::integrate_state()` provides 6-DOF Euler integration
+- Aerodynamics: shared `compute_aero_forces()` from `aerodynamics/`
+- Result: deterministic rollouts, fast vectorized training, no ECS overhead
+- `VecEnv` wraps any `TrainingEnv` to run N parallel episodes (seeds offset via `offset_rng_seed()`)
+
+### RL Inference Pattern
+
+Both `RlLevelHoldController` and `RlOrbitController` follow the same pattern:
+
+- Backend: `burn`'s `ActorCritic<NdArray>` (CPU; no GPU required at inference time)
+- `Param` is not `Sync` → wrap model in `std::sync::Mutex`
+- Deterministic inference: `model.mean_action()` (no sampling noise, reproducible)
+- Action mapping: `throttle = (action[1] + 1.0) / 2.0` converts `[-1, 1]` network output to `[0, 1]`
 
 ---
 
@@ -111,10 +149,12 @@ training = []
 
 ## 4. Maneuver Roadmap
 
-1. **Level flight hold** — pitch/throttle PID to maintain target altitude and airspeed
-2. **Formation flight** — follow a scripted lead plane at a fixed relative offset
-3. **Aerial refueling** — approach a lead plane from the rear to a docking position
-4. *(extensible — add new `TrainingEnv` impls without changing core architecture)*
+1. **Level flight hold** — COMPLETE. Cascade PID: altitude outer → pitch inner, airspeed, roll, yaw. RL policy trained (`RlLevelHoldController`, obs dim=10).
+2. **Ascent** — COMPLETE. Climbs to target altitude then hands off to level hold.
+3. **Formation flight (wingman)** — COMPLETE. Follows leader at fixed body-frame offset (`WingmanController`).
+4. **Circular orbit** — COMPLETE. 3-level cascade PID around world-frame point. RL policy trained (`RlOrbitController`, obs dim=13).
+5. **Aerial refueling** — NEXT. Approach lead plane from the rear to a docking position.
+6. *(extensible — add new `TrainingEnv` impls without changing core architecture)*
 
 ---
 
@@ -123,9 +163,10 @@ training = []
 ```toml
 [dependencies]
 bevy = { version = "0.18", default-features = false, features = ["bevy_asset"] }
-bevy_rapier3d = "0.33"
+bevy_rapier3d = { version = "0.33", default-features = false, features = ["dim3"] }
 ron = "0.8"
 serde = { version = "1", features = ["derive"] }
+naga = { version = "26", features = ["termcolor"] }
 
 [dependencies.bevy_egui]
 version = "0.39"
@@ -133,13 +174,21 @@ optional = true
 
 [dependencies.burn]
 version = "0.20"
-optional = true   # pulled in by the `training` feature
+optional = true
+features = ["wgpu", "ndarray", "autodiff", "train", "tui"]
 
 [features]
 default = ["visual"]
-visual = ["bevy/default", "bevy_egui"]
+visual = ["bevy/default", "bevy_egui", "bevy_rapier3d/debug-render-3d"]
 training = ["burn"]
+
+[[bin]]
+name = "train_ppo"
+path = "src/bin/train_ppo.rs"
+required-features = ["training"]
 ```
+
+> `burn` features: `ndarray` = CPU backend for inference (no GPU required in production); `wgpu` = GPU backend for training; `tui` = training progress display.
 
 > **Bevy feature flag note:** `default-features = false` disables all optional
 > subsystems. `bevy_asset` **is** an optional feature of the `bevy` meta-crate
@@ -216,14 +265,18 @@ app.add_plugins(EguiPlugin { enable_multipass_for_primary_context: false });
 - `FlightState` kinematics: attitude integration, angle-of-attack calculation
 
 ### Integration tests (`tests/`)
-- Physics consistency: energy conservation over N steps in level flight
-- Controller convergence: level-hold reaches target altitude within tolerance in N steps
-- Episode reset/spawn: `TrainingEnv::reset()` produces correct initial `FlightState`
+- `aero_physics.rs` — energy conservation over N steps in level flight
+- `pid_convergence.rs` — pure PID closed-loop step response
+- `spawn_reset.rs` — `TrainingEnv::reset()` produces correct initial `FlightState`
+- `level_hold.rs` — level-hold cascade convergence to target altitude
+- `wingman.rs` — formation flight relative-position tracking
+- `ppo_training.rs` — RL trainer instantiation (training-gated; run with `--features training`)
 
 ### Rules
 - All tests must pass with `cargo test --no-default-features`
 - No rendering, no Bevy `App` window, no GPU resources in tests
 - Tests are deterministic (fixed seed where randomness is needed)
+- Run `cargo fmt` at the end of every editing session before committing
 
 ---
 
@@ -241,4 +294,4 @@ app.add_plugins(EguiPlugin { enable_multipass_for_primary_context: false });
 
 > Full plan: `plans/roadmap.md`
 
-M0–M9 (environment phase + integration tests) are complete. M10 (level hold maneuver) is next.
+M0–M12 (environment phase + level hold + formation flight + orbit + RL training) are complete. M13 (aerial refueling) is next.
