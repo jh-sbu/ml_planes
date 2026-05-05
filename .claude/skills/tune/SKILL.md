@@ -1,19 +1,55 @@
 ---
-description: Iteratively tune level-hold PID gains for a plane config and write back the best result
+description: Iteratively tune PID gains for a plane config and write back the best result
 ---
 
-Auto-tune the level-hold PID gains for a given plane config. Runs physics-based initial estimates,
-then iterates (up to 3 rounds) adjusting gains based on observed failure modes until all 5 envelope
-scenarios converge — then offers to write the winning gains back to the config file.
+Auto-tune PID gains for a given plane config and controller. Accepts an optional controller
+argument (default: `level_hold`).
 
 **Requires a plane config argument.** If the user did not supply a `.ron` path, stop immediately and print:
 
 ```
-Usage: /tune <path/to/plane.plane.ron>
+Usage: /tune <path/to/plane.plane.ron> [controller]
 Example: /tune assets/planes/generic_jet.plane.ron
+Example: /tune assets/planes/generic_jet.plane.ron level_hold
 ```
 
-Otherwise, proceed with the steps below using the supplied path as `PLANE`.
+Otherwise, proceed with the steps below using the supplied path as `PLANE` and the controller
+name as `CONTROLLER` (default `level_hold` if omitted).
+
+---
+
+## Controller routing
+
+**If `CONTROLLER` is `level_hold`:** proceed with the phases below.
+
+**If `CONTROLLER` is `orbit`:** the orbit controller's inner loop is a `LevelHoldController`,
+so level-hold gains must be tuned first. Print:
+
+```
+Orbit tuning uses a cascade: level-hold (inner) → radial/heading (outer).
+
+Step 1 — tune the inner level-hold loop first:
+  /tune PLANE level_hold
+
+Step 2 — once level-hold gains are written to the tuning file, manually tune the 4 outer-loop
+gains (radial_kp, radial_kd, heading_kp, heading_kd). These are low-sensitivity proportional
+gains; the defaults in OrbitTuning are reasonable starting points.
+
+Full automation of orbit outer-loop tuning requires adding --radial-kp / --heading-kp etc.
+overrides to observe_state.rs (not yet implemented).
+```
+
+Stop here.
+
+**If `CONTROLLER` is anything else:** print:
+
+```
+Controller "CONTROLLER" is not supported by /tune.
+Supported controllers: level_hold
+Orbit tuning guidance is available via: /tune PLANE orbit
+```
+
+Stop here.
 
 ---
 
@@ -45,8 +81,8 @@ T_c  = (q_c * wing_area * CD_c) / thrust_max   [normalised 0–1]
 alt_kp   = 0.5 / V_c
 alt_ki   = alt_kp * 0.1
 alt_kd   = alt_kp * 2.0
-alpha_kp = 0.8 / (|cm_delta_e| * elevator_limit)
-alpha_kd = alpha_kp * 0.4
+pitch_kp = 0.8 / (|cm_delta_e| * elevator_limit)
+pitch_kd = pitch_kp * 0.4
 spd_kp   = T_c / (V_c * 2.0)
 spd_ki   = spd_kp * 0.5
 ```
@@ -88,7 +124,7 @@ is close to `generic_jet` defaults.
 
 ### Grid definition
 
-Keep `alpha_kp` and `alpha_kd` fixed at Phase 1 physics values. Sweep outer loops only:
+Keep `pitch_kp` and `pitch_kd` fixed at Phase 1 physics values. Sweep outer loops only:
 
 | Parameter | Base value       | Multipliers       |
 |-----------|------------------|-------------------|
@@ -115,7 +151,7 @@ cargo run --example observe_state --no-default-features -- \
   --altitude 500 \
   --airspeed 100 \
   --alt-kp ALT_KP --alt-ki ALT_KI --alt-kd ALT_KD \
-  --alpha-kp ALPHA_KP --alpha-kd ALPHA_KD \
+  --pitch-kp PITCH_KP --pitch-kd PITCH_KD \
   --spd-kp SPD_KP --spd-ki SPD_KI
 ```
 
@@ -143,9 +179,9 @@ Top 3 candidates:
   2     F       F       F       F       F       F      YES/NO
   3     F       F       F       F       F       F      YES/NO
 
-Winner outer-loop gains (alpha loop unchanged from Phase 1):
+Winner outer-loop gains (pitch loop unchanged from Phase 1):
   --alt-kp F --alt-ki F --alt-kd F
-  --alpha-kp F --alpha-kd F   [unchanged]
+  --pitch-kp F --pitch-kd F   [unchanged]
   --spd-kp F --spd-ki F
 ```
 
@@ -157,7 +193,7 @@ as Round 0 across all 5 scenarios.
 ## Phase 2 — Baseline run (Round 0)
 
 > If Phase 1b ran, the gains here are the grid-search winner's outer-loop values with
-> physics-based `alpha_kp`/`alpha_kd`. Otherwise they are the raw Phase 1 physics estimates.
+> physics-based `pitch_kp`/`pitch_kd`. Otherwise they are the raw Phase 1 physics estimates.
 > The procedure and pass criteria are identical either way.
 
 Run all 5 scenarios with the Round 0 gains computed above (60 s, 3600 steps at 60 Hz):
@@ -171,7 +207,7 @@ cargo run --example observe_state --no-default-features -- \
   --altitude TARGET_ALT \
   --airspeed TARGET_AIRSPEED \
   --alt-kp ALT_KP --alt-ki ALT_KI --alt-kd ALT_KD \
-  --alpha-kp ALPHA_KP --alpha-kd ALPHA_KD \
+  --pitch-kp PITCH_KP --pitch-kd PITCH_KD \
   --spd-kp SPD_KP --spd-ki SPD_KI
 ```
 
@@ -209,16 +245,16 @@ For each failing or pathological scenario, identify the **dominant failure mode*
 |---|---|---|
 | Altitude drifts monotonically (slow, no oscillation) | `alt_ki` too low (trim offset) | × 2 alt_ki |
 | Altitude oscillates (pitch_rate cycles > 0.05 rad/s) | `alt_kp` too aggressive | × 0.5 alt_kp, × 1.5 alt_kd |
-| Elevator saturated at ±1 for most of run | `alt_kp` or `alpha_kp` overcommanding | × 0.5 alpha_kp, then × 0.5 alt_kp |
-| Alpha overshoots then slowly settles | `alpha_kd` too low | × 1.5 alpha_kd |
+| Elevator saturated at ±1 for most of run | `alt_kp` or `pitch_kp` overcommanding | × 0.5 pitch_kp, then × 0.5 alt_kp |
+| Pitch overshoots then slowly settles | `pitch_kd` too low | × 1.5 pitch_kd |
 | Airspeed drifts monotonically | `spd_ki` too low | × 2 spd_ki |
 | Airspeed oscillates around target | `spd_ki` too high | × 0.5 spd_ki |
 | Airspeed sluggish but stable | `spd_kp` too low | × 2 spd_kp |
 
-**Fix order when multiple loops fail:** innermost first (alpha → altitude → airspeed).
+**Fix order when multiple loops fail:** innermost first (pitch → altitude → airspeed).
 
-Describe the diagnosis briefly ("Scenario A: elevator saturated in first 10 s, alpha_kp likely
-too high → halving alpha_kp for Round 1").
+Describe the diagnosis briefly ("Scenario A: elevator saturated in first 10 s, pitch_kp likely
+too high → halving pitch_kp for Round 1").
 
 ---
 
@@ -240,7 +276,7 @@ Repeat the following for rounds 1, 2, and 3 (stop early if all scenarios pass):
      --altitude TARGET_ALT \
      --airspeed TARGET_AIRSPEED \
      --alt-kp ALT_KP --alt-ki ALT_KI --alt-kd ALT_KD \
-     --alpha-kp ALPHA_KP --alpha-kd ALPHA_KD \
+     --pitch-kp PITCH_KP --pitch-kd PITCH_KD \
      --spd-kp SPD_KP --spd-ki SPD_KI
    ```
 
@@ -277,7 +313,7 @@ cargo run --example observe_state --no-default-features -- \
   --altitude TARGET_ALT \
   --airspeed TARGET_AIRSPEED \
   --alt-kp ALT_KP --alt-ki ALT_KI --alt-kd ALT_KD \
-  --alpha-kp ALPHA_KP --alpha-kd ALPHA_KD \
+  --pitch-kp PITCH_KP --pitch-kd PITCH_KD \
   --spd-kp SPD_KP --spd-ki SPD_KI
 ```
 
@@ -300,7 +336,7 @@ E         300     70          …              …
 
 Best gains:
   --alt-kp F --alt-ki F --alt-kd F
-  --alpha-kp F --alpha-kd F
+  --pitch-kp F --pitch-kd F
   --spd-kp F --spd-ki F
 
 Exact reproduction command (scenario B as reference):
@@ -369,8 +405,8 @@ PlaneTuning(
             alt_kp: F,
             alt_ki: F,
             alt_kd: F,
-            alpha_kp: F,
-            alpha_kd: F,
+            pitch_kp: F,
+            pitch_kd: F,
             spd_kp: F,
             spd_ki: F,
             throttle_ff_gain: 0.7,
@@ -406,8 +442,8 @@ Use **Edit** to insert the new profile entry immediately after the opening `{`:
             alt_kp: F,
             alt_ki: F,
             alt_kd: F,
-            alpha_kp: F,
-            alpha_kd: F,
+            pitch_kp: F,
+            pitch_kd: F,
             spd_kp: F,
             spd_ki: F,
             throttle_ff_gain: 0.7,
@@ -426,8 +462,8 @@ Use **Edit** to insert `level_hold: { … }` before the final `)` of the `PlaneT
             alt_kp: F,
             alt_ki: F,
             alt_kd: F,
-            alpha_kp: F,
-            alpha_kd: F,
+            pitch_kp: F,
+            pitch_kd: F,
             spd_kp: F,
             spd_ki: F,
             throttle_ff_gain: 0.7,

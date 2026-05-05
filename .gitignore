@@ -3,3 +3,6 @@
 /.agents
 /models
 /.cargo
+
+# I use a softlink and keep everything in CLAUDE.md
+/AGENTS.md
