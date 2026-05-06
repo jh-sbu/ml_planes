@@ -372,6 +372,22 @@ where
             .unwrap_or_else(|e| panic!("Failed to save model to {path}: {e}"));
         println!("Saved policy to {path}.mpk");
     }
+
+    /// Load weights from `path` (without `.mpk` suffix) into the model.
+    /// The architecture must match the current task's observation dimension.
+    pub fn load_policy(&mut self, path: &str) {
+        use burn::record::{DefaultFileRecorder, FullPrecisionSettings};
+        self.model = self
+            .model
+            .clone()
+            .load_file(
+                path,
+                &DefaultFileRecorder::<FullPrecisionSettings>::default(),
+                &self.device,
+            )
+            .unwrap_or_else(|e| panic!("Failed to load weights from {path}: {e}"));
+        println!("Initialized weights from {path}.mpk");
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -65,11 +65,16 @@ fn main() {
         })
         .unwrap_or(2_000_000);
 
+    let init_from: Option<String> = args
+        .windows(2)
+        .find(|w| w[0] == "--init-from")
+        .map(|w| w[1].clone());
+
     let save_path = save_path_for(task, output_stem);
 
     match backend {
-        Backend::NdArray => run::<Autodiff<NdArray>>(plain, save_path, task, total_timesteps),
-        Backend::Wgpu => run::<Autodiff<Wgpu>>(plain, save_path, task, total_timesteps),
+        Backend::NdArray => run::<Autodiff<NdArray>>(plain, save_path, task, total_timesteps, init_from),
+        Backend::Wgpu => run::<Autodiff<Wgpu>>(plain, save_path, task, total_timesteps, init_from),
     }
 }
 
@@ -153,7 +158,7 @@ fn save_path_for(task: Task, output_stem: Option<String>) -> String {
 }
 
 #[cfg(feature = "training")]
-fn run<B>(plain: bool, save_path: String, task: Task, total_timesteps: usize)
+fn run<B>(plain: bool, save_path: String, task: Task, total_timesteps: usize, init_from: Option<String>)
 where
     B: burn::tensor::backend::AutodiffBackend,
     B::Device: Default,
@@ -208,6 +213,7 @@ where
                 plain,
                 save_path,
                 total_timesteps,
+                init_from,
                 LevelHoldEnv::with_reward_config(1000.0, 100.0, cfg, reward_cfg),
             )
         }
@@ -222,6 +228,7 @@ where
                 plain,
                 save_path,
                 total_timesteps,
+                init_from,
                 OrbitEnv::with_reward_config(1000.0, 100.0, 1000.0, cfg, reward_cfg),
             )
         }
@@ -229,7 +236,7 @@ where
 }
 
 #[cfg(feature = "training")]
-fn run_training_loop<B, E>(plain: bool, save_path: String, total_timesteps: usize, env: E)
+fn run_training_loop<B, E>(plain: bool, save_path: String, total_timesteps: usize, init_from: Option<String>, env: E)
 where
     B: burn::tensor::backend::AutodiffBackend,
     B::Device: Default,
@@ -247,7 +254,10 @@ where
     use ml_planes::training::ppo::PpoTrainer;
 
     let device: B::Device = Default::default();
-    let trainer = PpoTrainer::<B, E>::with_n_envs(env, 8, device);
+    let mut trainer = PpoTrainer::<B, E>::with_n_envs(env, 8, device);
+    if let Some(ref path) = init_from {
+        trainer.load_policy(path);
+    }
 
     let total_iterations = total_timesteps.div_ceil(trainer.rollout_steps);
 
