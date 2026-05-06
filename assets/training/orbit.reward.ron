@@ -43,6 +43,7 @@
     // Termination conditions
     min_altitude:             10.0,   // [m] crash if below
     max_altitude_error:       700.0,  // [m] diverged if |alt - target| exceeds this
+    max_radial_error:         1000.0, // [m] fail if |current_radius - target_radius| exceeds this
     min_airspeed:             20.0,   // [m/s] stall if below
     max_episode_steps:        3600,
 )

@@ -63,6 +63,7 @@ pub struct OrbitRewardConfig {
     pub terminal_failure_penalty: f32,
     pub min_altitude: f32,
     pub max_altitude_error: f32,
+    pub max_radial_error: f32,
     pub min_airspeed: f32,
     pub max_episode_steps: u32,
 }
@@ -92,6 +93,7 @@ impl Default for OrbitRewardConfig {
             terminal_failure_penalty: -25.0,
             min_altitude: 10.0,
             max_altitude_error: 700.0,
+            max_radial_error: 1000.0,
             min_airspeed: 20.0,
             max_episode_steps: 3_600,
         }
@@ -157,6 +159,7 @@ mod tests {
             terminal_failure_penalty: -25.0,
             min_altitude: 10.0,
             max_altitude_error: 700.0,
+            max_radial_error: 1000.0,
             min_airspeed: 20.0,
             max_episode_steps: 3600,
         )"#;

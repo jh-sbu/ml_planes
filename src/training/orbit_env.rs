@@ -51,6 +51,8 @@ pub struct OrbitEnv {
     pub altitude_perturb_range: std::ops::RangeInclusive<f32>,
     /// Initial airspeed perturbation around target airspeed [m/s].
     pub airspeed_perturb_range: std::ops::RangeInclusive<f32>,
+    /// Per-episode target radius range [m]; sampled at each reset().
+    pub target_radius_range: std::ops::RangeInclusive<f32>,
 
     reward_cfg: OrbitRewardConfig,
     cfg: PlaneConfig,
@@ -82,6 +84,7 @@ impl OrbitEnv {
             radial_offset_range: -250.0..=250.0,
             altitude_perturb_range: -150.0..=150.0,
             airspeed_perturb_range: -20.0..=20.0,
+            target_radius_range: 2500.0..=4000.0,
             reward_cfg,
             cfg,
             dt: 1.0 / 60.0,
@@ -172,7 +175,7 @@ impl OrbitEnv {
         let c = &self.reward_cfg;
         if self.state.altitude < c.min_altitude
             || (self.state.altitude - self.target_altitude).abs() > c.max_altitude_error
-            || terms.radial_error.abs() > self.target_radius.max(500.0)
+            || terms.radial_error.abs() > self.reward_cfg.max_radial_error
             || self.state.airspeed < c.min_airspeed
         {
             Some(TerminationReason::Failure)
@@ -199,6 +202,11 @@ impl TrainingEnv for OrbitEnv {
     fn reset(&mut self) -> (Observation, SpawnSpec) {
         self.rng_seed = self.rng_seed.wrapping_add(1);
         self.rng = Lcg::new(self.rng_seed);
+
+        self.target_radius = self.rng.next_f32(
+            *self.target_radius_range.start(),
+            *self.target_radius_range.end(),
+        );
 
         self.direction = if self.rng.next_f32(0.0, 1.0) < 0.5 {
             OrbitDirection::CounterClockwise
