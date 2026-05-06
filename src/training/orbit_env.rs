@@ -146,6 +146,9 @@ impl OrbitEnv {
         let speed_err = (self.state.airspeed - self.target_airspeed).abs();
         let roll = roll_angle(self.state.attitude).abs();
         let beta = self.state.beta.abs();
+        let p = self.state.angular_velocity.x.abs();
+        let q = self.state.angular_velocity.y.abs();
+        let r = self.state.angular_velocity.z.abs();
 
         -(radial_err / c.radial_reward_scale) * c.radial_reward_weight
             - (heading_err / c.heading_reward_scale) * c.heading_reward_weight
@@ -153,6 +156,9 @@ impl OrbitEnv {
             - (speed_err / c.speed_reward_scale) * c.speed_reward_weight
             - (roll / c.roll_reward_scale) * c.roll_reward_weight
             - (beta / c.beta_reward_scale) * c.beta_reward_weight
+            - (q / c.pitch_rate_reward_scale) * c.pitch_rate_reward_weight
+            - (p / c.roll_rate_reward_scale) * c.roll_rate_reward_weight
+            - (r / c.yaw_rate_reward_scale) * c.yaw_rate_reward_weight
             + c.alive_reward
     }
 
