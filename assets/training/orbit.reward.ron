@@ -1,0 +1,40 @@
+// Reward and termination config for OrbitEnv.
+// Edit here to retune training without recompiling.
+// Loaded at startup by train_ppo; falls back to compiled defaults if missing.
+(
+    // Radial error term: -(|radial_err| / radial_reward_scale) * radial_reward_weight
+    radial_reward_scale:      500.0,
+    radial_reward_weight:     1.4,
+
+    // Heading error term [rad]
+    heading_reward_scale:     0.5,
+    heading_reward_weight:    1.2,
+
+    // Altitude error term [m]
+    altitude_reward_scale:    200.0,
+    altitude_reward_weight:   1.0,
+
+    // Airspeed error term [m/s]
+    speed_reward_scale:       50.0,
+    speed_reward_weight:      0.4,
+
+    // Roll angle term [rad]
+    roll_reward_scale:        0.8,
+    roll_reward_weight:       0.1,
+
+    // Sideslip angle term [rad]
+    beta_reward_scale:        0.5,
+    beta_reward_weight:       0.1,
+
+    // Constant per-step bonus while alive
+    alive_reward:             0.01,
+
+    // One-time penalty added on failure termination (should be negative)
+    terminal_failure_penalty: -25.0,
+
+    // Termination conditions
+    min_altitude:             10.0,   // [m] crash if below
+    max_altitude_error:       700.0,  // [m] diverged if |alt - target| exceeds this
+    min_airspeed:             20.0,   // [m/s] stall if below
+    max_episode_steps:        3600,
+)

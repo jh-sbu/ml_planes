@@ -1,0 +1,28 @@
+// Reward and termination config for LevelHoldEnv.
+// Edit here to retune training without recompiling.
+// Loaded at startup by train_ppo; falls back to compiled defaults if missing.
+(
+    // Altitude error term: -(|alt - target| / alt_error_scale) * alt_error_weight
+    alt_error_scale:    200.0,
+    alt_error_weight:   1.0,
+
+    // Airspeed error term
+    speed_error_scale:  50.0,
+    speed_error_weight: 0.5,
+
+    // Roll angle term [rad]
+    roll_scale:         0.5,
+    roll_weight:        0.3,
+
+    // Sideslip angle term [rad]
+    beta_scale:         0.5,
+    beta_weight:        0.1,
+
+    // Constant per-step bonus while alive
+    alive_bonus:        0.01,
+
+    // Termination conditions
+    min_altitude:       10.0,    // [m] crash if below
+    max_altitude_error: 500.0,   // [m] diverged if |alt - target| exceeds this
+    max_episode_steps:  3000,
+)

@@ -30,5 +30,7 @@ pub use rl_level_hold::RlLevelHoldController;
 pub use rl_orbit::{RlOrbitConfig, RlOrbitController};
 pub use selected_model::{ModelLibrary, SelectedModel};
 pub use traits::FlightController;
-pub use tuning::{ControllerTuning, LevelHoldTuning, OrbitTuning, PlaneTuning, SelectedTuningProfile};
+pub use tuning::{
+    ControllerTuning, LevelHoldTuning, OrbitTuning, PlaneTuning, SelectedTuningProfile,
+};
 pub use wingman::{feed_leader_state, FormationOffset, LeaderRef, LeaderState, WingmanController};

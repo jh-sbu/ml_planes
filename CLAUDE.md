@@ -9,7 +9,7 @@
 - Rendering: `bevy` + `bevy_egui` HUD (feature-flagged off for training)
 - Aerodynamics: custom coefficient-based model (coefficient tables in `.plane.ron` assets)
 - ML: `burn` (pure Rust; no Python, no IPC)
-- Asset format: RON (Rusty Object Notation, native Bevy reflection)
+- Asset format: RON (Rusty Object Notation); aerodynamic configs use Bevy's asset loader; reward/termination configs (`*.reward.ron` in `assets/training/`) are loaded directly via `ron::de::from_reader` — no Bevy asset server required
 
 **Development philosophy:** Environment and tests first; maneuvers second. The environment, aerodynamic model, and test suite must be solid before any controller or ML work begins.
 
@@ -48,6 +48,7 @@ src/
 | `ControllerKind` | enum | Factory selector for all controller types; `build()` does bumpless integral seeding |
 | `OrbitController` | struct | 3-level cascade PID orbit around a fixed world-frame point |
 | `RlOrbitController` | struct | Burn ActorCritic policy for orbit (obs dim=13); training-gated |
+| `LevelHoldRewardConfig` / `OrbitRewardConfig` | plain structs | Reward weights, scales, alive bonus, failure penalty, and termination thresholds; loaded from `assets/training/*.reward.ron` at training startup |
 | `WingmanController` | struct | Formation flight; holds a fixed offset in the leader's body frame |
 | `AscentController` | struct | Climbs to target altitude then latches to level hold |
 
@@ -143,6 +144,7 @@ Both `RlLevelHoldController` and `RlOrbitController` follow the same pattern:
 | Compressibility | Ignored. Low-Mach assumption throughout. |
 | Structural limits | Not modeled. |
 | ML runtime | Pure Rust (`burn`). No Python, no IPC, no C extensions. |
+| Reward/termination tuning | Constants live in `assets/training/*.reward.ron`, loaded by `train_ppo` at startup. Edit the RON to retune without recompiling. `Default` impls mirror the file values so tests never need file I/O. |
 | Multi-agent | Architecture must support one `Box<dyn FlightController>` per plane entity. Exact multi-agent training strategy deferred. |
 
 ---

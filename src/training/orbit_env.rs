@@ -17,6 +17,7 @@ use crate::controllers::orbit::{
 };
 use crate::plane::{FlightState, PlaneConfig};
 use crate::training::flight_env::{direct_action_to_inputs, integrate_state, roll_angle, Lcg};
+use crate::training::reward_config::OrbitRewardConfig;
 use crate::training::{Observation, SpawnSpec, StepInfo, TrainingEnv};
 
 const TWO_PI: f32 = std::f32::consts::PI * 2.0;
@@ -51,6 +52,7 @@ pub struct OrbitEnv {
     /// Initial airspeed perturbation around target airspeed [m/s].
     pub airspeed_perturb_range: std::ops::RangeInclusive<f32>,
 
+    reward_cfg: OrbitRewardConfig,
     cfg: PlaneConfig,
     dt: f32,
     state: FlightState,
@@ -61,49 +63,48 @@ pub struct OrbitEnv {
 }
 
 impl OrbitEnv {
-    const RADIAL_REWARD_SCALE: f32 = 500.0;
-    const RADIAL_REWARD_WEIGHT: f32 = 1.4;
-    const HEADING_REWARD_SCALE: f32 = 0.5;
-    const HEADING_REWARD_WEIGHT: f32 = 1.2;
-    const ALTITUDE_REWARD_SCALE: f32 = 200.0;
-    const ALTITUDE_REWARD_WEIGHT: f32 = 1.0;
-    const SPEED_REWARD_SCALE: f32 = 50.0;
-    const SPEED_REWARD_WEIGHT: f32 = 0.4;
-    const ROLL_REWARD_SCALE: f32 = 0.8;
-    const ROLL_REWARD_WEIGHT: f32 = 0.1;
-    const BETA_REWARD_SCALE: f32 = 0.5;
-    const BETA_REWARD_WEIGHT: f32 = 0.1;
-    const ALIVE_REWARD: f32 = 0.01;
-    const TERMINAL_FAILURE_PENALTY: f32 = -25.0;
-    const MIN_ALTITUDE: f32 = 10.0;
-    const MAX_ALTITUDE_ERROR: f32 = 700.0;
-    const MIN_AIRSPEED: f32 = 20.0;
-
+    /// Create an environment using default reward config.
     pub fn new(
         target_altitude: f32,
         target_airspeed: f32,
         target_radius: f32,
         cfg: PlaneConfig,
     ) -> Self {
-        let dt = 1.0 / 60.0;
+        let reward_cfg = OrbitRewardConfig::default();
+        let max_episode_steps = reward_cfg.max_episode_steps;
         Self {
             center_x: 0.0,
             center_z: 0.0,
             target_radius,
             target_altitude,
             target_airspeed,
-            max_episode_steps: 3_600,
+            max_episode_steps,
             radial_offset_range: -250.0..=250.0,
             altitude_perturb_range: -150.0..=150.0,
             airspeed_perturb_range: -20.0..=20.0,
+            reward_cfg,
             cfg,
-            dt,
+            dt: 1.0 / 60.0,
             state: FlightState::default(),
             direction: OrbitDirection::CounterClockwise,
             episode_step: 0,
             rng: Lcg::new(4242),
             rng_seed: 4242,
         }
+    }
+
+    /// Create an environment with an explicit reward config (e.g. loaded from a RON file).
+    pub fn with_reward_config(
+        target_altitude: f32,
+        target_airspeed: f32,
+        target_radius: f32,
+        cfg: PlaneConfig,
+        reward_cfg: OrbitRewardConfig,
+    ) -> Self {
+        let mut env = Self::new(target_altitude, target_airspeed, target_radius, cfg);
+        env.max_episode_steps = reward_cfg.max_episode_steps;
+        env.reward_cfg = reward_cfg;
+        env
     }
 
     fn build_observation(&self) -> Observation {
@@ -138,6 +139,7 @@ impl OrbitEnv {
     }
 
     fn compute_base_reward(&self, terms: &OrbitObservationTerms) -> f32 {
+        let c = &self.reward_cfg;
         let radial_err = terms.radial_error.abs();
         let heading_err = terms.heading_error.abs();
         let alt_err = (self.state.altitude - self.target_altitude).abs();
@@ -145,13 +147,13 @@ impl OrbitEnv {
         let roll = roll_angle(self.state.attitude).abs();
         let beta = self.state.beta.abs();
 
-        -(radial_err / Self::RADIAL_REWARD_SCALE) * Self::RADIAL_REWARD_WEIGHT
-            - (heading_err / Self::HEADING_REWARD_SCALE) * Self::HEADING_REWARD_WEIGHT
-            - (alt_err / Self::ALTITUDE_REWARD_SCALE) * Self::ALTITUDE_REWARD_WEIGHT
-            - (speed_err / Self::SPEED_REWARD_SCALE) * Self::SPEED_REWARD_WEIGHT
-            - (roll / Self::ROLL_REWARD_SCALE) * Self::ROLL_REWARD_WEIGHT
-            - (beta / Self::BETA_REWARD_SCALE) * Self::BETA_REWARD_WEIGHT
-            + Self::ALIVE_REWARD
+        -(radial_err / c.radial_reward_scale) * c.radial_reward_weight
+            - (heading_err / c.heading_reward_scale) * c.heading_reward_weight
+            - (alt_err / c.altitude_reward_scale) * c.altitude_reward_weight
+            - (speed_err / c.speed_reward_scale) * c.speed_reward_weight
+            - (roll / c.roll_reward_scale) * c.roll_reward_weight
+            - (beta / c.beta_reward_scale) * c.beta_reward_weight
+            + c.alive_reward
     }
 
     #[cfg(test)]
@@ -161,10 +163,11 @@ impl OrbitEnv {
     }
 
     fn termination_reason(&self, terms: &OrbitObservationTerms) -> Option<TerminationReason> {
-        if self.state.altitude < Self::MIN_ALTITUDE
-            || (self.state.altitude - self.target_altitude).abs() > Self::MAX_ALTITUDE_ERROR
+        let c = &self.reward_cfg;
+        if self.state.altitude < c.min_altitude
+            || (self.state.altitude - self.target_altitude).abs() > c.max_altitude_error
             || terms.radial_error.abs() > self.target_radius.max(500.0)
-            || self.state.airspeed < Self::MIN_AIRSPEED
+            || self.state.airspeed < c.min_airspeed
         {
             Some(TerminationReason::Failure)
         } else if self.episode_step >= self.max_episode_steps {
@@ -276,7 +279,7 @@ impl TrainingEnv for OrbitEnv {
         let termination = self.termination_reason(&terms);
         let mut reward = self.compute_base_reward(&terms);
         if termination == Some(TerminationReason::Failure) {
-            reward += Self::TERMINAL_FAILURE_PENALTY;
+            reward += self.reward_cfg.terminal_failure_penalty;
         }
         let done = termination.is_some();
         let info = StepInfo {
@@ -432,7 +435,7 @@ mod tests {
 
         assert!(done, "low altitude should terminate");
         let terms = env.current_terms();
-        let expected = env.compute_base_reward(&terms) + OrbitEnv::TERMINAL_FAILURE_PENALTY;
+        let expected = env.compute_base_reward(&terms) + env.reward_cfg.terminal_failure_penalty;
         assert!(
             (reward - expected).abs() < 1e-4,
             "reward={reward} expected={expected}"

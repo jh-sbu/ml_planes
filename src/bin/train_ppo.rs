@@ -76,6 +76,13 @@ impl Task {
         }
     }
 
+    fn reward_config_path(self) -> &'static str {
+        match self {
+            Self::LevelHold => "assets/training/level_hold.reward.ron",
+            Self::Orbit => "assets/training/orbit.reward.ron",
+        }
+    }
+
     fn model_dir(self) -> &'static str {
         match self {
             Self::LevelHold => "level_hold",
@@ -118,6 +125,9 @@ where
     use bevy::math::Vec3;
 
     use ml_planes::plane::config::PlaneConfig;
+    use ml_planes::training::reward_config::{
+        load_reward_config, LevelHoldRewardConfig, OrbitRewardConfig,
+    };
     use ml_planes::training::{LevelHoldEnv, OrbitEnv};
 
     // Generic jet values matching assets/planes/generic_jet.plane.ron
@@ -152,10 +162,30 @@ where
 
     match task {
         Task::LevelHold => {
-            run_training_loop::<B, _>(plain, save_path, LevelHoldEnv::new(1000.0, 100.0, cfg))
+            let path = task.reward_config_path();
+            let reward_cfg: LevelHoldRewardConfig = load_reward_config(path).unwrap_or_else(|e| {
+                eprintln!("Warning: could not load {path}: {e}. Using defaults.");
+                LevelHoldRewardConfig::default()
+            });
+            println!("Loaded reward config from {path}");
+            run_training_loop::<B, _>(
+                plain,
+                save_path,
+                LevelHoldEnv::with_reward_config(1000.0, 100.0, cfg, reward_cfg),
+            )
         }
         Task::Orbit => {
-            run_training_loop::<B, _>(plain, save_path, OrbitEnv::new(1000.0, 100.0, 1000.0, cfg))
+            let path = task.reward_config_path();
+            let reward_cfg: OrbitRewardConfig = load_reward_config(path).unwrap_or_else(|e| {
+                eprintln!("Warning: could not load {path}: {e}. Using defaults.");
+                OrbitRewardConfig::default()
+            });
+            println!("Loaded reward config from {path}");
+            run_training_loop::<B, _>(
+                plain,
+                save_path,
+                OrbitEnv::with_reward_config(1000.0, 100.0, 1000.0, cfg, reward_cfg),
+            )
         }
     }
 }

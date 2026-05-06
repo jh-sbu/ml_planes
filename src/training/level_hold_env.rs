@@ -18,6 +18,7 @@ use crate::plane::{ControlInputs, FlightState, PlaneConfig};
 use crate::training::flight_env::{
     direct_action_to_inputs, integrate_state, pitch_angle, roll_angle, Lcg,
 };
+use crate::training::reward_config::LevelHoldRewardConfig;
 use crate::training::{Observation, SpawnSpec, StepInfo, TrainingEnv};
 
 // Domain-randomization ranges applied at every reset.
@@ -44,6 +45,8 @@ pub struct LevelHoldEnv {
     /// Spawn airspeed range [m/s].
     pub airspeed_spawn_range: std::ops::RangeInclusive<f32>,
 
+    /// Reward weights, scales, and termination thresholds.
+    reward_cfg: LevelHoldRewardConfig,
     /// Aerodynamic / mass configuration.
     cfg: PlaneConfig,
     /// Fixed-step size [s].
@@ -59,22 +62,37 @@ pub struct LevelHoldEnv {
 }
 
 impl LevelHoldEnv {
-    /// Create an environment.  Default episode length = 3 000 steps (50 s at 60 Hz).
+    /// Create an environment using default reward config.
     pub fn new(target_altitude: f32, target_airspeed: f32, cfg: PlaneConfig) -> Self {
-        let dt = 1.0 / 60.0;
+        let reward_cfg = LevelHoldRewardConfig::default();
+        let max_episode_steps = reward_cfg.max_episode_steps;
         Self {
             target_altitude,
             target_airspeed,
-            max_episode_steps: 3_000,
+            max_episode_steps,
             alt_spawn_range: (target_altitude - 150.0)..=(target_altitude + 150.0),
             airspeed_spawn_range: (target_airspeed - 20.0)..=(target_airspeed + 20.0),
+            reward_cfg,
             cfg,
-            dt,
+            dt: 1.0 / 60.0,
             state: FlightState::default(),
             episode_step: 0,
             rng: Lcg::new(42),
             rng_seed: 42,
         }
+    }
+
+    /// Create an environment with an explicit reward config (e.g. loaded from a RON file).
+    pub fn with_reward_config(
+        target_altitude: f32,
+        target_airspeed: f32,
+        cfg: PlaneConfig,
+        reward_cfg: LevelHoldRewardConfig,
+    ) -> Self {
+        let mut env = Self::new(target_altitude, target_airspeed, cfg);
+        env.max_episode_steps = reward_cfg.max_episode_steps;
+        env.reward_cfg = reward_cfg;
+        env
     }
 
     // --- Physics step -------------------------------------------------------
@@ -108,21 +126,23 @@ impl LevelHoldEnv {
     }
 
     fn compute_reward(&self) -> f32 {
+        let c = &self.reward_cfg;
         let alt_err = (self.state.altitude - self.target_altitude).abs();
         let speed_err = (self.state.airspeed - self.target_airspeed).abs();
         let roll = roll_angle(self.state.attitude).abs();
         let beta = self.state.beta.abs();
 
-        -(alt_err / 200.0) * 1.0
-            - (speed_err / 50.0) * 0.5
-            - (roll / 0.5) * 0.3
-            - (beta / 0.5) * 0.1
-            + 0.01 // alive bonus
+        -(alt_err / c.alt_error_scale) * c.alt_error_weight
+            - (speed_err / c.speed_error_scale) * c.speed_error_weight
+            - (roll / c.roll_scale) * c.roll_weight
+            - (beta / c.beta_scale) * c.beta_weight
+            + c.alive_bonus
     }
 
     fn is_done(&self) -> bool {
-        self.state.altitude < 10.0
-            || (self.state.altitude - self.target_altitude).abs() > 500.0
+        let c = &self.reward_cfg;
+        self.state.altitude < c.min_altitude
+            || (self.state.altitude - self.target_altitude).abs() > c.max_altitude_error
             || self.episode_step >= self.max_episode_steps
     }
 
