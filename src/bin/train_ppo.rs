@@ -44,11 +44,15 @@ fn main() {
         .find(|w| w[0] == "--output")
         .map(|w| w[1].clone());
 
-    let backend_str: String = args
+    let backend = args
         .windows(2)
         .find(|w| w[0] == "--backend")
-        .map(|w| w[1].clone())
-        .unwrap_or_else(|| "wgpu".to_string());
+        .map(|w| Backend::parse(&w[1]))
+        .unwrap_or(Ok(Backend::Wgpu))
+        .unwrap_or_else(|e| {
+            eprintln!("{e}");
+            std::process::exit(2);
+        });
 
     let total_timesteps: usize = args
         .windows(2)
@@ -63,9 +67,29 @@ fn main() {
 
     let save_path = save_path_for(task, output_stem);
 
-    match backend_str.as_str() {
-        "ndarray" | "cpu" => run::<Autodiff<NdArray>>(plain, save_path, task, total_timesteps),
-        _ => run::<Autodiff<Wgpu>>(plain, save_path, task, total_timesteps),
+    match backend {
+        Backend::NdArray => run::<Autodiff<NdArray>>(plain, save_path, task, total_timesteps),
+        Backend::Wgpu => run::<Autodiff<Wgpu>>(plain, save_path, task, total_timesteps),
+    }
+}
+
+#[cfg(feature = "training")]
+#[derive(Clone, Copy)]
+enum Backend {
+    NdArray,
+    Wgpu,
+}
+
+#[cfg(feature = "training")]
+impl Backend {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "ndarray" | "cpu" => Ok(Self::NdArray),
+            "wgpu" => Ok(Self::Wgpu),
+            other => Err(format!(
+                "Unsupported --backend '{other}'. Use 'wgpu', 'ndarray', or 'cpu'."
+            )),
+        }
     }
 }
 
