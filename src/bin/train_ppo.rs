@@ -12,6 +12,7 @@
 //!   --output <stem>           Save the model to `models/<task>/<stem>.mpk`.
 //!                             If omitted, auto-increments: ppo_level_hold_1.mpk,
 //!                             ppo_orbit_1.mpk, … (never overwrites an existing file).
+//!   --steps <n>               Total environment steps (default: 2_000_000).
 //!   --backend <wgpu|ndarray>  Compute backend (default: wgpu).
 
 #[cfg(not(feature = "training"))]
@@ -49,11 +50,22 @@ fn main() {
         .map(|w| w[1].clone())
         .unwrap_or_else(|| "wgpu".to_string());
 
+    let total_timesteps: usize = args
+        .windows(2)
+        .find(|w| w[0] == "--steps")
+        .map(|w| {
+            w[1].parse::<usize>().unwrap_or_else(|_| {
+                eprintln!("--steps must be a positive integer");
+                std::process::exit(2);
+            })
+        })
+        .unwrap_or(2_000_000);
+
     let save_path = save_path_for(task, output_stem);
 
     match backend_str.as_str() {
-        "ndarray" | "cpu" => run::<Autodiff<NdArray>>(plain, save_path, task),
-        _ => run::<Autodiff<Wgpu>>(plain, save_path, task),
+        "ndarray" | "cpu" => run::<Autodiff<NdArray>>(plain, save_path, task, total_timesteps),
+        _ => run::<Autodiff<Wgpu>>(plain, save_path, task, total_timesteps),
     }
 }
 
@@ -117,7 +129,7 @@ fn save_path_for(task: Task, output_stem: Option<String>) -> String {
 }
 
 #[cfg(feature = "training")]
-fn run<B>(plain: bool, save_path: String, task: Task)
+fn run<B>(plain: bool, save_path: String, task: Task, total_timesteps: usize)
 where
     B: burn::tensor::backend::AutodiffBackend,
     B::Device: Default,
@@ -171,6 +183,7 @@ where
             run_training_loop::<B, _>(
                 plain,
                 save_path,
+                total_timesteps,
                 LevelHoldEnv::with_reward_config(1000.0, 100.0, cfg, reward_cfg),
             )
         }
@@ -184,6 +197,7 @@ where
             run_training_loop::<B, _>(
                 plain,
                 save_path,
+                total_timesteps,
                 OrbitEnv::with_reward_config(1000.0, 100.0, 1000.0, cfg, reward_cfg),
             )
         }
@@ -191,7 +205,7 @@ where
 }
 
 #[cfg(feature = "training")]
-fn run_training_loop<B, E>(plain: bool, save_path: String, env: E)
+fn run_training_loop<B, E>(plain: bool, save_path: String, total_timesteps: usize, env: E)
 where
     B: burn::tensor::backend::AutodiffBackend,
     B::Device: Default,
@@ -211,7 +225,6 @@ where
     let device: B::Device = Default::default();
     let trainer = PpoTrainer::<B, E>::with_n_envs(env, 8, device);
 
-    let total_timesteps: usize = 2_000_000;
     let total_iterations = total_timesteps.div_ceil(trainer.rollout_steps);
 
     // --- metric IDs ---
