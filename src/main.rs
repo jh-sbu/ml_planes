@@ -23,7 +23,7 @@ use ml_planes::plane::PlaneTuningHandle;
 #[cfg(feature = "visual")]
 use bevy_egui::EguiPlugin;
 #[cfg(feature = "visual")]
-use ml_planes::camera::CameraPlugin;
+use ml_planes::camera::{CameraMode, CameraPlugin};
 #[cfg(feature = "visual")]
 use ml_planes::ui::UiPlugin;
 
@@ -57,7 +57,9 @@ fn main() {
     app.add_systems(Startup, scan_models);
 
     #[cfg(feature = "visual")]
-    app.add_systems(Update, (poll_controller_inputs, switch_controller));
+    app.add_systems(Update, (poll_controller_inputs, switch_controller, cycle_tune_profile));
+    #[cfg(all(feature = "visual", feature = "training"))]
+    app.add_systems(Update, cycle_rl_model);
 
     #[cfg(feature = "visual")]
     app.add_systems(PostUpdate, apply_controller_switch);
@@ -369,6 +371,68 @@ fn switch_controller(
             kind.set_if_neq(next);
         }
     }
+}
+
+/// T / Shift+T: cycle tune profile forward/backward for the followed plane.
+#[cfg(feature = "visual")]
+fn cycle_tune_profile(
+    mode: Res<CameraMode>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut query: Query<(
+        &ControllerKind,
+        Option<&mut SelectedTuningProfile>,
+        Option<&PlaneTuningHandle>,
+    )>,
+    tuning_assets: Res<Assets<PlaneTuning>>,
+) {
+    if !keys.just_pressed(KeyCode::KeyT) {
+        return;
+    }
+    let CameraMode::Follow(entity) = *mode else { return };
+    let Ok((kind, Some(mut profile), Some(handle))) = query.get_mut(entity) else { return };
+    let Some(pt) = tuning_assets.get(&handle.0) else { return };
+    let mut names: Vec<&str> = match *kind {
+        ControllerKind::LevelHold | ControllerKind::RlLevelHold => {
+            pt.level_hold.keys().map(|s| s.as_str()).collect()
+        }
+        ControllerKind::Orbit | ControllerKind::RlOrbit => {
+            pt.orbit.keys().map(|s| s.as_str()).collect()
+        }
+        _ => return,
+    };
+    names.sort();
+    if names.is_empty() {
+        return;
+    }
+    let n = names.len();
+    let cur = names.iter().position(|&nm| nm == profile.0).unwrap_or(0);
+    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    let next = if shift { (cur + n - 1) % n } else { (cur + 1) % n };
+    profile.set_if_neq(SelectedTuningProfile(names[next].to_string()));
+}
+
+/// T / Shift+T: cycle RL model forward/backward for the followed plane.
+#[cfg(all(feature = "visual", feature = "training"))]
+fn cycle_rl_model(
+    mode: Res<CameraMode>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut query: Query<(&ControllerKind, Option<&mut SelectedModel>)>,
+    model_lib: Res<ModelLibrary>,
+) {
+    if !keys.just_pressed(KeyCode::KeyT) {
+        return;
+    }
+    let CameraMode::Follow(entity) = *mode else { return };
+    let Ok((kind, Some(mut sel))) = query.get_mut(entity) else { return };
+    let Some(dir) = kind.model_dir() else { return };
+    let Some(available) = model_lib.0.get(dir) else { return };
+    if available.is_empty() {
+        return;
+    }
+    let n = available.len();
+    let cur = available.iter().position(|p| p == &sel.0).unwrap_or(0);
+    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    sel.0 = available[if shift { (cur + n - 1) % n } else { (cur + 1) % n }].clone();
 }
 
 /// Scan `models/<category>/` subdirectories at startup and populate `ModelLibrary`.

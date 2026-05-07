@@ -217,6 +217,7 @@ pub fn draw_flight_hud(
                         if selected_profile != current_profile {
                             profile.0 = selected_profile;
                         }
+                        ui.label("(T / Shift+T to cycle)");
                     }
                 }
             }
@@ -360,6 +361,7 @@ pub fn draw_flight_hud(
                         if chosen != current_path {
                             sel.0 = chosen;
                         }
+                        ui.label("(T / Shift+T to cycle)");
                     }
                 }
             }
