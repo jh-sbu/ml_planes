@@ -1,3 +1,4 @@
+#[derive(Clone)]
 pub struct PidController {
     pub kp: f32,
     pub ki: f32,

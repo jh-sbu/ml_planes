@@ -47,6 +47,7 @@ fn pitch_angle(attitude: Quat) -> f32 {
 /// Cascade PID controller for level altitude and airspeed hold.
 ///
 /// Default gains are tuned for `generic_jet.plane.ron` at 100 m/s.
+#[derive(Clone)]
 pub struct LevelHoldController {
     /// Target altitude [m].
     pub target_altitude: f32,

@@ -137,6 +137,7 @@ fn pitch_angle(attitude: bevy::math::Quat) -> f32 {
 ///   2. Heading error [rad] → `heading_pid` → Δbank [rad]
 ///   3. Curvature feedforward: `atan(V² / (g·R)) · direction_sign`
 ///   4. Total bank = feedforward + Δbank, clamped ±60°, set on inner controller
+#[derive(Clone)]
 pub struct OrbitController {
     /// World-frame X coordinate of the orbit center [m].
     pub center_x: f32,

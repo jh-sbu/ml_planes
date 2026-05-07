@@ -7,7 +7,7 @@
 //! policy under `models/<task>/`.
 //!
 //! Flags:
-//!   --task <level_hold|orbit>  Training task (default: level_hold).
+//!   --task <level_hold|orbit|residual_orbit>  Training task (default: level_hold).
 //!   --plain                   Print the traditional metrics table instead of the TUI display.
 //!   --output <stem>           Save the model to `models/<task>/<stem>.mpk`.
 //!                             If omitted, auto-increments: ppo_level_hold_1.mpk,
@@ -103,6 +103,7 @@ impl Backend {
 enum Task {
     LevelHold,
     Orbit,
+    ResidualOrbit,
 }
 
 #[cfg(feature = "training")]
@@ -111,8 +112,9 @@ impl Task {
         match value {
             "level_hold" => Ok(Self::LevelHold),
             "orbit" => Ok(Self::Orbit),
+            "residual_orbit" => Ok(Self::ResidualOrbit),
             other => Err(format!(
-                "Unsupported --task '{other}'. Use 'level_hold' or 'orbit'."
+                "Unsupported --task '{other}'. Use 'level_hold', 'orbit', or 'residual_orbit'."
             )),
         }
     }
@@ -120,7 +122,7 @@ impl Task {
     fn reward_config_path(self) -> &'static str {
         match self {
             Self::LevelHold => "assets/training/level_hold.reward.ron",
-            Self::Orbit => "assets/training/orbit.reward.ron",
+            Self::Orbit | Self::ResidualOrbit => "assets/training/orbit.reward.ron",
         }
     }
 
@@ -128,6 +130,7 @@ impl Task {
         match self {
             Self::LevelHold => "level_hold",
             Self::Orbit => "orbit",
+            Self::ResidualOrbit => "orbit_residual",
         }
     }
 
@@ -135,6 +138,7 @@ impl Task {
         match self {
             Self::LevelHold => "ppo_level_hold",
             Self::Orbit => "ppo_orbit",
+            Self::ResidualOrbit => "ppo_orbit_residual",
         }
     }
 }
@@ -169,7 +173,7 @@ where
     use ml_planes::training::reward_config::{
         load_reward_config, LevelHoldRewardConfig, OrbitRewardConfig,
     };
-    use ml_planes::training::{LevelHoldEnv, OrbitEnv};
+    use ml_planes::training::{LevelHoldEnv, OrbitEnv, ResidualOrbitEnv};
 
     // Generic jet values matching assets/planes/generic_jet.plane.ron
     let cfg = PlaneConfig {
@@ -230,6 +234,21 @@ where
                 total_timesteps,
                 init_from,
                 OrbitEnv::with_reward_config(1000.0, 100.0, 1000.0, cfg, reward_cfg),
+            )
+        }
+        Task::ResidualOrbit => {
+            let path = task.reward_config_path();
+            let reward_cfg: OrbitRewardConfig = load_reward_config(path).unwrap_or_else(|e| {
+                eprintln!("Warning: could not load {path}: {e}. Using defaults.");
+                OrbitRewardConfig::default()
+            });
+            println!("Loaded reward config from {path}");
+            run_training_loop::<B, _>(
+                plain,
+                save_path,
+                total_timesteps,
+                init_from,
+                ResidualOrbitEnv::with_reward_config(1000.0, 100.0, 1000.0, cfg, reward_cfg),
             )
         }
     }

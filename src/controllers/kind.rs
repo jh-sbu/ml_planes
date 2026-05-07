@@ -34,6 +34,10 @@ pub enum ControllerKind {
     /// explicitly via `RlOrbitController::load()`; `build()` falls back to
     /// `Orbit` when no model is available.
     RlOrbit,
+    /// Residual ML correction over PID orbit (PPO policy). Controller must be
+    /// constructed explicitly via `RlOrbitResidualController::load()`; `build()`
+    /// falls back to `Orbit` when no model is available.
+    RlOrbitResidual,
 }
 
 impl ControllerKind {
@@ -49,6 +53,7 @@ impl ControllerKind {
         Self::RlLevelHold,
         Self::Orbit,
         Self::RlOrbit,
+        Self::RlOrbitResidual,
     ];
 
     pub fn name(self) -> &'static str {
@@ -60,6 +65,7 @@ impl ControllerKind {
             ControllerKind::RlLevelHold => "RL Level Hold",
             ControllerKind::Orbit => "Orbit",
             ControllerKind::RlOrbit => "RL Orbit",
+            ControllerKind::RlOrbitResidual => "RL Orbit Residual",
         }
     }
 
@@ -69,6 +75,7 @@ impl ControllerKind {
         match self {
             ControllerKind::RlLevelHold => Some("level_hold"),
             ControllerKind::RlOrbit => Some("orbit"),
+            ControllerKind::RlOrbitResidual => Some("orbit_residual"),
             _ => None,
         }
     }
@@ -107,7 +114,9 @@ impl ControllerKind {
             ControllerKind::Ascent => {
                 Box::new(AscentController::new(state, state.altitude + 1000.0))
             }
-            ControllerKind::Orbit | ControllerKind::RlOrbit => match tuning {
+            ControllerKind::Orbit
+            | ControllerKind::RlOrbit
+            | ControllerKind::RlOrbitResidual => match tuning {
                 Some(t) => t.build(state, prev_inputs),
                 None => Box::new(OrbitController::from_state(state, prev_inputs)),
             },
