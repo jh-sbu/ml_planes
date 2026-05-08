@@ -18,6 +18,8 @@ use ml_planes::training::SpawnSpec;
 use ml_planes::controllers::{
     ActiveController, ControllerTuning, PlaneTuning, SelectedTuningProfile,
 };
+#[cfg(all(feature = "visual", feature = "training"))]
+use ml_planes::controllers::OrbitTuning;
 #[cfg(feature = "visual")]
 use ml_planes::plane::PlaneTuningHandle;
 
@@ -477,11 +479,14 @@ fn apply_model_switch(
             &mut ActiveController,
             &ControllerKind,
             &SelectedModel,
+            Option<&PlaneTuningHandle>,
+            Option<&SelectedTuningProfile>,
         ),
         Changed<SelectedModel>,
     >,
+    tuning_assets: Res<Assets<PlaneTuning>>,
 ) {
-    for (state, mut ctrl, kind, sel) in query.iter_mut() {
+    for (state, mut ctrl, kind, sel, tuning_handle, profile) in query.iter_mut() {
         let Some(dir) = kind.model_dir() else {
             continue;
         };
@@ -507,7 +512,11 @@ fn apply_model_switch(
             }
             ControllerKind::RlOrbitResidual => {
                 let config = residual_config_from_controller(&mut ctrl, state);
-                match RlOrbitResidualController::load(&sel.0, config, state) {
+                let profile_name = profile.map(|p| p.0.as_str()).unwrap_or("normal");
+                let orbit_tuning: Option<&OrbitTuning> = tuning_handle
+                    .and_then(|h| tuning_assets.get(&h.0))
+                    .and_then(|pt| pt.get_orbit(profile_name));
+                match RlOrbitResidualController::load(&sel.0, config, state, orbit_tuning) {
                     Ok(new_ctrl) => ctrl.0 = Box::new(new_ctrl),
                     Err(e) => eprintln!("Failed to load model {}: {e}", sel.0),
                 }
@@ -531,12 +540,15 @@ fn apply_rl_controller_switch(
             &mut ActiveController,
             Mut<ControllerKind>,
             Option<&SelectedModel>,
+            Option<&PlaneTuningHandle>,
+            Option<&SelectedTuningProfile>,
         ),
         Changed<ControllerKind>,
     >,
     model_lib: Res<ModelLibrary>,
+    tuning_assets: Res<Assets<PlaneTuning>>,
 ) {
-    for (entity, state, mut controller, mut kind, sel) in query.iter_mut() {
+    for (entity, state, mut controller, mut kind, sel, tuning_handle, profile) in query.iter_mut() {
         if kind.is_added()
             || !matches!(
                 *kind,
@@ -579,7 +591,11 @@ fn apply_rl_controller_switch(
             }
             ControllerKind::RlOrbitResidual => {
                 let config = residual_config_from_controller(&mut controller, state);
-                match RlOrbitResidualController::load(&path, config, state) {
+                let profile_name = profile.map(|p| p.0.as_str()).unwrap_or("normal");
+                let orbit_tuning: Option<&OrbitTuning> = tuning_handle
+                    .and_then(|h| tuning_assets.get(&h.0))
+                    .and_then(|pt| pt.get_orbit(profile_name));
+                match RlOrbitResidualController::load(&path, config, state, orbit_tuning) {
                     Ok(rl) => controller.0 = Box::new(rl),
                     Err(e) => {
                         eprintln!("Failed to load RL orbit residual model '{}': {e}", path);

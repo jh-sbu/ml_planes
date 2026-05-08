@@ -19,6 +19,7 @@ use burn::{
 use crate::controllers::orbit::{
     build_orbit_observation, OrbitController, OrbitDirection, ORBIT_OBS_DIM,
 };
+use crate::controllers::tuning::OrbitTuning;
 use crate::controllers::FlightController;
 use crate::plane::{ControlInputs, FlightState};
 use crate::training::ppo::model::ActorCritic;
@@ -79,6 +80,7 @@ impl RlOrbitResidualController {
         path: &str,
         config: RlOrbitResidualConfig,
         state: &FlightState,
+        tuning: Option<&OrbitTuning>,
     ) -> Result<Self, burn::record::RecorderError> {
         let device: <InfB as Backend>::Device = Default::default();
         let model = ActorCritic::<InfB>::new(&device, ORBIT_OBS_DIM).load_file(
@@ -86,7 +88,10 @@ impl RlOrbitResidualController {
             &DefaultFileRecorder::<FullPrecisionSettings>::default(),
             &device,
         )?;
-        let pid = OrbitController::from_state(state, &ControlInputs::default());
+        let pid = match tuning {
+            Some(t) => OrbitController::with_tuning(state, t, &ControlInputs::default()),
+            None => OrbitController::from_state(state, &ControlInputs::default()),
+        };
         Ok(Self {
             pid,
             model: std::sync::Mutex::new(model),
