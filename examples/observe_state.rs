@@ -29,6 +29,15 @@
 //!   --radius F           Orbit radius [m] (default: 1000)
 //!   --direction NAME     ccw (default) | cw
 //!
+//! Orbit outer-loop gain overrides (only used with --controller orbit):
+//!   --radial-kp F        Radial error [m] → heading offset Kp override
+//!   --radial-kd F        Radial error [m] → heading offset Kd override
+//!   --heading-kp F       Heading error [rad] → bank correction Kp override
+//!   --heading-kd F       Heading error [rad] → bank correction Kd override
+//!
+//! Level-hold gain flags (--alt-kp, --pitch-kp, etc.) also override the
+//! inner loop when --controller orbit is used.
+//!
 //! Individual gain flags override values loaded from --tuning-file.
 //!
 //! Output columns for orbit mode append: radial_error_m, heading_error_rad, bank_ff_rad
@@ -125,12 +134,25 @@ fn main() {
             ))
         }
         "orbit" => {
-            let tuning: OrbitTuning = args
+            let mut tuning: OrbitTuning = args
                 .tuning_file
                 .as_deref()
                 .map(load_plan_tuning)
                 .and_then(|pt| pt.get_orbit(&args.profile).cloned())
                 .unwrap_or_default();
+            // Outer-loop overrides
+            if let Some(v) = args.radial_kp  { tuning.radial_kp  = v; }
+            if let Some(v) = args.radial_kd  { tuning.radial_kd  = v; }
+            if let Some(v) = args.heading_kp { tuning.heading_kp = v; }
+            if let Some(v) = args.heading_kd { tuning.heading_kd = v; }
+            // Inner-loop overrides (reuse level-hold flag fields)
+            if let Some(v) = args.alt_kp   { tuning.inner.alt_kp   = v; }
+            if let Some(v) = args.alt_ki   { tuning.inner.alt_ki   = v; }
+            if let Some(v) = args.alt_kd   { tuning.inner.alt_kd   = v; }
+            if let Some(v) = args.pitch_kp { tuning.inner.pitch_kp = v; }
+            if let Some(v) = args.pitch_kd { tuning.inner.pitch_kd = v; }
+            if let Some(v) = args.spd_kp   { tuning.inner.spd_kp   = v; }
+            if let Some(v) = args.spd_ki   { tuning.inner.spd_ki   = v; }
             let seed_state = FlightState {
                 altitude: args.altitude,
                 airspeed: args.airspeed,
@@ -272,6 +294,11 @@ struct Args {
     center_z: f32,
     radius: f32,
     direction: OrbitDirection,
+    // orbit outer-loop gain overrides
+    radial_kp: Option<f32>,
+    radial_kd: Option<f32>,
+    heading_kp: Option<f32>,
+    heading_kd: Option<f32>,
 }
 
 fn parse_args() -> Args {
@@ -313,6 +340,10 @@ fn parse_args() -> Args {
             Some("cw") => OrbitDirection::Clockwise,
             _ => OrbitDirection::CounterClockwise,
         },
+        radial_kp:  get_arg(&args, "--radial-kp").and_then(|v| v.parse().ok()),
+        radial_kd:  get_arg(&args, "--radial-kd").and_then(|v| v.parse().ok()),
+        heading_kp: get_arg(&args, "--heading-kp").and_then(|v| v.parse().ok()),
+        heading_kd: get_arg(&args, "--heading-kd").and_then(|v| v.parse().ok()),
     }
 }
 

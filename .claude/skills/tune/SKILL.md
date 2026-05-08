@@ -22,24 +22,9 @@ name as `CONTROLLER` (default `level_hold` if omitted).
 
 **If `CONTROLLER` is `level_hold`:** proceed with the phases below.
 
-**If `CONTROLLER` is `orbit`:** the orbit controller's inner loop is a `LevelHoldController`,
-so level-hold gains must be tuned first. Print:
-
-```
-Orbit tuning uses a cascade: level-hold (inner) → radial/heading (outer).
-
-Step 1 — tune the inner level-hold loop first:
-  /tune PLANE level_hold
-
-Step 2 — once level-hold gains are written to the tuning file, manually tune the 4 outer-loop
-gains (radial_kp, radial_kd, heading_kp, heading_kd). These are low-sensitivity proportional
-gains; the defaults in OrbitTuning are reasonable starting points.
-
-Full automation of orbit outer-loop tuning requires adding --radial-kp / --heading-kp etc.
-overrides to observe_state.rs (not yet implemented).
-```
-
-Stop here.
+**If `CONTROLLER` is `orbit`:** the orbit controller is a cascade (inner `LevelHoldController`
++ outer radial/heading PIDs). Proceed with the **Orbit phases** at the bottom of this file.
+Skip the level-hold phases entirely.
 
 **If `CONTROLLER` is anything else:** print:
 
@@ -467,6 +452,319 @@ Use **Edit** to insert `level_hold: { … }` before the final `)` of the `PlaneT
             spd_kp: F,
             spd_ki: F,
             throttle_ff_gain: 0.7,
+        ),
+    },
+```
+
+---
+
+---
+
+# Orbit tuning phases
+
+> These phases run when `CONTROLLER` is `orbit`. They replace Phases 1–6 above entirely.
+> The orbit controller is a cascade: all 7 level-hold gains apply to the inner loop;
+> `radial_kp`, `radial_kd`, `heading_kp`, `heading_kd` are the outer loop.
+
+---
+
+## Orbit Phase 1 — Read config and derive physics-based gain estimates
+
+Use the Read tool to open `PLANE`. Extract the same fields as level-hold Phase 1
+(`thrust_max`, `mass`, `wing_area`, `cl0`, `cl_alpha`, `cd0`, `cd_induced`,
+`cm_delta_e`, `elevator_limit`).
+
+Compute the same cruise reference values (`V_c`, `q_c`, `CL_c`, `CD_c`, `T_c`).
+
+**Inner-loop candidates** (same formulas as level-hold Phase 1):
+
+```
+alt_kp   = 0.5 / V_c
+alt_ki   = alt_kp * 0.1
+alt_kd   = alt_kp * 2.0
+pitch_kp = 0.8 / (|cm_delta_e| * elevator_limit)
+pitch_kd = pitch_kp * 0.4
+spd_kp   = T_c / (V_c * 2.0)
+spd_ki   = spd_kp * 0.5
+```
+
+**Outer-loop candidates:**
+
+```
+radial_kp  = 0.002 * (100.0 / V_c)   [scales with speed]
+radial_kd  = radial_kp * 5.0
+heading_kp = 0.7                       [centripetal FF handles steady-state; kp is a correction]
+heading_kd = 0.1
+```
+
+Show all 11 computed gain values in a brief table before running anything.
+
+**Orbit scenario matrix** (5 scenarios):
+
+| # | Alt (m) | Speed (m/s) | Radius (m) | Rationale |
+|---|---|---|---|---|
+| A | 500  | 100 | 500  | Tight orbit |
+| B | 500  | 100 | 1000 | Standard |
+| C | 500  | 100 | 2000 | Wide orbit |
+| D | 300  | 80  | 800  | Low/slow |
+| E | 1000 | 130 | 1500 | High/fast |
+
+Reject scenarios where `T_c > 0.95` at that speed (cannot sustain level flight).
+
+---
+
+## Orbit Phase 1b — (Optional) Coarse outer-loop grid search
+
+Apply the same trigger criteria as level-hold Phase 1b. When triggered, sweep the
+4 outer-loop gains only (inner fixed at Phase 1 physics values):
+
+| Parameter | Base | Multipliers |
+|---|---|---|
+| `radial_kp`  | Phase 1 | ×0.5, ×1.0, ×2.0 |
+| `radial_kd`  | Phase 1 | ×0.5, ×1.0, ×2.0 |
+| `heading_kp` | Phase 1 | ×0.5, ×1.0, ×2.0 |
+| `heading_kd` | Phase 1 | ×0.5, ×1.0, ×2.0 |
+
+3^4 = 81 grid points evaluated on **scenario B only** (R=1000 m, 500 m / 100 m/s).
+
+Score per grid point (over all 30 rows of a 1800-step run):
+
+```
+score = worst |radial_error_m| + worst |heading_error_rad| * 100
+```
+
+(The ×100 factor normalises heading radians to roughly the same scale as radial metres.)
+
+Early-stop on a clean pass (all 30 rows within both criteria in Orbit Phase 2).
+
+---
+
+## Orbit Phase 2 — Baseline run (Round 0)
+
+Run all 5 scenarios (3600 steps, 60-row output at interval=60):
+
+```bash
+cargo run --example observe_state --no-default-features -- \
+  --plane PLANE \
+  --steps 3600 \
+  --interval 60 \
+  --controller orbit \
+  --altitude TARGET_ALT \
+  --airspeed TARGET_AIRSPEED \
+  --radius RADIUS \
+  --radial-kp RADIAL_KP --radial-kd RADIAL_KD \
+  --heading-kp HEADING_KP --heading-kd HEADING_KD \
+  --alt-kp ALT_KP --alt-ki ALT_KI --alt-kd ALT_KD \
+  --pitch-kp PITCH_KP --pitch-kd PITCH_KD \
+  --spd-kp SPD_KP --spd-ki SPD_KI
+```
+
+**Output columns:** `step,time_s,altitude_m,airspeed_ms,alpha_deg,beta_deg,pitch_rate,
+roll_rate,yaw_rate,elevator,throttle,aileron,rudder,radial_error_m,heading_error_rad,bank_ff_rad`
+
+**Pass criteria** (evaluate the last 30 rows of each 60-row run):
+
+- `|altitude_m − TARGET_ALT| ≤ 15 m`
+- `|airspeed_ms − TARGET_AIRSPEED| ≤ 3 m/s`
+- `|radial_error_m| ≤ 100 m`
+- `|heading_error_rad| ≤ 0.3 rad`
+
+**Pathology flags** (note even on a passing run):
+
+- **Aileron saturation** — `aileron` pinned at ±1.0
+- **Elevator saturation** — `elevator` pinned at ±1.0
+- **NaN / Inf** — abort immediately and report
+
+Print a compact Round 0 table:
+
+```
+Round 0 (orbit — physics-based estimates)
+Scenario  Alt  Spd  Rad(m)  WorstΔAlt  WorstΔSpd  WorstRadErr  WorstHdgErr  Flags  Result
+A         500  100  500     …          …           …            …                   PASS/FAIL
+…
+```
+
+If all 5 pass → jump directly to Orbit Phase 5.
+
+---
+
+## Orbit Phase 3 — Diagnose failure modes
+
+For each failing scenario, identify the **dominant failure mode**:
+
+| Symptom | Dominant problem | Fix |
+|---|---|---|
+| `radial_error_m` diverges monotonically | `radial_kp` too low | × 2 radial_kp |
+| `radial_error_m` oscillates | `radial_kp` too high | × 0.5 radial_kp, × 1.5 radial_kd |
+| `heading_error_rad` large and stable | `heading_kp` too low | × 1.5 heading_kp |
+| Bank / roll oscillations (roll_rate cycles) | `heading_kp` too high | × 0.5 heading_kp, × 1.5 heading_kd |
+| Altitude drifts monotonically | `alt_ki` too low | × 2 alt_ki |
+| Altitude oscillates | `alt_kp` too aggressive | × 0.5 alt_kp, × 1.5 alt_kd |
+| Elevator saturated | `pitch_kp` overcommanding | × 0.5 pitch_kp, then × 0.5 alt_kp |
+| Airspeed drifts | `spd_ki` too low | × 2 spd_ki |
+
+**Fix order:** inner loop first (altitude/airspeed/pitch), then outer loop (radial, then heading).
+
+---
+
+## Orbit Phase 4 — Iterative refinement (up to 3 rounds)
+
+Same procedure as level-hold Phase 4:
+
+1. Apply fixes from previous diagnosis; show updated gain table.
+2. Re-run only the still-failing scenarios with the orbit run command above.
+3. Print result rows; accept/reject per loop.
+4. Track best candidate (lowest sum of all 4 worst-case errors across scenarios).
+5. Re-diagnose; if same fix tried twice without improvement, try the opposite direction.
+6. If Round 2 has 3+ failures and no consistent improvement, run Orbit Phase 1b now
+   (if not already run) then restart from Round 1 with the grid-search winner.
+
+---
+
+## Orbit Phase 5 — Full validation run
+
+Run all 5 scenarios with best-candidate gains using the orbit run command.
+
+Print the full summary table:
+
+```
+Final validation — orbit (best gains after N rounds)
+Scenario  Alt  Spd  Rad(m)  WorstΔAlt  WorstΔSpd  WorstRadErr  WorstHdgErr  Flags  Result
+A         500  100  500     …          …           …            …                   PASS/FAIL
+…
+```
+
+**If all 5 pass:**
+
+```
+✓ All orbit scenarios converged (N tuning rounds).
+
+Best gains:
+  --radial-kp F --radial-kd F
+  --heading-kp F --heading-kd F
+  --alt-kp F --alt-ki F --alt-kd F
+  --pitch-kp F --pitch-kd F
+  --spd-kp F --spd-ki F
+
+Exact reproduction command (scenario B as reference):
+  cargo run --example observe_state --no-default-features -- \
+    --plane PLANE --steps 3600 --interval 60 \
+    --controller orbit --altitude 500 --airspeed 100 --radius 1000 \
+    [gains above]
+
+Once written to the tuning file, the equivalent command will be:
+  cargo run --example observe_state --no-default-features -- \
+    --plane PLANE --tuning-file TUNING_FILE --profile PROFILE \
+    --controller orbit --steps 3600 --interval 60 --altitude 500 --airspeed 100 --radius 1000
+
+Write these gains to the tuning file? If yes, also provide a profile name (default: "normal").
+```
+
+**If any scenario still fails after 3 rounds:** report the best result, per-scenario diagnosis,
+and suggested next steps. Do not offer write-back.
+
+---
+
+## Orbit Phase 6 — Write-back (only if user answers yes in Orbit Phase 5)
+
+Derive `TUNING_FILE` the same way as level-hold Phase 6.
+`PROFILE` = user-supplied name (default `"normal"`).
+`throttle_ff_gain` — preserve from existing file or default to `0.7`.
+
+---
+
+### O6a — File does not exist
+
+Use **Write** to create `TUNING_FILE`:
+
+```ron
+// Tuned PID gains for PLANE_BASENAME
+// Profile "PROFILE" — orbit tune YYYY-MM-DD, N rounds
+PlaneTuning(
+    orbit: {
+        "PROFILE": OrbitTuning(
+            radial_kp:  F,
+            radial_kd:  F,
+            heading_kp: F,
+            heading_kd: F,
+            inner: LevelHoldTuning(
+                alt_kp:           F,
+                alt_ki:           F,
+                alt_kd:           F,
+                pitch_kp:         F,
+                pitch_kd:         F,
+                spd_kp:           F,
+                spd_ki:           F,
+                throttle_ff_gain: 0.7,
+            ),
+        ),
+    },
+)
+```
+
+---
+
+### O6b — File exists, orbit profile already present
+
+Use **Read** to get the file content. Locate the block:
+
+```
+"PROFILE": OrbitTuning(
+    ...
+),
+```
+
+Use **Edit** to replace the entire `OrbitTuning( … )` value for that key with the new values.
+
+---
+
+### O6c — File exists, orbit profile not present but `orbit` map is present
+
+Use **Read** to get the file content. Locate the `orbit: {` line.
+Use **Edit** to insert the new profile entry immediately after the opening `{`:
+
+```ron
+        "PROFILE": OrbitTuning(
+            radial_kp:  F,
+            radial_kd:  F,
+            heading_kp: F,
+            heading_kd: F,
+            inner: LevelHoldTuning(
+                alt_kp:           F,
+                alt_ki:           F,
+                alt_kd:           F,
+                pitch_kp:         F,
+                pitch_kd:         F,
+                spd_kp:           F,
+                spd_ki:           F,
+                throttle_ff_gain: 0.7,
+            ),
+        ),
+```
+
+---
+
+### O6d — File exists but has no `orbit` field
+
+Use **Edit** to insert `orbit: { … }` before the final `)` of the `PlaneTuning(` struct:
+
+```ron
+    orbit: {
+        "PROFILE": OrbitTuning(
+            radial_kp:  F,
+            radial_kd:  F,
+            heading_kp: F,
+            heading_kd: F,
+            inner: LevelHoldTuning(
+                alt_kp:           F,
+                alt_ki:           F,
+                alt_kd:           F,
+                pitch_kp:         F,
+                pitch_kd:         F,
+                spd_kp:           F,
+                spd_ki:           F,
+                throttle_ff_gain: 0.7,
+            ),
         ),
     },
 ```
