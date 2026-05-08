@@ -7,7 +7,8 @@ use ml_planes::controllers::{
 };
 #[cfg(feature = "training")]
 use ml_planes::controllers::{
-    RlLevelHoldController, RlOrbitConfig, RlOrbitController, SelectedModel,
+    RlLevelHoldController, RlOrbitConfig, RlOrbitController, RlOrbitResidualConfig,
+    RlOrbitResidualController, SelectedModel,
 };
 use ml_planes::environment::{spawn_plane, EnvironmentPlugin};
 use ml_planes::plane::{config::PlaneConfig, ControlInputs, FlightState, PlaneIndex, PlanePlugin};
@@ -504,6 +505,13 @@ fn apply_model_switch(
                     Err(e) => eprintln!("Failed to load model {}: {e}", sel.0),
                 }
             }
+            ControllerKind::RlOrbitResidual => {
+                let config = residual_config_from_controller(&mut ctrl, state);
+                match RlOrbitResidualController::load(&sel.0, config, state) {
+                    Ok(new_ctrl) => ctrl.0 = Box::new(new_ctrl),
+                    Err(e) => eprintln!("Failed to load model {}: {e}", sel.0),
+                }
+            }
             _ => {}
         }
     }
@@ -530,13 +538,18 @@ fn apply_rl_controller_switch(
 ) {
     for (entity, state, mut controller, mut kind, sel) in query.iter_mut() {
         if kind.is_added()
-            || !matches!(*kind, ControllerKind::RlLevelHold | ControllerKind::RlOrbit)
+            || !matches!(
+                *kind,
+                ControllerKind::RlLevelHold
+                    | ControllerKind::RlOrbit
+                    | ControllerKind::RlOrbitResidual
+            )
         {
             continue;
         }
 
         let Some(path) = selected_or_default_model_path(*kind, sel, &model_lib) else {
-            if *kind == ControllerKind::RlOrbit {
+            if matches!(*kind, ControllerKind::RlOrbit | ControllerKind::RlOrbitResidual) {
                 kind.set_if_neq(ControllerKind::Orbit);
             }
             continue;
@@ -560,6 +573,16 @@ fn apply_rl_controller_switch(
                     Ok(rl) => controller.0 = Box::new(rl),
                     Err(e) => {
                         eprintln!("Failed to load RL orbit model '{}': {e}", path);
+                        kind.set_if_neq(ControllerKind::Orbit);
+                    }
+                }
+            }
+            ControllerKind::RlOrbitResidual => {
+                let config = residual_config_from_controller(&mut controller, state);
+                match RlOrbitResidualController::load(&path, config, state) {
+                    Ok(rl) => controller.0 = Box::new(rl),
+                    Err(e) => {
+                        eprintln!("Failed to load RL orbit residual model '{}': {e}", path);
                         kind.set_if_neq(ControllerKind::Orbit);
                     }
                 }
@@ -636,6 +659,28 @@ fn orbit_config_from_controller(
     RlOrbitConfig::from_state(state)
 }
 
+#[cfg(all(feature = "visual", feature = "training"))]
+fn residual_config_from_controller(
+    controller: &mut ActiveController,
+    state: &FlightState,
+) -> RlOrbitResidualConfig {
+    if let Some(rl) = controller
+        .0
+        .as_any_mut()
+        .downcast_mut::<RlOrbitResidualController>()
+    {
+        return rl.config();
+    }
+    if let Some(orbit) = controller
+        .0
+        .as_any_mut()
+        .downcast_mut::<ml_planes::controllers::OrbitController>()
+    {
+        return RlOrbitResidualConfig::from_orbit(orbit);
+    }
+    RlOrbitResidualConfig::from_state(state)
+}
+
 /// Rebuild `ActiveController` whenever `ControllerKind` or `SelectedTuningProfile` changes.
 /// Runs in `PostUpdate` so both `switch_controller` (Update) and `draw_flight_hud` (Update)
 /// have already written their changes before this system fires.
@@ -669,7 +714,7 @@ fn apply_controller_switch(
         let tuning: Option<&dyn ControllerTuning> = tuning_handle
             .and_then(|h| tuning_assets.get(&h.0))
             .and_then(|pt| match *kind {
-                ControllerKind::Orbit | ControllerKind::RlOrbit => pt
+                ControllerKind::Orbit | ControllerKind::RlOrbit | ControllerKind::RlOrbitResidual => pt
                     .get_orbit(profile_name)
                     .map(|t| t as &dyn ControllerTuning),
                 _ => pt

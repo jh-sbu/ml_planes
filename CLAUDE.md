@@ -132,6 +132,27 @@ Both `RlLevelHoldController` and `RlOrbitController` follow the same pattern:
 - Deterministic inference: `model.mean_action()` (no sampling noise, reproducible)
 - Action mapping: `throttle = (action[1] + 1.0) / 2.0` converts `[-1, 1]` network output to `[0, 1]`
 
+### Adding a New `ControllerKind` (Checklist)
+
+`ControllerKind::build()` always returns a valid PID fallback. This means missing visual-mode wiring compiles cleanly and fails silently at runtime — there is no compile-time guard.
+
+**PID / non-RL controller:**
+
+1. `kind.rs` — add variant to `ControllerKind` enum
+2. `kind.rs` — `name()`: human-readable label
+3. `kind.rs` — `ALL`: add to the cycle list under the correct feature gate
+4. `kind.rs` — `build()`: factory arm
+5. `main.rs` — `apply_controller_switch`: add to the correct tuning family match (`Orbit` or `LevelHold` pattern)
+6. `main.rs` — `cycle_tune_profile`: same tuning family pattern
+
+**RL controller — all of the above, plus:**
+
+7. `kind.rs` — `model_dir()`: return the `models/` subdirectory name (e.g. `"orbit_residual"`)
+8. `main.rs` — `#[cfg(feature = "training")]` import block: import `XxxController` and `XxxConfig`
+9. `main.rs` — `apply_rl_controller_switch` guard: add variant to the `matches!()` pattern
+10. `main.rs` — `apply_rl_controller_switch` match arm: call `::load()` with error fallback
+11. `main.rs` — `apply_model_switch` match arm: same `::load()` call for HUD model cycling
+
 ---
 
 ## 3. Scope Decisions
