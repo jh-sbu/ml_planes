@@ -64,7 +64,7 @@ pub fn orbit_observation_terms(
     let dot = tang_x * head_x + tang_z * head_z;
     let heading_error = cross.atan2(dot);
     let radius = target_radius.max(1.0);
-    let bank_ff = direction.sign() * (state.airspeed.powi(2) / (G * radius)).atan();
+    let bank_ff = -direction.sign() * (state.airspeed.powi(2) / (G * radius)).atan();
 
     OrbitObservationTerms {
         radial_error: current_radius - target_radius,
@@ -213,7 +213,8 @@ impl OrbitController {
         inner.target_altitude = state.altitude;
         inner.target_airspeed = state.airspeed;
         // Pre-seed bank so the roll PID sees no step command on the first tick.
-        let bank_ff = direction.sign() * (state.airspeed.powi(2) / (G * radius)).atan();
+        // Negated direction.sign() — see update() comment for the sign rationale.
+        let bank_ff = -direction.sign() * (state.airspeed.powi(2) / (G * radius)).atan();
         inner.target_roll = bank_ff.clamp(-FRAC_PI_3, FRAC_PI_3);
 
         Self {
@@ -277,10 +278,14 @@ impl FlightController for OrbitController {
         let heading_error = cross.atan2(dot);
 
         // Curvature feedforward holds steady orbit bank; PID corrects perturbations.
+        // Sign: body +Y maps to world −Z (pilot's left), so centripetal force toward the
+        // orbit center requires the OPPOSITE bank sign from the direction sign.
         let bank_ff =
-            self.direction.sign() * (state.airspeed.powi(2) / (G * self.target_radius)).atan();
+            -self.direction.sign() * (state.airspeed.powi(2) / (G * self.target_radius)).atan();
         let heading_correction = self.heading_pid.update(heading_error, dt);
-        let target_roll = (bank_ff + heading_correction).clamp(-FRAC_PI_3, FRAC_PI_3);
+        // Subtract heading correction: negative heading_error (head CW of desired) needs
+        // more bank toward center, so the correction term must oppose the error.
+        let target_roll = (bank_ff - heading_correction).clamp(-FRAC_PI_3, FRAC_PI_3);
 
         self.inner.target_roll = target_roll;
         self.inner.target_altitude = self.target_altitude;
@@ -367,10 +372,11 @@ mod tests {
     fn zero_error_produces_bank_ff() {
         // CCW orbit: plane at (0, -R) in XZ from center → heading +X is the CCW tangent.
         // radial_error = 0, heading_error = 0 → inner.target_roll ≈ bank_ff.
+        // bank_ff = -CCW.sign() * atan(V²/gR) = -(-1) * atan(...) = positive (right bank).
         let mut ctrl = make_orbit(0.0, 0.0, R, OrbitDirection::CounterClockwise);
         let state = make_state(Vec3::new(0.0, ALT, -R), Vec3::new(V, 0.0, 0.0));
         ctrl.update(&state, 1.0 / 60.0);
-        let expected = OrbitDirection::CounterClockwise.sign() * (V * V / (G * R)).atan();
+        let expected = -OrbitDirection::CounterClockwise.sign() * (V * V / (G * R)).atan();
         assert!(
             (ctrl.inner.target_roll - expected).abs() < 0.05,
             "inner.target_roll={} expected≈{expected}",
@@ -380,17 +386,17 @@ mod tests {
 
     #[test]
     fn positive_radial_error_steers_inward() {
-        // CCW orbit: plane 100 m outside the circle. Guidance should command more left bank
-        // (inner.target_roll more negative than bank_ff alone).
+        // CCW orbit: plane 100 m outside the circle. Guidance should command more right bank
+        // (inner.target_roll more positive than bank_ff alone) to increase centripetal force.
         let extra = 100.0;
         let mut ctrl = make_orbit(0.0, 0.0, R, OrbitDirection::CounterClockwise);
         // Plane at (0, -(R+extra)): radial = (0, -(R+extra)), CCW tangent = (+1, 0) = heading +X.
         let state = make_state(Vec3::new(0.0, ALT, -(R + extra)), Vec3::new(V, 0.0, 0.0));
         ctrl.update(&state, 1.0 / 60.0);
-        let bank_ff = OrbitDirection::CounterClockwise.sign() * (V * V / (G * R)).atan();
+        let bank_ff = -OrbitDirection::CounterClockwise.sign() * (V * V / (G * R)).atan();
         assert!(
-            ctrl.inner.target_roll < bank_ff,
-            "inner.target_roll={} should be < bank_ff={bank_ff} (more left bank)",
+            ctrl.inner.target_roll > bank_ff,
+            "inner.target_roll={} should be > bank_ff={bank_ff} (more right bank = more centripetal)",
             ctrl.inner.target_roll
         );
     }
@@ -398,7 +404,7 @@ mod tests {
     #[test]
     fn direction_sign_reverses_roll() {
         // Both planes on their respective circles with zero heading error.
-        // CCW: plane at (0, -R) → roll negative; CW: plane at (0, +R) → roll positive.
+        // CCW: plane at (0, -R) → roll positive (right bank); CW: plane at (0, +R) → roll negative.
         let mut ctrl_ccw = make_orbit(0.0, 0.0, R, OrbitDirection::CounterClockwise);
         let mut ctrl_cw = make_orbit(0.0, 0.0, R, OrbitDirection::Clockwise);
 
@@ -410,13 +416,13 @@ mod tests {
         ctrl_cw.update(&state_cw, 1.0 / 60.0);
 
         assert!(
-            ctrl_ccw.inner.target_roll < 0.0,
-            "CCW should bank left, got {}",
+            ctrl_ccw.inner.target_roll > 0.0,
+            "CCW should bank right (positive roll), got {}",
             ctrl_ccw.inner.target_roll
         );
         assert!(
-            ctrl_cw.inner.target_roll > 0.0,
-            "CW should bank right, got {}",
+            ctrl_cw.inner.target_roll < 0.0,
+            "CW should bank left (negative roll), got {}",
             ctrl_cw.inner.target_roll
         );
         assert!(
@@ -453,8 +459,8 @@ mod tests {
         assert!(obs[0].abs() < 1e-5, "radial obs={}", obs[0]);
         assert!(obs[1].abs() < 1e-5, "heading obs={}", obs[1]);
         assert!(
-            obs[2] < 0.0,
-            "CCW bank feedforward should be negative, got {}",
+            obs[2] > 0.0,
+            "CCW bank feedforward should be positive (right bank), got {}",
             obs[2]
         );
     }

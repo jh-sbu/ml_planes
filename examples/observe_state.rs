@@ -92,8 +92,14 @@ fn main() {
         .resource_mut::<Assets<PlaneConfig>>()
         .add(cfg.clone());
 
+    // Resolved orbit center — assigned in the orbit arm, used by the output loop.
+    let orbit_center_x: f32;
+    let orbit_center_z: f32;
+
     let controller: Box<dyn FlightController> = match args.controller.as_str() {
         "level_hold" => {
+            orbit_center_x = 0.0;
+            orbit_center_z = 0.0;
             // Start from file tuning (or defaults), then apply individual flag overrides.
             let mut tuning = args
                 .tuning_file
@@ -160,17 +166,40 @@ fn main() {
             };
             let mut ctrl =
                 OrbitController::with_tuning(&seed_state, &tuning, &ControlInputs::default());
-            ctrl.center_x = args.center_x;
-            ctrl.center_z = args.center_z;
             ctrl.target_radius = args.radius;
             ctrl.direction = args.direction;
             ctrl.target_altitude = args.altitude;
             ctrl.target_airspeed = args.airspeed;
+            if let Some(v) = args.center_x {
+                ctrl.center_x = v;
+            } else {
+                // Plane spawns at X=0 flying +X. CCW center is in +Z, CW center is in -Z.
+                ctrl.center_x = 0.0;
+            }
+            if let Some(v) = args.center_z {
+                ctrl.center_z = v;
+            } else {
+                // Recompute auto-center with the actual target radius (from_state uses
+                // DEFAULT_RADIUS=1000, which would be wrong when args.radius != 1000).
+                ctrl.center_z = args.direction.sign() * (-1.0) * args.radius;
+            }
+            // Re-seed bank feedforward with the actual target radius (from_state pre-seeds
+            // with DEFAULT_RADIUS=1000, which is wrong when args.radius differs).
+            ctrl.inner.target_roll = (-ctrl.direction.sign()
+                * (args.airspeed.powi(2) / (9.81 * args.radius)).atan())
+                .clamp(-std::f32::consts::FRAC_PI_3, std::f32::consts::FRAC_PI_3);
             ctrl.radial_pid.reset();
             ctrl.heading_pid.reset();
+            // Capture resolved center for the output loop.
+            orbit_center_x = ctrl.center_x;
+            orbit_center_z = ctrl.center_z;
             Box::new(ctrl)
         }
-        _ => Box::new(ManualController::new()),
+        _ => {
+            orbit_center_x = 0.0;
+            orbit_center_z = 0.0;
+            Box::new(ManualController::new())
+        }
     };
 
     // Spawn at target altitude, target airspeed forward, level attitude.
@@ -221,8 +250,8 @@ fn main() {
                 if is_orbit {
                     let terms = orbit_observation_terms(
                         state,
-                        args.center_x,
-                        args.center_z,
+                        orbit_center_x,
+                        orbit_center_z,
                         args.radius,
                         args.direction,
                     );
@@ -289,9 +318,9 @@ struct Args {
     pitch_kd: Option<f32>,
     spd_kp: Option<f32>,
     spd_ki: Option<f32>,
-    // orbit geometry
-    center_x: f32,
-    center_z: f32,
+    // orbit geometry (None = auto from spawn position + direction)
+    center_x: Option<f32>,
+    center_z: Option<f32>,
     radius: f32,
     direction: OrbitDirection,
     // orbit outer-loop gain overrides
@@ -327,12 +356,8 @@ fn parse_args() -> Args {
         pitch_kd: get_arg(&args, "--pitch-kd").and_then(|v| v.parse().ok()),
         spd_kp: get_arg(&args, "--spd-kp").and_then(|v| v.parse().ok()),
         spd_ki: get_arg(&args, "--spd-ki").and_then(|v| v.parse().ok()),
-        center_x: get_arg(&args, "--center-x")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0.0),
-        center_z: get_arg(&args, "--center-z")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0.0),
+        center_x: get_arg(&args, "--center-x").and_then(|v| v.parse().ok()),
+        center_z: get_arg(&args, "--center-z").and_then(|v| v.parse().ok()),
         radius: get_arg(&args, "--radius")
             .and_then(|v| v.parse().ok())
             .unwrap_or(1000.0),
