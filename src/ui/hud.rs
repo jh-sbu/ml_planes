@@ -339,6 +339,44 @@ pub fn draw_flight_hud(
             }
 
             #[cfg(feature = "training")]
+            if *kind == ControllerKind::RlOrbitResidual {
+                use crate::controllers::RlOrbitResidualController;
+
+                if let Some(rl) = controller
+                    .0
+                    .as_any_mut()
+                    .downcast_mut::<RlOrbitResidualController>()
+                {
+                    draw_orbit_controls(
+                        ui,
+                        state,
+                        &mut rl.center_x,
+                        &mut rl.center_z,
+                        &mut rl.target_radius,
+                        &mut rl.target_altitude,
+                        &mut rl.target_airspeed,
+                        &mut rl.direction,
+                    );
+                } else if let Some(orbit) =
+                    controller.0.as_any_mut().downcast_mut::<OrbitController>()
+                {
+                    if draw_orbit_controls(
+                        ui,
+                        state,
+                        &mut orbit.center_x,
+                        &mut orbit.center_z,
+                        &mut orbit.target_radius,
+                        &mut orbit.target_altitude,
+                        &mut orbit.target_airspeed,
+                        &mut orbit.direction,
+                    ) {
+                        orbit.radial_pid.reset();
+                        orbit.heading_pid.reset();
+                    }
+                }
+            }
+
+            #[cfg(feature = "training")]
             if let Some(dir_key) = kind.model_dir() {
                 if let Some(ref mut sel) = selected_model {
                     if let Some(available) = model_lib.0.get(dir_key) {
