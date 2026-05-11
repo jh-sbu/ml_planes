@@ -8,6 +8,8 @@ pub mod pid;
 #[cfg(feature = "training")]
 pub mod rl_level_hold;
 #[cfg(feature = "training")]
+pub mod rl_lstm_orbit;
+#[cfg(feature = "training")]
 pub mod rl_orbit;
 #[cfg(feature = "training")]
 pub mod rl_orbit_residual;
@@ -28,6 +30,8 @@ pub use orbit::{
 pub use pid::PidController;
 #[cfg(feature = "training")]
 pub use rl_level_hold::RlLevelHoldController;
+#[cfg(feature = "training")]
+pub use rl_lstm_orbit::{RlLstmOrbitConfig, RlLstmOrbitController};
 #[cfg(feature = "training")]
 pub use rl_orbit::{RlOrbitConfig, RlOrbitController};
 #[cfg(feature = "training")]

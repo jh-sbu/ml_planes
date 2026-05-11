@@ -38,6 +38,10 @@ pub enum ControllerKind {
     /// constructed explicitly via `RlOrbitResidualController::load()`; `build()`
     /// falls back to `Orbit` when no model is available.
     RlOrbitResidual,
+    /// Wu et al. FC-LSTM-FC orbit controller (recurrent PPO policy). Must be
+    /// constructed explicitly via `RlLstmOrbitController::load()`; `build()`
+    /// falls back to `Orbit` when no model is available.
+    RlLstmOrbit,
 }
 
 impl ControllerKind {
@@ -54,6 +58,7 @@ impl ControllerKind {
         Self::Orbit,
         Self::RlOrbit,
         Self::RlOrbitResidual,
+        Self::RlLstmOrbit,
     ];
 
     pub fn name(self) -> &'static str {
@@ -66,6 +71,7 @@ impl ControllerKind {
             ControllerKind::Orbit => "Orbit",
             ControllerKind::RlOrbit => "RL Orbit",
             ControllerKind::RlOrbitResidual => "RL Orbit Residual",
+            ControllerKind::RlLstmOrbit => "RL LSTM Orbit",
         }
     }
 
@@ -76,6 +82,7 @@ impl ControllerKind {
             ControllerKind::RlLevelHold => Some("level_hold"),
             ControllerKind::RlOrbit => Some("orbit"),
             ControllerKind::RlOrbitResidual => Some("orbit_residual"),
+            ControllerKind::RlLstmOrbit => Some("lstm_orbit"),
             _ => None,
         }
     }
@@ -114,12 +121,13 @@ impl ControllerKind {
             ControllerKind::Ascent => {
                 Box::new(AscentController::new(state, state.altitude + 1000.0))
             }
-            ControllerKind::Orbit | ControllerKind::RlOrbit | ControllerKind::RlOrbitResidual => {
-                match tuning {
-                    Some(t) => t.build(state, prev_inputs),
-                    None => Box::new(OrbitController::from_state(state, prev_inputs)),
-                }
-            }
+            ControllerKind::Orbit
+            | ControllerKind::RlOrbit
+            | ControllerKind::RlOrbitResidual
+            | ControllerKind::RlLstmOrbit => match tuning {
+                Some(t) => t.build(state, prev_inputs),
+                None => Box::new(OrbitController::from_state(state, prev_inputs)),
+            },
             // RlLevelHold requires a model path — fall back to LevelHold like Wingman.
             ControllerKind::LevelHold | ControllerKind::Wingman | ControllerKind::RlLevelHold => {
                 match tuning {

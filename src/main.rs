@@ -7,8 +7,8 @@ use ml_planes::controllers::{
 };
 #[cfg(feature = "training")]
 use ml_planes::controllers::{
-    RlLevelHoldController, RlOrbitConfig, RlOrbitController, RlOrbitResidualConfig,
-    RlOrbitResidualController, SelectedModel,
+    RlLevelHoldController, RlLstmOrbitConfig, RlLstmOrbitController, RlOrbitConfig,
+    RlOrbitController, RlOrbitResidualConfig, RlOrbitResidualController, SelectedModel,
 };
 use ml_planes::environment::{spawn_plane, EnvironmentPlugin};
 use ml_planes::plane::{config::PlaneConfig, ControlInputs, FlightState, PlaneIndex, PlanePlugin};
@@ -549,6 +549,13 @@ fn apply_model_switch(
                     Err(e) => eprintln!("Failed to load model {}: {e}", sel.0),
                 }
             }
+            ControllerKind::RlLstmOrbit => {
+                let config = RlLstmOrbitConfig::from_state(state);
+                match RlLstmOrbitController::load(&sel.0, config) {
+                    Ok(new_ctrl) => ctrl.0 = Box::new(new_ctrl),
+                    Err(e) => eprintln!("Failed to load LSTM orbit model {}: {e}", sel.0),
+                }
+            }
             _ => {}
         }
     }
@@ -583,6 +590,7 @@ fn apply_rl_controller_switch(
                 ControllerKind::RlLevelHold
                     | ControllerKind::RlOrbit
                     | ControllerKind::RlOrbitResidual
+                    | ControllerKind::RlLstmOrbit
             )
         {
             continue;
@@ -591,7 +599,9 @@ fn apply_rl_controller_switch(
         let Some(path) = selected_or_default_model_path(*kind, sel, &model_lib) else {
             if matches!(
                 *kind,
-                ControllerKind::RlOrbit | ControllerKind::RlOrbitResidual
+                ControllerKind::RlOrbit
+                    | ControllerKind::RlOrbitResidual
+                    | ControllerKind::RlLstmOrbit
             ) {
                 kind.set_if_neq(ControllerKind::Orbit);
             }
@@ -630,6 +640,16 @@ fn apply_rl_controller_switch(
                     Ok(rl) => controller.0 = Box::new(rl),
                     Err(e) => {
                         eprintln!("Failed to load RL orbit residual model '{}': {e}", path);
+                        kind.set_if_neq(ControllerKind::Orbit);
+                    }
+                }
+            }
+            ControllerKind::RlLstmOrbit => {
+                let config = RlLstmOrbitConfig::from_state(state);
+                match RlLstmOrbitController::load(&path, config) {
+                    Ok(rl) => controller.0 = Box::new(rl),
+                    Err(e) => {
+                        eprintln!("Failed to load RL LSTM orbit model '{}': {e}", path);
                         kind.set_if_neq(ControllerKind::Orbit);
                     }
                 }

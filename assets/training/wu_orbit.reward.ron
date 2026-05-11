@@ -1,0 +1,18 @@
+(
+    b_radial: 500.0,
+    b_heading_coarse: 0.034906585,
+    b_heading_fine: 0.008726646,
+    b_altitude: 30.0,
+    b_speed: 10.0,
+    b_roll_vs_ff: 0.34906585,
+    pitch_target_denom: 0.17453293,
+    roll_rate_target_denom: 0.17453293,
+    min_altitude: 200.0,
+    max_altitude_error: 500.0,
+    max_radial_error: 1500.0,
+    min_airspeed: 30.0,
+    max_episode_steps: 3600,
+    terminal_failure_penalty: -50.0,
+    stage2_threshold: 0.3,
+    stage3_threshold: 0.55,
+)

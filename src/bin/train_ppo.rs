@@ -106,6 +106,7 @@ enum Task {
     LevelHold,
     Orbit,
     ResidualOrbit,
+    LstmOrbit,
 }
 
 #[cfg(feature = "training")]
@@ -115,8 +116,9 @@ impl Task {
             "level_hold" => Ok(Self::LevelHold),
             "orbit" => Ok(Self::Orbit),
             "residual_orbit" => Ok(Self::ResidualOrbit),
+            "lstm_orbit" => Ok(Self::LstmOrbit),
             other => Err(format!(
-                "Unsupported --task '{other}'. Use 'level_hold', 'orbit', or 'residual_orbit'."
+                "Unsupported --task '{other}'. Use 'level_hold', 'orbit', 'residual_orbit', or 'lstm_orbit'."
             )),
         }
     }
@@ -125,6 +127,7 @@ impl Task {
         match self {
             Self::LevelHold => "assets/training/level_hold.reward.ron",
             Self::Orbit | Self::ResidualOrbit => "assets/training/orbit.reward.ron",
+            Self::LstmOrbit => "assets/training/wu_orbit.reward.ron",
         }
     }
 
@@ -133,6 +136,7 @@ impl Task {
             Self::LevelHold => "level_hold",
             Self::Orbit => "orbit",
             Self::ResidualOrbit => "orbit_residual",
+            Self::LstmOrbit => "lstm_orbit",
         }
     }
 
@@ -141,6 +145,7 @@ impl Task {
             Self::LevelHold => "ppo_level_hold",
             Self::Orbit => "ppo_orbit",
             Self::ResidualOrbit => "ppo_orbit_residual",
+            Self::LstmOrbit => "ppo_lstm_orbit",
         }
     }
 }
@@ -180,7 +185,9 @@ fn run<B>(
     use ml_planes::training::reward_config::{
         load_reward_config, LevelHoldRewardConfig, OrbitRewardConfig,
     };
-    use ml_planes::training::{LevelHoldEnv, OrbitEnv, ResidualOrbitEnv};
+    use ml_planes::training::{
+        LevelHoldEnv, OrbitEnv, ResidualOrbitEnv, WuOrbitEnv, WuOrbitRewardConfig,
+    };
 
     // Generic jet values matching assets/planes/generic_jet.plane.ron
     let cfg = PlaneConfig {
@@ -256,6 +263,21 @@ fn run<B>(
                 total_timesteps,
                 init_from,
                 ResidualOrbitEnv::with_reward_config(1000.0, 100.0, 1000.0, cfg, reward_cfg),
+            )
+        }
+        Task::LstmOrbit => {
+            let path = task.reward_config_path();
+            let reward_cfg: WuOrbitRewardConfig = load_reward_config(path).unwrap_or_else(|e| {
+                eprintln!("Warning: could not load {path}: {e}. Using defaults.");
+                WuOrbitRewardConfig::default()
+            });
+            println!("Loaded Wu orbit reward config from {path}");
+            run_lstm_training_loop::<B>(
+                plain,
+                save_path,
+                total_timesteps,
+                init_from,
+                WuOrbitEnv::with_reward_config(1000.0, 100.0, 3000.0, cfg, reward_cfg),
             )
         }
     }
@@ -438,6 +460,194 @@ fn run_training_loop<B, E>(
 
     renderer.on_train_end(None).ok();
     drop(renderer); // restore terminal before printing to it
+
+    let elapsed_secs = start.elapsed().as_secs();
+    println!(
+        "Training complete ({steps} steps, {iteration} iterations, elapsed {}).",
+        fmt_duration(elapsed_secs),
+    );
+
+    let save_dir = std::path::Path::new(&save_path)
+        .parent()
+        .unwrap_or(std::path::Path::new("models"));
+    std::fs::create_dir_all(save_dir).expect("create model output dir");
+    trainer.save_policy(&save_path);
+}
+
+#[cfg(feature = "training")]
+fn run_lstm_training_loop<B>(
+    plain: bool,
+    save_path: String,
+    total_timesteps: usize,
+    init_from: Option<String>,
+    env: ml_planes::training::WuOrbitEnv,
+) where
+    B: burn::tensor::backend::AutodiffBackend,
+    B::Device: Default,
+{
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    use burn::data::dataloader::Progress;
+    use burn::train::metric::{MetricAttributes, MetricDefinition, MetricId, NumericAttributes};
+    use burn::train::renderer::tui::TuiMetricsRenderer;
+    use burn::train::renderer::{MetricsRenderer, TrainingProgress};
+    use burn::train::Interrupter;
+
+    use ml_planes::training::ppo::LstmPpoTrainer;
+
+    let device: B::Device = Default::default();
+    let mut trainer = LstmPpoTrainer::<B, _>::with_n_envs(env, 8, device);
+    if let Some(ref path) = init_from {
+        trainer.load_policy(path);
+    }
+
+    let total_iterations = total_timesteps.div_ceil(trainer.rollout_steps);
+
+    let id_mean_return = MetricId::new(Arc::new("mean_return".to_string()));
+    let id_ep_len = MetricId::new(Arc::new("ep_len".to_string()));
+    let id_policy_loss = MetricId::new(Arc::new("policy_loss".to_string()));
+    let id_value_loss = MetricId::new(Arc::new("value_loss".to_string()));
+    let id_entropy = MetricId::new(Arc::new("entropy".to_string()));
+    let id_steps_per_sec = MetricId::new(Arc::new("steps_per_sec".to_string()));
+
+    let interrupter = Interrupter::new();
+
+    let mut renderer: Box<dyn MetricsRenderer> = if plain {
+        Box::new(PlainMetricsRenderer::new(
+            total_timesteps,
+            id_mean_return.clone(),
+            id_ep_len.clone(),
+            id_policy_loss.clone(),
+            id_value_loss.clone(),
+            id_entropy.clone(),
+            id_steps_per_sec.clone(),
+        ))
+    } else {
+        Box::new(TuiMetricsRenderer::new(interrupter.clone(), None))
+    };
+
+    let definitions = [
+        MetricDefinition {
+            metric_id: id_mean_return.clone(),
+            name: "Mean Return".into(),
+            description: None,
+            attributes: MetricAttributes::Numeric(NumericAttributes {
+                unit: None,
+                higher_is_better: true,
+            }),
+        },
+        MetricDefinition {
+            metric_id: id_ep_len.clone(),
+            name: "Ep Length".into(),
+            description: None,
+            attributes: MetricAttributes::Numeric(NumericAttributes {
+                unit: Some("steps".into()),
+                higher_is_better: true,
+            }),
+        },
+        MetricDefinition {
+            metric_id: id_policy_loss.clone(),
+            name: "Policy Loss".into(),
+            description: None,
+            attributes: MetricAttributes::Numeric(NumericAttributes {
+                unit: None,
+                higher_is_better: false,
+            }),
+        },
+        MetricDefinition {
+            metric_id: id_value_loss.clone(),
+            name: "Value Loss".into(),
+            description: None,
+            attributes: MetricAttributes::Numeric(NumericAttributes {
+                unit: None,
+                higher_is_better: false,
+            }),
+        },
+        MetricDefinition {
+            metric_id: id_entropy.clone(),
+            name: "Entropy".into(),
+            description: None,
+            attributes: MetricAttributes::Numeric(NumericAttributes {
+                unit: None,
+                higher_is_better: true,
+            }),
+        },
+        MetricDefinition {
+            metric_id: id_steps_per_sec.clone(),
+            name: "Steps/s".into(),
+            description: None,
+            attributes: MetricAttributes::Numeric(NumericAttributes {
+                unit: Some("sps".into()),
+                higher_is_better: true,
+            }),
+        },
+    ];
+    for def in definitions {
+        renderer.register_metric(def);
+    }
+
+    let mut steps = 0usize;
+    let mut iteration = 0usize;
+    let start = Instant::now();
+
+    while steps < total_timesteps {
+        let (buffer, mean_return, mean_ep_len) = trainer.collect_rollout();
+        steps += buffer.len();
+        let metrics = trainer.update(&buffer);
+        trainer.advance_curriculum_if_ready(mean_return);
+        iteration += 1;
+
+        let steps_per_sec = steps as f64 / start.elapsed().as_secs_f64().max(1e-6);
+
+        renderer.update_train(numeric_state(
+            id_mean_return.clone(),
+            format!("{mean_return:.3}"),
+            mean_return as f64,
+        ));
+        renderer.update_train(numeric_state(
+            id_ep_len.clone(),
+            format!("{mean_ep_len:.0}"),
+            mean_ep_len as f64,
+        ));
+        renderer.update_train(numeric_state(
+            id_policy_loss.clone(),
+            format!("{:.4}", metrics.policy_loss),
+            metrics.policy_loss as f64,
+        ));
+        renderer.update_train(numeric_state(
+            id_value_loss.clone(),
+            format!("{:.4}", metrics.value_loss),
+            metrics.value_loss as f64,
+        ));
+        renderer.update_train(numeric_state(
+            id_entropy.clone(),
+            format!("{:.4}", metrics.entropy),
+            metrics.entropy as f64,
+        ));
+        renderer.update_train(numeric_state(
+            id_steps_per_sec.clone(),
+            format!("{steps_per_sec:.0}"),
+            steps_per_sec,
+        ));
+
+        renderer.render_train(TrainingProgress {
+            progress: Progress {
+                items_processed: steps,
+                items_total: total_timesteps,
+            },
+            epoch: iteration,
+            epoch_total: total_iterations,
+            iteration,
+        });
+
+        if interrupter.should_stop() {
+            break;
+        }
+    }
+
+    renderer.on_train_end(None).ok();
+    drop(renderer);
 
     let elapsed_secs = start.elapsed().as_secs();
     println!(

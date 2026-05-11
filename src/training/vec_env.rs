@@ -26,6 +26,18 @@ impl<E: TrainingEnv> VecEnv<E> {
         self.envs[i].reset().0
     }
 
+    /// Apply a closure to every environment mutably.
+    pub fn for_each_env_mut(&mut self, mut f: impl FnMut(&mut E)) {
+        for env in &mut self.envs {
+            f(env);
+        }
+    }
+
+    /// Inspect the first environment (read-only).
+    pub fn first_env(&self) -> &E {
+        &self.envs[0]
+    }
+
     /// Step all N environments and return (obs[N], reward[N], done[N]).
     pub fn step_batch(&mut self, actions: &[[f32; 4]]) -> (Vec<Observation>, Vec<f32>, Vec<bool>) {
         debug_assert_eq!(actions.len(), self.envs.len());
