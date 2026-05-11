@@ -73,7 +73,9 @@ fn main() {
     let save_path = save_path_for(task, output_stem);
 
     match backend {
-        Backend::NdArray => run::<Autodiff<NdArray>>(plain, save_path, task, total_timesteps, init_from),
+        Backend::NdArray => {
+            run::<Autodiff<NdArray>>(plain, save_path, task, total_timesteps, init_from)
+        }
         Backend::Wgpu => run::<Autodiff<Wgpu>>(plain, save_path, task, total_timesteps, init_from),
     }
 }
@@ -162,8 +164,13 @@ fn save_path_for(task: Task, output_stem: Option<String>) -> String {
 }
 
 #[cfg(feature = "training")]
-fn run<B>(plain: bool, save_path: String, task: Task, total_timesteps: usize, init_from: Option<String>)
-where
+fn run<B>(
+    plain: bool,
+    save_path: String,
+    task: Task,
+    total_timesteps: usize,
+    init_from: Option<String>,
+) where
     B: burn::tensor::backend::AutodiffBackend,
     B::Device: Default,
 {
@@ -255,8 +262,13 @@ where
 }
 
 #[cfg(feature = "training")]
-fn run_training_loop<B, E>(plain: bool, save_path: String, total_timesteps: usize, init_from: Option<String>, env: E)
-where
+fn run_training_loop<B, E>(
+    plain: bool,
+    save_path: String,
+    total_timesteps: usize,
+    init_from: Option<String>,
+    env: E,
+) where
     B: burn::tensor::backend::AutodiffBackend,
     B::Device: Default,
     E: ml_planes::training::TrainingEnv + Clone,

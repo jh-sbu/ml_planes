@@ -464,10 +464,7 @@ mod tests {
         );
 
         for (i, (e, r)) in env_obs.iter().zip(ref_obs.iter()).enumerate() {
-            assert!(
-                (e - r).abs() < 1e-4,
-                "obs[{i}] mismatch: env={e}, ref={r}"
-            );
+            assert!((e - r).abs() < 1e-4, "obs[{i}] mismatch: env={e}, ref={r}");
         }
     }
 
@@ -485,8 +482,7 @@ mod tests {
 
         assert!(done, "low altitude should terminate");
         let terms = env.current_terms();
-        let expected =
-            env.compute_base_reward(&terms) + env.reward_cfg.terminal_failure_penalty;
+        let expected = env.compute_base_reward(&terms) + env.reward_cfg.terminal_failure_penalty;
         assert!(
             (reward - expected).abs() < 1e-4,
             "reward={reward} expected={expected}"

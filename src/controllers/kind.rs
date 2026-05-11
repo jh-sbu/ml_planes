@@ -114,12 +114,12 @@ impl ControllerKind {
             ControllerKind::Ascent => {
                 Box::new(AscentController::new(state, state.altitude + 1000.0))
             }
-            ControllerKind::Orbit
-            | ControllerKind::RlOrbit
-            | ControllerKind::RlOrbitResidual => match tuning {
-                Some(t) => t.build(state, prev_inputs),
-                None => Box::new(OrbitController::from_state(state, prev_inputs)),
-            },
+            ControllerKind::Orbit | ControllerKind::RlOrbit | ControllerKind::RlOrbitResidual => {
+                match tuning {
+                    Some(t) => t.build(state, prev_inputs),
+                    None => Box::new(OrbitController::from_state(state, prev_inputs)),
+                }
+            }
             // RlLevelHold requires a model path — fall back to LevelHold like Wingman.
             ControllerKind::LevelHold | ControllerKind::Wingman | ControllerKind::RlLevelHold => {
                 match tuning {

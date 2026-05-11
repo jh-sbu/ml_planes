@@ -14,12 +14,12 @@ use ml_planes::environment::{spawn_plane, EnvironmentPlugin};
 use ml_planes::plane::{config::PlaneConfig, ControlInputs, FlightState, PlaneIndex, PlanePlugin};
 use ml_planes::training::SpawnSpec;
 
-#[cfg(feature = "visual")]
-use ml_planes::controllers::{
-    ActiveController, ControllerTuning, PlaneTuning, SelectedTuningProfile,
-};
 #[cfg(all(feature = "visual", feature = "training"))]
 use ml_planes::controllers::OrbitTuning;
+#[cfg(feature = "visual")]
+use ml_planes::controllers::{
+    ActiveController, ControllerTuning, OrbitParams, PlaneTuning, SelectedTuningProfile,
+};
 #[cfg(feature = "visual")]
 use ml_planes::plane::PlaneTuningHandle;
 
@@ -60,7 +60,14 @@ fn main() {
     app.add_systems(Startup, scan_models);
 
     #[cfg(feature = "visual")]
-    app.add_systems(Update, (poll_controller_inputs, switch_controller, cycle_tune_profile));
+    app.add_systems(
+        Update,
+        (
+            poll_controller_inputs,
+            switch_controller,
+            cycle_tune_profile,
+        ),
+    );
     #[cfg(all(feature = "visual", feature = "training"))]
     app.add_systems(Update, cycle_rl_model);
 
@@ -391,9 +398,15 @@ fn cycle_tune_profile(
     if !keys.just_pressed(KeyCode::KeyT) {
         return;
     }
-    let CameraMode::Follow(entity) = *mode else { return };
-    let Ok((kind, Some(mut profile), Some(handle))) = query.get_mut(entity) else { return };
-    let Some(pt) = tuning_assets.get(&handle.0) else { return };
+    let CameraMode::Follow(entity) = *mode else {
+        return;
+    };
+    let Ok((kind, Some(mut profile), Some(handle))) = query.get_mut(entity) else {
+        return;
+    };
+    let Some(pt) = tuning_assets.get(&handle.0) else {
+        return;
+    };
     let mut names: Vec<&str> = match *kind {
         ControllerKind::LevelHold | ControllerKind::RlLevelHold => {
             pt.level_hold.keys().map(|s| s.as_str()).collect()
@@ -410,7 +423,11 @@ fn cycle_tune_profile(
     let n = names.len();
     let cur = names.iter().position(|&nm| nm == profile.0).unwrap_or(0);
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
-    let next = if shift { (cur + n - 1) % n } else { (cur + 1) % n };
+    let next = if shift {
+        (cur + n - 1) % n
+    } else {
+        (cur + 1) % n
+    };
     profile.set_if_neq(SelectedTuningProfile(names[next].to_string()));
 }
 
@@ -425,17 +442,28 @@ fn cycle_rl_model(
     if !keys.just_pressed(KeyCode::KeyT) {
         return;
     }
-    let CameraMode::Follow(entity) = *mode else { return };
-    let Ok((kind, Some(mut sel))) = query.get_mut(entity) else { return };
+    let CameraMode::Follow(entity) = *mode else {
+        return;
+    };
+    let Ok((kind, Some(mut sel))) = query.get_mut(entity) else {
+        return;
+    };
     let Some(dir) = kind.model_dir() else { return };
-    let Some(available) = model_lib.0.get(dir) else { return };
+    let Some(available) = model_lib.0.get(dir) else {
+        return;
+    };
     if available.is_empty() {
         return;
     }
     let n = available.len();
     let cur = available.iter().position(|p| p == &sel.0).unwrap_or(0);
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
-    sel.0 = available[if shift { (cur + n - 1) % n } else { (cur + 1) % n }].clone();
+    sel.0 = available[if shift {
+        (cur + n - 1) % n
+    } else {
+        (cur + 1) % n
+    }]
+    .clone();
 }
 
 /// Scan `models/<category>/` subdirectories at startup and populate `ModelLibrary`.
@@ -561,7 +589,10 @@ fn apply_rl_controller_switch(
         }
 
         let Some(path) = selected_or_default_model_path(*kind, sel, &model_lib) else {
-            if matches!(*kind, ControllerKind::RlOrbit | ControllerKind::RlOrbitResidual) {
+            if matches!(
+                *kind,
+                ControllerKind::RlOrbit | ControllerKind::RlOrbitResidual
+            ) {
                 kind.set_if_neq(ControllerKind::Orbit);
             }
             continue;
@@ -697,6 +728,54 @@ fn residual_config_from_controller(
     RlOrbitResidualConfig::from_state(state)
 }
 
+/// Extract orbit geometry from whatever controller variant is currently active.
+///
+/// Returns `None` when the active controller is not an orbit variant (e.g. LevelHold,
+/// Manual), so the caller can fall back to `from_state()` geometry as before.
+#[cfg(feature = "visual")]
+fn extract_orbit_params(ctrl: &mut ActiveController) -> Option<OrbitParams> {
+    if let Some(orbit) = ctrl.0.as_any_mut().downcast_mut::<OrbitController>() {
+        return Some(OrbitParams {
+            center_x: orbit.center_x,
+            center_z: orbit.center_z,
+            target_radius: orbit.target_radius,
+            target_altitude: orbit.target_altitude,
+            target_airspeed: orbit.target_airspeed,
+            direction: orbit.direction,
+        });
+    }
+    #[cfg(feature = "training")]
+    {
+        if let Some(rl) = ctrl.0.as_any_mut().downcast_mut::<RlOrbitController>() {
+            let cfg = rl.config();
+            return Some(OrbitParams {
+                center_x: cfg.center_x,
+                center_z: cfg.center_z,
+                target_radius: cfg.target_radius,
+                target_altitude: cfg.target_altitude,
+                target_airspeed: cfg.target_airspeed,
+                direction: cfg.direction,
+            });
+        }
+        if let Some(rl) = ctrl
+            .0
+            .as_any_mut()
+            .downcast_mut::<RlOrbitResidualController>()
+        {
+            let cfg = rl.config();
+            return Some(OrbitParams {
+                center_x: cfg.center_x,
+                center_z: cfg.center_z,
+                target_radius: cfg.target_radius,
+                target_altitude: cfg.target_altitude,
+                target_airspeed: cfg.target_airspeed,
+                direction: cfg.direction,
+            });
+        }
+    }
+    None
+}
+
 /// Rebuild `ActiveController` whenever `ControllerKind` or `SelectedTuningProfile` changes.
 /// Runs in `PostUpdate` so both `switch_controller` (Update) and `draw_flight_hud` (Update)
 /// have already written their changes before this system fires.
@@ -730,13 +809,36 @@ fn apply_controller_switch(
         let tuning: Option<&dyn ControllerTuning> = tuning_handle
             .and_then(|h| tuning_assets.get(&h.0))
             .and_then(|pt| match *kind {
-                ControllerKind::Orbit | ControllerKind::RlOrbit | ControllerKind::RlOrbitResidual => pt
+                ControllerKind::Orbit
+                | ControllerKind::RlOrbit
+                | ControllerKind::RlOrbitResidual => pt
                     .get_orbit(profile_name)
                     .map(|t| t as &dyn ControllerTuning),
                 _ => pt
                     .get_level_hold(profile_name)
                     .map(|t| t as &dyn ControllerTuning),
             });
+
+        // Preserve orbit geometry when switching between orbit variants.
+        // None when the current controller is not an orbit type (e.g. LevelHold → Orbit
+        // stays with the from_state() auto-center default).
+        let orbit_params = if matches!(
+            *kind,
+            ControllerKind::Orbit | ControllerKind::RlOrbit | ControllerKind::RlOrbitResidual
+        ) {
+            extract_orbit_params(&mut controller)
+        } else {
+            None
+        };
+
         controller.0 = kind.build(state, tuning, prev_inputs);
+
+        // Apply preserved geometry to the freshly-built OrbitController (always the PID
+        // fallback produced by build() for orbit kinds). No-op when orbit_params is None.
+        if let Some(params) = orbit_params {
+            if let Some(orbit) = controller.0.as_any_mut().downcast_mut::<OrbitController>() {
+                orbit.apply_params(&params, state.airspeed);
+            }
+        }
     }
 }

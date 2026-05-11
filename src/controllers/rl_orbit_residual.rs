@@ -218,7 +218,10 @@ mod tests {
             ctrl.direction,
         );
         assert_eq!(obs.len(), ORBIT_OBS_DIM);
-        assert!(obs.iter().all(|v| v.is_finite()), "obs has NaN/inf: {obs:?}");
+        assert!(
+            obs.iter().all(|v| v.is_finite()),
+            "obs has NaN/inf: {obs:?}"
+        );
 
         let inputs = ctrl.update(&state, 1.0 / 60.0);
         assert!(inputs.aileron.is_finite());

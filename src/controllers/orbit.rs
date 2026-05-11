@@ -27,6 +27,20 @@ impl OrbitDirection {
     }
 }
 
+/// Orbit geometry parameters shared across all orbit controller variants.
+///
+/// Used to transplant a prior orbit's geometry when switching between orbit controller kinds
+/// so the center, radius, altitude, airspeed, and direction are preserved.
+#[derive(Clone, Copy, Debug)]
+pub struct OrbitParams {
+    pub center_x: f32,
+    pub center_z: f32,
+    pub target_radius: f32,
+    pub target_altitude: f32,
+    pub target_airspeed: f32,
+    pub direction: OrbitDirection,
+}
+
 pub const ORBIT_OBS_DIM: usize = 13;
 
 #[derive(Clone, Copy, Debug)]
@@ -184,6 +198,24 @@ impl OrbitController {
         ctrl.inner.target_airspeed = ctrl.target_airspeed;
         ctrl.inner.target_roll = target_roll;
         ctrl
+    }
+
+    /// Override orbit geometry with `params` and re-seed all dependent internal state.
+    ///
+    /// Call after `from_state` or `with_tuning` to transplant a prior orbit's geometry
+    /// onto a freshly-seeded controller (PID gains and bumpless integrals are preserved).
+    pub fn apply_params(&mut self, params: &OrbitParams, airspeed: f32) {
+        self.center_x = params.center_x;
+        self.center_z = params.center_z;
+        self.target_radius = params.target_radius;
+        self.target_altitude = params.target_altitude;
+        self.target_airspeed = params.target_airspeed;
+        self.direction = params.direction;
+        self.inner.target_altitude = params.target_altitude;
+        self.inner.target_airspeed = params.target_airspeed;
+        let bank_ff =
+            -params.direction.sign() * (airspeed.powi(2) / (G * params.target_radius)).atan();
+        self.inner.target_roll = bank_ff.clamp(-FRAC_PI_3, FRAC_PI_3);
     }
 
     /// Construct with bumpless engagement from the current flight state.

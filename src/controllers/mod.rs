@@ -23,7 +23,7 @@ pub use level_hold::LevelHoldController;
 pub use manual::ManualController;
 pub use orbit::{
     build_orbit_observation, orbit_observation_terms, OrbitController, OrbitDirection,
-    OrbitObservationTerms,
+    OrbitObservationTerms, OrbitParams,
 };
 pub use pid::PidController;
 #[cfg(feature = "training")]
