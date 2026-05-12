@@ -18,6 +18,13 @@
 //! This repo uses `[elevator, throttle, aileron, rudder]` (see `direct_action_to_inputs`),
 //! a convention shared by all training environments.  The policy learns the correct
 //! mapping regardless of slot order; no functional behaviour is affected.
+//!
+//! **R^RS damping term** — Wu's Eq. (8) uses `δ̇ψ` (time derivative of heading error)
+//! as the damping term in `φ*`: `φ* = 0.35·δψ + 0.1·δ̇ψ`.  This environment
+//! computes `δ̇ψ` as a wrapped finite difference of `guidance_heading_error` over one
+//! timestep and passes it to `r_rs` as `heading_err_dot`.  (Earlier versions used body
+//! roll rate `p` here, which was a mismatch: `p` measures bank-angle rate, while Wu's
+//! `δ̇ψ` measures heading-error convergence rate.)
 
 use bevy::math::{Mat3, Quat, Vec3};
 
@@ -69,6 +76,8 @@ pub struct WuOrbitEnv {
     episode_step: u32,
     /// Previous altitude error used for vertical speed approximation.
     prev_alt_err: f32,
+    /// Previous guidance heading error used for R^RS derivative term.
+    prev_heading_err: f32,
     rng: Lcg,
     rng_seed: u64,
 }
@@ -119,6 +128,7 @@ impl WuOrbitEnv {
             direction: OrbitDirection::CounterClockwise,
             episode_step: 0,
             prev_alt_err: 0.0,
+            prev_heading_err: 0.0,
             rng: Lcg::new(4242),
             rng_seed: 4242,
         }
@@ -154,7 +164,7 @@ impl WuOrbitEnv {
         )
     }
 
-    fn compute_reward(&self, terms: &OrbitObservationTerms) -> f32 {
+    fn compute_reward(&self, terms: &OrbitObservationTerms, heading_err_dot: f32) -> f32 {
         let cfg = &self.reward_cfg;
         let alt_err = self.state.altitude - self.target_altitude;
         let speed_err = self.state.airspeed - self.target_airspeed;
@@ -178,7 +188,7 @@ impl WuOrbitEnv {
             CurriculumStage::Coarse | CurriculumStage::HeadingFine => rtt,
             CurriculumStage::Full => {
                 rtt * r_ps(pitch, alt_err, alt_dot, cfg)
-                    * r_rs(terms.guidance_heading_error, roll_rate, cfg)
+                    * r_rs(terms.guidance_heading_error, heading_err_dot, roll_rate, cfg)
             }
         }
     }
@@ -279,6 +289,7 @@ impl TrainingEnv for WuOrbitEnv {
         self.state.update_air_data();
         self.episode_step = 0;
         self.prev_alt_err = self.state.altitude - self.target_altitude;
+        self.prev_heading_err = self.current_terms().guidance_heading_error;
 
         let obs = build_orbit_observation(
             &self.state,
@@ -311,11 +322,20 @@ impl TrainingEnv for WuOrbitEnv {
             &terms,
         );
         let termination = self.termination_reason(&terms);
-        let mut reward = self.compute_reward(&terms);
+        // Wrapped finite-difference derivative of guidance heading error (Wu eq. 8 damping term).
+        let mut heading_delta = terms.guidance_heading_error - self.prev_heading_err;
+        if heading_delta > std::f32::consts::PI {
+            heading_delta -= TWO_PI;
+        } else if heading_delta < -std::f32::consts::PI {
+            heading_delta += TWO_PI;
+        }
+        let heading_err_dot = heading_delta / self.dt;
+        let mut reward = self.compute_reward(&terms, heading_err_dot);
         if termination == Some(TerminationReason::Failure) {
             reward += self.reward_cfg.terminal_failure_penalty;
         }
         self.prev_alt_err = self.state.altitude - self.target_altitude;
+        self.prev_heading_err = terms.guidance_heading_error;
         let done = termination.is_some();
         let info = StepInfo {
             episode_step: self.episode_step,
@@ -450,7 +470,7 @@ mod tests {
         env.state = on_orbit_state(1000.0, Vec3::X);
         env.prev_alt_err = env.state.altitude - env.target_altitude;
         let terms = env.current_terms();
-        let r = env.compute_reward(&terms);
+        let r = env.compute_reward(&terms, 0.0);
         assert!(
             r >= 0.0 && r <= 1.0 + 1e-5,
             "reward outside [0,1] on orbit: {r}"
@@ -464,12 +484,12 @@ mod tests {
         good.state = on_orbit_state(1000.0, Vec3::X);
         good.prev_alt_err = 0.0;
         let good_terms = good.current_terms();
-        let r_good = good.compute_reward(&good_terms);
+        let r_good = good.compute_reward(&good_terms, 0.0);
 
         let mut bad = good.clone();
         bad.state = on_orbit_state(1400.0, Vec3::Z);
         let bad_terms = bad.current_terms();
-        let r_bad = bad.compute_reward(&bad_terms);
+        let r_bad = bad.compute_reward(&bad_terms, 0.0);
 
         assert!(r_good > r_bad, "good={r_good} bad={r_bad}");
     }
@@ -552,11 +572,11 @@ mod tests {
 
         // Stage 2: no smoothing constraints applied.
         env.advance_curriculum(); // → HeadingFine
-        let r2 = env.compute_reward(&terms);
+        let r2 = env.compute_reward(&terms, 0.0);
 
         // Stage 3: full reward.
         env.advance_curriculum(); // → Full
-        let r3 = env.compute_reward(&terms);
+        let r3 = env.compute_reward(&terms, 0.0);
 
         // r3 ≤ r2 because R^PS×R^RS are additional multiplicative factors ≤ 1.
         assert!(

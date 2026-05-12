@@ -141,11 +141,12 @@ pub fn r_ps(pitch: f32, alt_err: f32, alt_dot: f32, cfg: &WuOrbitRewardConfig) -
 
 /// R^RS: roll-smoothing constraint (Wu eq. 8).
 ///
-/// `heading_err` is orbit heading error [rad].
-/// `roll_rate`   is p (body-frame roll angular velocity) [rad/s].
-pub fn r_rs(heading_err: f32, roll_rate: f32, cfg: &WuOrbitRewardConfig) -> f32 {
+/// `heading_err`     is orbit guidance heading error [rad].
+/// `heading_err_dot` is finite-difference derivative of heading_err [rad/s].
+/// `roll_rate`       is p (body-frame roll angular velocity) [rad/s].
+pub fn r_rs(heading_err: f32, heading_err_dot: f32, roll_rate: f32, cfg: &WuOrbitRewardConfig) -> f32 {
     use std::f32::consts::FRAC_PI_3;
-    let phi_tgt_star = (0.35 * heading_err + 0.1 * roll_rate).clamp(-FRAC_PI_3, FRAC_PI_3);
+    let phi_tgt_star = (0.35 * heading_err + 0.1 * heading_err_dot).clamp(-FRAC_PI_3, FRAC_PI_3);
     let omega_phi_star =
         (0.15 * phi_tgt_star).clamp(-cfg.roll_rate_target_denom, cfg.roll_rate_target_denom);
     gauss(roll_rate - omega_phi_star, cfg.roll_rate_target_denom)
@@ -239,7 +240,7 @@ mod tests {
     #[test]
     fn r_rs_finite() {
         let cfg = WuOrbitRewardConfig::default();
-        let r = r_rs(0.1, 0.05, &cfg);
+        let r = r_rs(0.1, -0.02, 0.05, &cfg);
         assert!(r.is_finite(), "R^RS not finite: {r}");
         assert!((0.0..=1.0).contains(&r), "R^RS outside [0,1]: {r}");
     }
