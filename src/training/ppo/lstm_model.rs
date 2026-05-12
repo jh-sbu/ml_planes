@@ -363,9 +363,10 @@ fn gaussian_log_prob_squashed<B: Backend>(
     let log_density = diff.powf_scalar(2.0) * (-0.5_f32)
         - std.log()
         - 0.5_f32 * (2.0 * std::f32::consts::PI).ln();
+    // Subtract log|det J| of tanh squashing: log p(a) = log p(u) - log(1 - a²).
     let correction =
         (Tensor::<B, 2>::ones_like(&action) - action.powf_scalar(2.0) + 1e-6_f32).log();
-    (log_density + correction)
+    (log_density - correction)
         .sum_dim(1)
         .squeeze_dims::<1>(&[1])
 }

@@ -1,9 +1,10 @@
-//! Recurrent rollout buffer with per-step LSTM hidden state storage.
+//! Recurrent rollout buffer for LSTM PPO.
 //!
-//! Extends the flat `RolloutBuffer` with:
-//!   - `policy_h/c` and `value_h/c` vectors stored at each step (before inference)
-//!   - `chunk_sequences()` which slices each env's trajectory into fixed-length
-//!     sequences for truncated BPTT, padding the last incomplete chunk with zeros.
+//! Hidden states are stored only at sequence-start positions (not per step);
+//! `chunk_sequences()` looks them up from `seq_start_hidden` keyed by absolute
+//! step index.  The trainer populates that map during rollout collection.
+
+use std::collections::HashMap;
 
 use crate::training::Observation;
 
@@ -21,14 +22,6 @@ pub struct LstmRolloutStep {
     pub reward: f32,
     pub value: f32,
     pub done: bool,
-    /// LSTM policy h state *before* this step was taken. Shape: [LSTM_HIDDEN].
-    pub policy_h: Vec<f32>,
-    /// LSTM policy c state *before* this step was taken.
-    pub policy_c: Vec<f32>,
-    /// LSTM value  h state *before* this step was taken.
-    pub value_h: Vec<f32>,
-    /// LSTM value  c state *before* this step was taken.
-    pub value_c: Vec<f32>,
 }
 
 /// A fixed-length sequence chunk ready for a minibatch BPTT update.
@@ -61,6 +54,10 @@ pub struct LstmRolloutBuffer {
     pub returns: Vec<f32>,
     pub n_envs: usize,
     pub steps_per_env: usize,
+    /// LSTM h/c for policy and value at each sequence-start step, keyed by
+    /// absolute step index.  Populated by the trainer during rollout collection.
+    /// `(policy_h, policy_c, value_h, value_c)` each of length `LSTM_HIDDEN`.
+    pub seq_start_hidden: HashMap<usize, (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -76,6 +73,7 @@ impl LstmRolloutBuffer {
             returns: Vec::with_capacity(cap),
             n_envs,
             steps_per_env,
+            seq_start_hidden: HashMap::new(),
         }
     }
 
@@ -176,14 +174,15 @@ impl LstmRolloutBuffer {
                     .unwrap_or(chunk_end_natural);
                 let valid_len = split_at - chunk_start;
 
-                // Initial hidden state = state stored at the first step of this chunk.
-                // After a done the trainer zeros the hidden state, so the first step of
-                // a new episode already carries h/c = 0 — no special casing needed here.
-                let first = &self.steps[chunk_start];
-                let init_ph = first.policy_h.clone();
-                let init_pc = first.policy_c.clone();
-                let init_vh = first.value_h.clone();
-                let init_vc = first.value_c.clone();
+                // Initial hidden state for this chunk, recorded by the trainer at
+                // rollout collection time.  Missing key → zeros (fresh episode start).
+                let (init_ph, init_pc, init_vh, init_vc) =
+                    if let Some((ph, pc, vh, vc)) = self.seq_start_hidden.get(&chunk_start) {
+                        (ph.clone(), pc.clone(), vh.clone(), vc.clone())
+                    } else {
+                        let z = vec![0.0_f32; LSTM_HIDDEN];
+                        (z.clone(), z.clone(), z.clone(), z)
+                    };
 
                 let mut obs_flat: Vec<f32> = Vec::with_capacity(seq_len * obs_dim);
                 let mut acts_flat: Vec<f32> = Vec::with_capacity(seq_len * 4);
@@ -255,31 +254,6 @@ mod tests {
             reward,
             value,
             done,
-            policy_h: vec![0.0; LSTM_HIDDEN],
-            policy_c: vec![0.0; LSTM_HIDDEN],
-            value_h: vec![0.0; LSTM_HIDDEN],
-            value_c: vec![0.0; LSTM_HIDDEN],
-        }
-    }
-
-    fn make_step_with_h(
-        obs_dim: usize,
-        reward: f32,
-        value: f32,
-        done: bool,
-        h_val: f32,
-    ) -> LstmRolloutStep {
-        LstmRolloutStep {
-            obs: vec![0.0; obs_dim],
-            action: [0.0; 4],
-            log_prob: 0.0,
-            reward,
-            value,
-            done,
-            policy_h: vec![h_val; LSTM_HIDDEN],
-            policy_c: vec![0.0; LSTM_HIDDEN],
-            value_h: vec![0.0; LSTM_HIDDEN],
-            value_c: vec![0.0; LSTM_HIDDEN],
         }
     }
 
@@ -326,26 +300,31 @@ mod tests {
     }
 
     #[test]
-    fn chunk_init_h_matches_first_step() {
+    fn chunk_init_h_matches_seq_start() {
         let obs_dim = 13;
         let mut buf = LstmRolloutBuffer::new(1, 64);
-        for t in 0..64 {
-            buf.push(make_step_with_h(obs_dim, 0.0, 0.0, false, t as f32));
+        for _ in 0..64 {
+            buf.push(make_step(obs_dim, 0.0, 0.0, false));
         }
         buf.advantages = vec![0.0; 64];
         buf.returns = vec![0.0; 64];
 
+        // With seq_len=32 and no done flags, sequence starts are at abs indices 0 and 32.
+        let z = vec![0.0_f32; LSTM_HIDDEN];
+        buf.seq_start_hidden
+            .insert(0, (vec![0.0; LSTM_HIDDEN], z.clone(), z.clone(), z.clone()));
+        buf.seq_start_hidden
+            .insert(32, (vec![32.0; LSTM_HIDDEN], z.clone(), z.clone(), z));
+
         let seqs = buf.chunk_sequences(32, obs_dim);
         assert_eq!(seqs.len(), 2);
-        // First sequence init_h should be h from step 0
         assert!(
             (seqs[0].init_ph[0] - 0.0).abs() < 1e-5,
-            "seq0 init_h = step 0 h"
+            "seq0 init_ph = 0.0"
         );
-        // Second sequence init_h should be h from step 32
         assert!(
             (seqs[1].init_ph[0] - 32.0).abs() < 1e-5,
-            "seq1 init_h = step 32 h"
+            "seq1 init_ph = 32.0"
         );
     }
 
@@ -410,10 +389,6 @@ mod tests {
             reward: 0.0,
             value: 0.0,
             done,
-            policy_h: vec![0.0; LSTM_HIDDEN],
-            policy_c: vec![0.0; LSTM_HIDDEN],
-            value_h: vec![0.0; LSTM_HIDDEN],
-            value_c: vec![0.0; LSTM_HIDDEN],
         }
     }
 

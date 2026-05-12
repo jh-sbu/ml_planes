@@ -497,7 +497,7 @@ fn run_lstm_training_loop<B>(
     use ml_planes::training::ppo::LstmPpoTrainer;
 
     let device: B::Device = Default::default();
-    let mut trainer = LstmPpoTrainer::<B, _>::with_n_envs(env, 8, device);
+    let mut trainer = LstmPpoTrainer::<B, _>::with_n_envs(env, 32, device);
     if let Some(ref path) = init_from {
         trainer.load_policy(path);
     }

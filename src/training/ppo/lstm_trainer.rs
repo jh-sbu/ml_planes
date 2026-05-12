@@ -3,9 +3,11 @@
 //! Key differences from `PpoTrainer`:
 //!   - Carries per-env LSTM hidden states across rollout steps
 //!   - Resets hidden states on episode `done`
-//!   - Stores (h, c) per step for BPTT
+//!   - Records hidden states only at sequence-start positions (not per step)
 //!   - PPO update uses fixed-length sequence minibatches with masking
 //!   - Automatic 3-stage Wu curriculum via the `CurriculumEnv` trait
+
+use std::collections::HashMap;
 
 use burn::{
     grad_clipping::GradientClippingConfig,
@@ -17,7 +19,7 @@ use burn::{
 };
 
 use super::{
-    lstm_buffer::{LstmRolloutBuffer, LstmRolloutStep, LstmSequence},
+    lstm_buffer::{LstmRolloutBuffer, LstmRolloutStep},
     lstm_model::{LstmActorCritic, LstmHiddenState, LSTM_HIDDEN},
 };
 use crate::training::{CurriculumEnv, Observation, TrainingEnv, VecEnv};
@@ -112,7 +114,7 @@ where
             lr: 3e-4,
             rollout_steps: 2048,
             n_epochs: 4,
-            minibatch_seqs: 4,
+            minibatch_seqs: 16,
             seq_len: 64,
             policy_hidden: vec![LstmHiddenState::default(); n],
             value_hidden: vec![LstmHiddenState::default(); n],
@@ -154,7 +156,30 @@ where
         // compute_gae() and chunk_sequences() both expect.
         let mut per_env: Vec<Vec<LstmRolloutStep>> = vec![Vec::with_capacity(steps_per_env); n];
 
-        for _ in 0..steps_per_env {
+        // Track steps within the current BPTT chunk per env.  When this counter
+        // is 0 the step is a sequence start; store the hidden state then.
+        let mut steps_since_seq_start = vec![0usize; n];
+        // Hidden state map keyed by absolute step index (env_i * steps_per_env + t).
+        let mut seq_start_hidden: HashMap<usize, (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>)> =
+            HashMap::new();
+
+        for t in 0..steps_per_env {
+            // Capture hidden states for sequence-start steps before inference.
+            for i in 0..n {
+                if steps_since_seq_start[i] == 0 {
+                    let abs_idx = i * steps_per_env + t;
+                    seq_start_hidden.insert(
+                        abs_idx,
+                        (
+                            self.policy_hidden[i].h.clone(),
+                            self.policy_hidden[i].c.clone(),
+                            self.value_hidden[i].h.clone(),
+                            self.value_hidden[i].c.clone(),
+                        ),
+                    );
+                }
+            }
+
             // Batch obs: [N, obs_dim].
             let obs_flat: Vec<f32> = obs_batch.iter().flat_map(|o| o.iter().copied()).collect();
             let obs_t = Tensor::<B::InnerBackend, 2>::from_data(
@@ -213,10 +238,6 @@ where
                     reward: rewards[i],
                     value: value_data[i],
                     done: dones[i],
-                    policy_h: self.policy_hidden[i].h.clone(),
-                    policy_c: self.policy_hidden[i].c.clone(),
-                    value_h: self.value_hidden[i].h.clone(),
-                    value_c: self.value_hidden[i].c.clone(),
                 });
                 self.ep_returns[i] += rewards[i];
                 self.ep_lengths[i] += 1;
@@ -238,6 +259,15 @@ where
                 }
             }
 
+            // Advance sequence-start counters.  A done or reaching seq_len
+            // means the next step starts a fresh chunk.
+            for i in 0..n {
+                steps_since_seq_start[i] += 1;
+                if dones[i] || steps_since_seq_start[i] >= self.seq_len {
+                    steps_since_seq_start[i] = 0;
+                }
+            }
+
             obs_batch = next_obs;
             for i in 0..n {
                 if dones[i] {
@@ -253,6 +283,7 @@ where
                 buf.push(step);
             }
         }
+        buf.seq_start_hidden = seq_start_hidden;
 
         // Bootstrap values for GAE.
         let last_flat: Vec<f32> = obs_batch.iter().flat_map(|o| o.iter().copied()).collect();
@@ -314,6 +345,10 @@ where
             };
         }
 
+        let mb = self.minibatch_seqs.min(n_seqs);
+        let sl = self.seq_len;
+        let bt = mb * sl;
+
         let mut indices: Vec<usize> = (0..n_seqs).collect();
 
         for _epoch in 0..self.n_epochs {
@@ -322,7 +357,6 @@ where
             }
             lcg_shuffle(&mut indices, &mut self.rng_seed);
 
-            let mb = self.minibatch_seqs.min(n_seqs);
             let num_batches = n_seqs / mb;
             if num_batches == 0 {
                 continue;
@@ -333,50 +367,29 @@ where
                 let end = start + mb;
                 let idx = &indices[start..end];
 
-                let obs_flat: Vec<f32> = idx
-                    .iter()
-                    .flat_map(|&i| seqs[i].obs.iter().copied())
-                    .collect();
-                let act_flat: Vec<f32> = idx
-                    .iter()
-                    .flat_map(|&i| seqs[i].actions.iter().copied())
-                    .collect();
-                let lp_old: Vec<f32> = idx
-                    .iter()
-                    .flat_map(|&i| seqs[i].log_probs.iter().copied())
-                    .collect();
-                let adv_flat: Vec<f32> = idx
-                    .iter()
-                    .flat_map(|&i| seqs[i].advantages.iter().copied())
-                    .collect();
-                let ret_flat: Vec<f32> = idx
-                    .iter()
-                    .flat_map(|&i| seqs[i].returns.iter().copied())
-                    .collect();
-                let mask_flat: Vec<f32> = idx
-                    .iter()
-                    .flat_map(|&i| seqs[i].mask.iter().copied())
-                    .collect();
+                // Allocate each Vec with the exact capacity to avoid log-growth
+                // reallocation from flat_map's 0 size hint.
+                let mut obs_flat = Vec::<f32>::with_capacity(bt * self.obs_dim);
+                obs_flat.extend(idx.iter().flat_map(|&i| seqs[i].obs.iter().copied()));
+                let mut act_flat = Vec::<f32>::with_capacity(bt * 4);
+                act_flat.extend(idx.iter().flat_map(|&i| seqs[i].actions.iter().copied()));
+                let mut lp_old = Vec::<f32>::with_capacity(bt);
+                lp_old.extend(idx.iter().flat_map(|&i| seqs[i].log_probs.iter().copied()));
+                let mut adv_flat = Vec::<f32>::with_capacity(bt);
+                adv_flat.extend(idx.iter().flat_map(|&i| seqs[i].advantages.iter().copied()));
+                let mut ret_flat = Vec::<f32>::with_capacity(bt);
+                ret_flat.extend(idx.iter().flat_map(|&i| seqs[i].returns.iter().copied()));
+                let mut mask_flat = Vec::<f32>::with_capacity(bt);
+                mask_flat.extend(idx.iter().flat_map(|&i| seqs[i].mask.iter().copied()));
 
-                let ph_flat: Vec<f32> = idx
-                    .iter()
-                    .flat_map(|&i| seqs[i].init_ph.iter().copied())
-                    .collect();
-                let pc_flat: Vec<f32> = idx
-                    .iter()
-                    .flat_map(|&i| seqs[i].init_pc.iter().copied())
-                    .collect();
-                let vh_flat: Vec<f32> = idx
-                    .iter()
-                    .flat_map(|&i| seqs[i].init_vh.iter().copied())
-                    .collect();
-                let vc_flat: Vec<f32> = idx
-                    .iter()
-                    .flat_map(|&i| seqs[i].init_vc.iter().copied())
-                    .collect();
-
-                let sl = self.seq_len;
-                let bt = mb * sl;
+                let mut ph_flat = Vec::<f32>::with_capacity(mb * LSTM_HIDDEN);
+                ph_flat.extend(idx.iter().flat_map(|&i| seqs[i].init_ph.iter().copied()));
+                let mut pc_flat = Vec::<f32>::with_capacity(mb * LSTM_HIDDEN);
+                pc_flat.extend(idx.iter().flat_map(|&i| seqs[i].init_pc.iter().copied()));
+                let mut vh_flat = Vec::<f32>::with_capacity(mb * LSTM_HIDDEN);
+                vh_flat.extend(idx.iter().flat_map(|&i| seqs[i].init_vh.iter().copied()));
+                let mut vc_flat = Vec::<f32>::with_capacity(mb * LSTM_HIDDEN);
+                vc_flat.extend(idx.iter().flat_map(|&i| seqs[i].init_vc.iter().copied()));
 
                 let obs_t = Tensor::<B, 3>::from_data(
                     TensorData::new(obs_flat, vec![mb, sl, self.obs_dim]),
