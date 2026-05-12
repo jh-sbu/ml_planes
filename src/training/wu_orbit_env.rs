@@ -151,7 +151,7 @@ impl WuOrbitEnv {
 
         let rtt = r_tt(
             terms.radial_error,
-            terms.heading_error,
+            terms.guidance_heading_error,
             alt_err,
             speed_err,
             roll_vs_ff,
@@ -162,7 +162,8 @@ impl WuOrbitEnv {
         match self.curriculum_stage {
             CurriculumStage::Coarse | CurriculumStage::HeadingFine => rtt,
             CurriculumStage::Full => {
-                rtt * r_ps(pitch, alt_err, alt_dot, cfg) * r_rs(terms.heading_error, roll_rate, cfg)
+                rtt * r_ps(pitch, alt_err, alt_dot, cfg)
+                    * r_rs(terms.guidance_heading_error, roll_rate, cfg)
             }
         }
     }

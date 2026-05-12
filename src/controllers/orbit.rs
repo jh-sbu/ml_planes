@@ -7,6 +7,11 @@ use crate::controllers::tuning::OrbitTuning;
 use crate::plane::{ControlInputs, FlightState};
 
 const G: f32 = 9.81;
+/// Proportional gain used to offset the guidance heading for radial recovery.
+/// Matches `OrbitController::radial_pid.kp` default so the reward and PID agree.
+const GUIDANCE_KP: f32 = 0.002;
+/// Maximum heading offset produced by radial guidance [rad]. Matches `radial_pid` output limit.
+const GUIDANCE_MAX: f32 = 0.5;
 
 /// Orbit direction as seen from above (+Y up, XZ horizontal).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -46,7 +51,11 @@ pub const ORBIT_OBS_DIM: usize = 13;
 #[derive(Clone, Copy, Debug)]
 pub struct OrbitObservationTerms {
     pub radial_error: f32,
+    /// Heading error vs. pure tangent direction. Used in the observation vector.
     pub heading_error: f32,
+    /// Heading error vs. the radially-corrected desired direction (same offset the PID applies).
+    /// Use this for reward computation so inward recovery steering is not penalized.
+    pub guidance_heading_error: f32,
     pub bank_ff: f32,
 }
 
@@ -77,12 +86,27 @@ pub fn orbit_observation_terms(
     let cross = tang_x * head_z - tang_z * head_x;
     let dot = tang_x * head_x + tang_z * head_z;
     let heading_error = cross.atan2(dot);
+
+    // Guidance-corrected desired direction: rotate tangent inward/outward by the same
+    // proportional correction the PID's radial_pid would apply, so the reward measures
+    // heading error relative to the recovery target rather than the pure tangent.
+    let radial_error = current_radius - target_radius;
+    let correction = (GUIDANCE_KP * radial_error).clamp(-GUIDANCE_MAX, GUIDANCE_MAX);
+    let rotation_angle = -direction.sign() * correction;
+    let (sin_a, cos_a) = rotation_angle.sin_cos();
+    let desired_x = cos_a * tang_x - sin_a * tang_z;
+    let desired_z = sin_a * tang_x + cos_a * tang_z;
+    let gcross = desired_x * head_z - desired_z * head_x;
+    let gdot = desired_x * head_x + desired_z * head_z;
+    let guidance_heading_error = gcross.atan2(gdot);
+
     let radius = target_radius.max(1.0);
     let bank_ff = -direction.sign() * (state.airspeed.powi(2) / (G * radius)).atan();
 
     OrbitObservationTerms {
-        radial_error: current_radius - target_radius,
+        radial_error,
         heading_error,
+        guidance_heading_error,
         bank_ff,
     }
 }
@@ -535,6 +559,90 @@ mod tests {
         assert!(
             (obs_ccw[2] + obs_cw[2]).abs() < 1e-5,
             "bank feedforward should be symmetric"
+        );
+    }
+
+    /// When the plane is displaced outward and its velocity points along the PID guidance
+    /// direction (rotated inward from tangent), guidance_heading_error should be ≈ 0 while
+    /// heading_error (vs pure tangent) is clearly non-zero.  This validates that the reward
+    /// does not penalize the recovery maneuver the PID would command.
+    #[test]
+    fn guidance_heading_error_zero_when_flying_guidance_direction() {
+        // Geometry: center at origin, CCW, radius R.
+        // Place plane 50 m beyond the circle on the +X radial: position = (R+50, ALT, 0).
+        // CCW tangent there is (0, 0, +1) in XZ (i.e. +Z direction in world space).
+        // PID correction: GUIDANCE_KP * 50 = 0.1 rad, rotation_angle = -(-1) * 0.1 = +0.1 rad.
+        // Desired direction = rotate tangent (0, +1) by +0.1 rad CCW in XZ:
+        //   desired_x = cos(0.1)*0 - sin(0.1)*1 = -sin(0.1)
+        //   desired_z = sin(0.1)*0 + cos(0.1)*1 =  cos(0.1)
+        let radial_overshoot = 50.0;
+        let correction = (GUIDANCE_KP * radial_overshoot).clamp(-GUIDANCE_MAX, GUIDANCE_MAX);
+        let rotation_angle = 0.1_f32; // -CCW.sign() * correction = +correction
+        assert!((rotation_angle - correction).abs() < 1e-6);
+
+        let tang_x = 0.0_f32;
+        let tang_z = 1.0_f32;
+        let (sin_a, cos_a) = rotation_angle.sin_cos();
+        let desired_x = cos_a * tang_x - sin_a * tang_z;
+        let desired_z = sin_a * tang_x + cos_a * tang_z;
+
+        // Velocity aligned with guidance direction.
+        let vx = desired_x * V;
+        let vz = desired_z * V;
+
+        let state = make_state(
+            Vec3::new(R + radial_overshoot, ALT, 0.0),
+            Vec3::new(vx, 0.0, vz),
+        );
+        let terms = orbit_observation_terms(&state, 0.0, 0.0, R, OrbitDirection::CounterClockwise);
+
+        // heading_error vs pure tangent should be non-zero (≈ correction ≈ 0.1 rad).
+        assert!(
+            terms.heading_error.abs() > 0.05,
+            "heading_error vs pure tangent should be non-zero, got {}",
+            terms.heading_error
+        );
+        // guidance_heading_error should be ≈ 0 (flying exactly the corrected direction).
+        assert!(
+            terms.guidance_heading_error.abs() < 1e-5,
+            "guidance_heading_error should be ≈ 0, got {}",
+            terms.guidance_heading_error
+        );
+    }
+
+    /// Confirm that using guidance_heading_error in r_tt produces a meaningfully higher reward
+    /// than using raw heading_error when the plane is in a typical radial recovery posture.
+    #[test]
+    fn guidance_heading_gives_higher_r_tt_during_radial_recovery() {
+        use crate::training::wu_orbit_reward::{r_tt, WuOrbitRewardConfig};
+        let cfg = WuOrbitRewardConfig::default();
+        let radial_err = 50.0_f32;
+        // Heading flying the PID correction ≈ 0.1 rad off pure tangent.
+        let raw_heading_err = GUIDANCE_KP * radial_err; // ≈ 0.1 rad = 5.7°
+        let guidance_heading_err = 0.0_f32; // exactly on corrected target
+
+        let reward_raw = r_tt(
+            radial_err,
+            raw_heading_err,
+            0.0,
+            0.0,
+            0.0,
+            &cfg,
+            cfg.b_heading_fine,
+        );
+        let reward_guided = r_tt(
+            radial_err,
+            guidance_heading_err,
+            0.0,
+            0.0,
+            0.0,
+            &cfg,
+            cfg.b_heading_fine,
+        );
+
+        assert!(
+            reward_guided > reward_raw * 10.0,
+            "guidance reward {reward_guided:.4} should be >> raw reward {reward_raw:.6}"
         );
     }
 }
