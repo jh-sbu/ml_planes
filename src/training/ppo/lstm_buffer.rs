@@ -156,7 +156,6 @@ impl LstmRolloutBuffer {
 
         let zero_obs: Vec<f32> = vec![0.0; obs_dim];
         let zero_action: Vec<f32> = vec![0.0; 4];
-        let zero_h: Vec<f32> = vec![0.0; LSTM_HIDDEN];
 
         for env_i in 0..self.n_envs {
             let start = env_i * self.steps_per_env;
@@ -167,10 +166,19 @@ impl LstmRolloutBuffer {
 
             let mut chunk_start = start;
             while chunk_start < end {
-                let chunk_end = (chunk_start + seq_len).min(end);
-                let valid_len = chunk_end - chunk_start;
+                // Cap at seq_len steps, but also split at the first done boundary.
+                // A done step is the last valid step of its episode; the next step
+                // belongs to a new episode and must start a fresh sequence.
+                let chunk_end_natural = (chunk_start + seq_len).min(end);
+                let split_at = (chunk_start..chunk_end_natural)
+                    .find(|&t| self.steps[t].done)
+                    .map(|t| t + 1) // include the done step, then cut
+                    .unwrap_or(chunk_end_natural);
+                let valid_len = split_at - chunk_start;
 
-                // Initial hidden state = state at the first step of this chunk.
+                // Initial hidden state = state stored at the first step of this chunk.
+                // After a done the trainer zeros the hidden state, so the first step of
+                // a new episode already carries h/c = 0 — no special casing needed here.
                 let first = &self.steps[chunk_start];
                 let init_ph = first.policy_h.clone();
                 let init_pc = first.policy_c.clone();
@@ -184,8 +192,8 @@ impl LstmRolloutBuffer {
                 let mut returns = Vec::with_capacity(seq_len);
                 let mut mask = Vec::with_capacity(seq_len);
 
-                // Valid timesteps.
-                for t in chunk_start..chunk_end {
+                // Valid timesteps (within the same episode).
+                for t in chunk_start..split_at {
                     obs_flat.extend_from_slice(&self.steps[t].obs);
                     acts_flat.extend_from_slice(&self.steps[t].action);
                     log_probs.push(self.steps[t].log_prob);
@@ -194,7 +202,7 @@ impl LstmRolloutBuffer {
                     mask.push(1.0);
                 }
 
-                // Zero-padding for the last (incomplete) chunk.
+                // Zero-padding to reach seq_len.
                 for _ in valid_len..seq_len {
                     obs_flat.extend_from_slice(&zero_obs);
                     acts_flat.extend_from_slice(&zero_action);
@@ -217,7 +225,7 @@ impl LstmRolloutBuffer {
                     init_vc,
                 });
 
-                chunk_start += seq_len;
+                chunk_start = split_at;
             }
         }
 
@@ -392,6 +400,59 @@ mod tests {
             buf.advantages[3],
             buf.advantages[7]
         );
+    }
+
+    fn make_step_with_obs(obs: Vec<f32>, done: bool) -> LstmRolloutStep {
+        LstmRolloutStep {
+            obs,
+            action: [0.0; 4],
+            log_prob: 0.0,
+            reward: 0.0,
+            value: 0.0,
+            done,
+            policy_h: vec![0.0; LSTM_HIDDEN],
+            policy_c: vec![0.0; LSTM_HIDDEN],
+            value_h: vec![0.0; LSTM_HIDDEN],
+            value_c: vec![0.0; LSTM_HIDDEN],
+        }
+    }
+
+    #[test]
+    fn chunk_splits_at_episode_boundary() {
+        // 1 env, 20 steps. Episode 1: steps 0-9 (done at step 9), episode 2: steps 10-19.
+        // Use obs[0] = 1.0 for episode 1, obs[0] = 2.0 for episode 2.
+        let obs_dim = 1;
+        let mut buf = LstmRolloutBuffer::new(1, 20);
+        for i in 0..10 {
+            buf.push(make_step_with_obs(vec![1.0], i == 9));
+        }
+        for _ in 0..10 {
+            buf.push(make_step_with_obs(vec![2.0], false));
+        }
+        buf.advantages = vec![0.0; 20];
+        buf.returns = vec![0.0; 20];
+
+        // With seq_len=16, without a split there would be one sequence containing
+        // steps 0-15, mixing episode 1 (0-9) and episode 2 (10-15).
+        // With the boundary fix, step 9 (done) closes a chunk and step 10 starts fresh.
+        let seqs = buf.chunk_sequences(16, obs_dim);
+
+        // Every sequence must contain obs values from only one episode.
+        for (i, seq) in seqs.iter().enumerate() {
+            let valid_obs: Vec<f32> = seq
+                .obs
+                .iter()
+                .zip(seq.mask.iter())
+                .filter(|(_, &m)| m > 0.0)
+                .map(|(&o, _)| o)
+                .collect();
+            let has_ep1 = valid_obs.iter().any(|&v| v < 1.5);
+            let has_ep2 = valid_obs.iter().any(|&v| v > 1.5);
+            assert!(
+                !(has_ep1 && has_ep2),
+                "sequence {i} contains steps from both episodes"
+            );
+        }
     }
 
     #[test]

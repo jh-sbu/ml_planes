@@ -126,12 +126,16 @@ pub fn r_tt(
 ///
 /// `pitch` is the current pitch angle [rad].
 /// `alt_err` is (altitude − target_altitude) [m].
-/// `alt_dot` is vertical speed [m/s] ≈ d(alt_err)/dt.
+/// `alt_dot` is vertical speed [m/s].
 pub fn r_ps(pitch: f32, alt_err: f32, alt_dot: f32, cfg: &WuOrbitRewardConfig) -> f32 {
-    // θ* formula from Wu eq. 7 (converted: 3 deg·log2(m) → rad)
+    // Wu eq. 7 uses Δh = target − altitude (positive when below target).
+    // This codebase passes alt_err = altitude − target, so negate both inputs
+    // to recover the correct sign: below target → positive θ* → nose-up.
     let log2_m_to_rad = 3.0_f32.to_radians();
-    let theta_star = alt_err.signum() * log2_m_to_rad * (alt_err.abs() + 1.0).log2()
-        + alt_dot * (1.0_f32 / 3.0_f32).to_radians();
+    let delta_h = -alt_err;
+    let delta_h_dot = -alt_dot;
+    let theta_star = delta_h.signum() * log2_m_to_rad * (delta_h.abs() + 1.0).log2()
+        + delta_h_dot * (1.0_f32 / 3.0_f32).to_radians();
     gauss(pitch - theta_star, cfg.pitch_target_denom)
 }
 
@@ -195,6 +199,31 @@ mod tests {
                 "R^TT outside [0,1] at radial={v}: {r}"
             );
         }
+    }
+
+    #[test]
+    fn r_ps_below_target_wants_nose_up() {
+        let cfg = WuOrbitRewardConfig::default();
+        // alt_err = altitude - target = -100 (plane is below target).
+        // theta_star should be positive (nose-up) so the peak reward is at positive pitch.
+        let r_nose_up = r_ps(0.1, -100.0, 0.0, &cfg);
+        let r_nose_down = r_ps(-0.1, -100.0, 0.0, &cfg);
+        assert!(
+            r_nose_up > r_nose_down,
+            "below target: nose-up pitch should score higher than nose-down (got up={r_nose_up} down={r_nose_down})"
+        );
+    }
+
+    #[test]
+    fn r_ps_above_target_wants_nose_down() {
+        let cfg = WuOrbitRewardConfig::default();
+        // alt_err = +100 (plane is above target). theta_star should be negative (nose-down).
+        let r_nose_down = r_ps(-0.1, 100.0, 0.0, &cfg);
+        let r_nose_up = r_ps(0.1, 100.0, 0.0, &cfg);
+        assert!(
+            r_nose_down > r_nose_up,
+            "above target: nose-down pitch should score higher (got down={r_nose_down} up={r_nose_up})"
+        );
     }
 
     #[test]
