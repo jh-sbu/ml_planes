@@ -150,6 +150,11 @@ where
         let mut episode_returns: Vec<f32> = Vec::with_capacity(8 * n);
         let mut episode_lengths: Vec<u32> = Vec::with_capacity(8 * n);
 
+        // Stage steps per-env so the final buffer is env-major, which is what
+        // compute_gae() and chunk_sequences() both expect.
+        let mut per_env: Vec<Vec<LstmRolloutStep>> =
+            vec![Vec::with_capacity(steps_per_env); n];
+
         for _ in 0..steps_per_env {
             // Batch obs: [N, obs_dim].
             let obs_flat: Vec<f32> = obs_batch.iter().flat_map(|o| o.iter().copied()).collect();
@@ -202,7 +207,7 @@ where
             let (next_obs, rewards, dones) = self.envs.step_batch(&actions);
 
             for i in 0..n {
-                buf.push(LstmRolloutStep {
+                per_env[i].push(LstmRolloutStep {
                     obs: obs_batch[i].clone(),
                     action: actions[i],
                     log_prob: log_prob_data[i],
@@ -239,6 +244,14 @@ where
                 if dones[i] {
                     obs_batch[i] = self.envs.reset_at(i);
                 }
+            }
+        }
+
+        // Flush staging buffer in env-major order so compute_gae() and
+        // chunk_sequences() can use contiguous per-env slices.
+        for env_steps in per_env {
+            for step in env_steps {
+                buf.push(step);
             }
         }
 
