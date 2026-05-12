@@ -152,8 +152,7 @@ where
 
         // Stage steps per-env so the final buffer is env-major, which is what
         // compute_gae() and chunk_sequences() both expect.
-        let mut per_env: Vec<Vec<LstmRolloutStep>> =
-            vec![Vec::with_capacity(steps_per_env); n];
+        let mut per_env: Vec<Vec<LstmRolloutStep>> = vec![Vec::with_capacity(steps_per_env); n];
 
         for _ in 0..steps_per_env {
             // Batch obs: [N, obs_dim].

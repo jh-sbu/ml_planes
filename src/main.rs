@@ -550,7 +550,7 @@ fn apply_model_switch(
                 }
             }
             ControllerKind::RlLstmOrbit => {
-                let config = RlLstmOrbitConfig::from_state(state);
+                let config = lstm_orbit_config_from_controller(&mut ctrl, state);
                 match RlLstmOrbitController::load(&sel.0, config) {
                     Ok(new_ctrl) => ctrl.0 = Box::new(new_ctrl),
                     Err(e) => eprintln!("Failed to load LSTM orbit model {}: {e}", sel.0),
@@ -645,7 +645,7 @@ fn apply_rl_controller_switch(
                 }
             }
             ControllerKind::RlLstmOrbit => {
-                let config = RlLstmOrbitConfig::from_state(state);
+                let config = lstm_orbit_config_from_controller(&mut controller, state);
                 match RlLstmOrbitController::load(&path, config) {
                     Ok(rl) => controller.0 = Box::new(rl),
                     Err(e) => {
@@ -748,6 +748,28 @@ fn residual_config_from_controller(
     RlOrbitResidualConfig::from_state(state)
 }
 
+#[cfg(all(feature = "visual", feature = "training"))]
+fn lstm_orbit_config_from_controller(
+    controller: &mut ActiveController,
+    state: &FlightState,
+) -> RlLstmOrbitConfig {
+    if let Some(rl) = controller
+        .0
+        .as_any_mut()
+        .downcast_mut::<RlLstmOrbitController>()
+    {
+        return rl.config();
+    }
+    if let Some(orbit) = controller
+        .0
+        .as_any_mut()
+        .downcast_mut::<ml_planes::controllers::OrbitController>()
+    {
+        return RlLstmOrbitConfig::from_orbit(orbit);
+    }
+    RlLstmOrbitConfig::from_state(state)
+}
+
 /// Extract orbit geometry from whatever controller variant is currently active.
 ///
 /// Returns `None` when the active controller is not an orbit variant (e.g. LevelHold,
@@ -782,6 +804,17 @@ fn extract_orbit_params(ctrl: &mut ActiveController) -> Option<OrbitParams> {
             .as_any_mut()
             .downcast_mut::<RlOrbitResidualController>()
         {
+            let cfg = rl.config();
+            return Some(OrbitParams {
+                center_x: cfg.center_x,
+                center_z: cfg.center_z,
+                target_radius: cfg.target_radius,
+                target_altitude: cfg.target_altitude,
+                target_airspeed: cfg.target_airspeed,
+                direction: cfg.direction,
+            });
+        }
+        if let Some(rl) = ctrl.0.as_any_mut().downcast_mut::<RlLstmOrbitController>() {
             let cfg = rl.config();
             return Some(OrbitParams {
                 center_x: cfg.center_x,
@@ -831,7 +864,8 @@ fn apply_controller_switch(
             .and_then(|pt| match *kind {
                 ControllerKind::Orbit
                 | ControllerKind::RlOrbit
-                | ControllerKind::RlOrbitResidual => pt
+                | ControllerKind::RlOrbitResidual
+                | ControllerKind::RlLstmOrbit => pt
                     .get_orbit(profile_name)
                     .map(|t| t as &dyn ControllerTuning),
                 _ => pt
@@ -844,7 +878,10 @@ fn apply_controller_switch(
         // stays with the from_state() auto-center default).
         let orbit_params = if matches!(
             *kind,
-            ControllerKind::Orbit | ControllerKind::RlOrbit | ControllerKind::RlOrbitResidual
+            ControllerKind::Orbit
+                | ControllerKind::RlOrbit
+                | ControllerKind::RlOrbitResidual
+                | ControllerKind::RlLstmOrbit
         ) {
             extract_orbit_params(&mut controller)
         } else {
