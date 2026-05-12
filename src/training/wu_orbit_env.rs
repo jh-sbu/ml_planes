@@ -3,6 +3,21 @@
 //! Identical spawn / termination logic to `OrbitEnv`; replaces the weighted
 //! linear reward with Wu et al.'s multiplicative Gaussian formulation
 //! (R^TT × R^PS × R^RS) with an automatic 3-stage curriculum.
+//!
+//! ## Deviations from Wu et al.
+//!
+//! **Observation space** — Wu's Eq. (4) is a 12-state cruise vector targeting a
+//! waypoint (`[δh, δψ, δv, h, φ, θ, vN, vE, vD, ωψ, ωφ, ωθ]`).  This environment
+//! uses the repo's 13-dim orbit observation (`build_orbit_observation`): radial error,
+//! guidance heading error, bank feedforward, altitude error, speed error, α, pitch, q,
+//! roll, p, β, r, vertical speed.  The orbit-specific guidance terms (radial/heading
+//! error, bank feedforward) have no Wu equivalent; the 12-state cruise vector would
+//! not encode the information needed to close a circular orbit loop.
+//!
+//! **Action ordering** — Wu's Eq. (5) is `[rudder, aileron, elevator, throttle]`.
+//! This repo uses `[elevator, throttle, aileron, rudder]` (see `direct_action_to_inputs`),
+//! a convention shared by all training environments.  The policy learns the correct
+//! mapping regardless of slot order; no functional behaviour is affected.
 
 use bevy::math::{Mat3, Quat, Vec3};
 
