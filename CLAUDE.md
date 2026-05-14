@@ -11,7 +11,7 @@
 - ML: `burn` (pure Rust; no Python, no IPC)
 - Asset format: RON (Rusty Object Notation); aerodynamic configs use Bevy's asset loader; reward/termination configs (`*.reward.ron` in `assets/training/`) are loaded directly via `ron::de::from_reader` — no Bevy asset server required
 
-**Development philosophy:** Environment and tests first; maneuvers second. The environment, aerodynamic model, and test suite must be solid before any controller or ML work begins.
+**Development philosophy:** Test-Driven Development (TDD) is mandatory. Write a failing test before writing any implementation code. The Red-Green-Refactor cycle governs all new features: red (failing test), green (minimal implementation to pass), refactor (clean up). The environment, aerodynamic model, and test suite must be solid before any controller or ML work begins.
 
 ---
 
@@ -282,6 +282,18 @@ app.add_plugins(EguiPlugin { enable_multipass_for_primary_context: false });
 
 ## 6. Test Strategy
 
+### TDD Workflow (mandatory)
+
+1. **Red** — Write a failing test that captures the intended behavior. Run `cargo test --no-default-features` and confirm it fails for the right reason (not a compile error).
+2. **Green** — Write the minimum implementation to make the test pass. No premature abstraction.
+3. **Refactor** — Clean up duplication and structure without changing behavior. Tests must still pass.
+
+**By component:**
+- **New controller** — Unit test the control law (given `FlightState` → assert `ControlInputs` values) before writing the `FlightController` impl. Add an integration test in `tests/` before wiring into `ControllerKind`.
+- **New `TrainingEnv`** — Test `reset()` initial state and `step()` reward/obs values before implementing `TrainingEnv`. Add a termination-condition test.
+- **Aerodynamic changes** — Test the force/torque equations with known inputs before editing `compute_aero_forces()`.
+- **New `ControllerKind` variant** — Test `build()` produces a non-panicking controller and that `name()` is non-empty before wiring into `main.rs`.
+
 ### Unit tests (`src/` modules)
 - `PidController`: step response, integral wind-up clamp, output clamping
 - Aerodynamic force computation: known α/V inputs → expected lift/drag/moment
@@ -300,6 +312,9 @@ app.add_plugins(EguiPlugin { enable_multipass_for_primary_context: false });
 - No rendering, no Bevy `App` window, no GPU resources in tests
 - Tests are deterministic (fixed seed where randomness is needed)
 - Run `cargo fmt` at the end of every editing session before committing
+- Tests are written **before** the implementation they cover — never after
+- A PR that adds implementation without a prior failing test is not accepted
+- `cargo test --no-default-features` must be the first and last step of every change cycle
 
 ---
 
