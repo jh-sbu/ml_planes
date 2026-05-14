@@ -86,40 +86,44 @@ pub fn poll_pending_loads(
         &mut SelectedModel,
     >,
 ) {
-    pending.tuning.retain_mut(|load| {
-        let Some(Some(new_tuning)) = future::block_on(future::poll_once(&mut load.task)) else {
-            return true;
-        };
-
-        let first = if load.pick_orbit {
-            let mut keys: Vec<_> = new_tuning.orbit.keys().cloned().collect();
-            keys.sort();
-            keys.into_iter().next()
-        } else {
-            let mut keys: Vec<_> = new_tuning.level_hold.keys().cloned().collect();
-            keys.sort();
-            keys.into_iter().next()
-        };
-
-        if let Ok((handle, mut profile)) = profiles.get_mut(load.entity) {
-            if let Some(asset) = tuning_assets.get_mut(&handle.0) {
-                asset.merge(new_tuning);
-                if let Some(name) = first {
-                    profile.0 = name;
+    pending.tuning.retain_mut(
+        |load| match future::block_on(future::poll_once(&mut load.task)) {
+            None => true,
+            Some(None) => false,
+            Some(Some(new_tuning)) => {
+                let first = if load.pick_orbit {
+                    let mut keys: Vec<_> = new_tuning.orbit.keys().cloned().collect();
+                    keys.sort();
+                    keys.into_iter().next()
+                } else {
+                    let mut keys: Vec<_> = new_tuning.level_hold.keys().cloned().collect();
+                    keys.sort();
+                    keys.into_iter().next()
+                };
+                if let Ok((handle, mut profile)) = profiles.get_mut(load.entity) {
+                    if let Some(asset) = tuning_assets.get_mut(&handle.0) {
+                        asset.merge(new_tuning);
+                        if let Some(name) = first {
+                            profile.0 = name;
+                        }
+                    }
                 }
+                false
             }
-        }
-        false
-    });
+        },
+    );
 
     #[cfg(all(feature = "training", not(target_arch = "wasm32")))]
-    pending.model.retain_mut(|load| {
-        let Some(Some(stem)) = future::block_on(future::poll_once(&mut load.task)) else {
-            return true;
-        };
-        if let Ok(mut sel) = models.get_mut(load.entity) {
-            sel.0 = stem;
-        }
-        false
-    });
+    pending.model.retain_mut(
+        |load| match future::block_on(future::poll_once(&mut load.task)) {
+            None => true,
+            Some(None) => false,
+            Some(Some(stem)) => {
+                if let Ok(mut sel) = models.get_mut(load.entity) {
+                    sel.0 = stem;
+                }
+                false
+            }
+        },
+    );
 }

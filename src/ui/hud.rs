@@ -202,7 +202,9 @@ pub fn draw_flight_hud(
                         ui.label(format!("({:.0} kts)", tgt_kts));
                     });
                 }
-                if let (Some(profile), Some(handle)) = (profile.as_deref_mut(), tuning_handle) {
+                if let (Some(ref mut profile), Some(handle)) =
+                    (profile.as_mut().map(|p| p.reborrow()), tuning_handle)
+                {
                     if let Some(pt) = tuning_assets.get(&handle.0) {
                         let mut profiles: Vec<&str> =
                             pt.level_hold.keys().map(|s| s.as_str()).collect();
@@ -243,7 +245,9 @@ pub fn draw_flight_hud(
                         orbit.heading_pid.reset();
                     }
                 }
-                if let (Some(profile), Some(handle)) = (profile.as_deref_mut(), tuning_handle) {
+                if let (Some(ref mut profile), Some(handle)) =
+                    (profile.as_mut().map(|p| p.reborrow()), tuning_handle)
+                {
                     if let Some(pt) = tuning_assets.get(&handle.0) {
                         let mut profiles: Vec<&str> = pt.orbit.keys().map(|s| s.as_str()).collect();
                         profiles.sort();
