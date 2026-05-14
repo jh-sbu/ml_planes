@@ -9,6 +9,7 @@ use crate::controllers::{
     SelectedTuningProfile,
 };
 use crate::plane::{ControlInputs, FlightState, PlaneIndex, PlaneTuningHandle};
+use crate::ui::file_load::{self, PendingLoads};
 
 #[allow(unused_variables, unused_mut)]
 pub fn draw_flight_hud(
@@ -28,6 +29,7 @@ pub fn draw_flight_hud(
     all_planes: Query<(Entity, &PlaneIndex), With<FlightState>>,
     tuning_assets: Res<Assets<PlaneTuning>>,
     model_lib: Res<ModelLibrary>,
+    mut pending: ResMut<PendingLoads>,
 ) {
     // Determine which entity to display
     let result = match *mode {
@@ -41,7 +43,7 @@ pub fn draw_flight_hud(
         inputs,
         mut kind,
         mut controller,
-        profile,
+        mut profile,
         tuning_handle,
         mut selected_model,
         mut leader_ref,
@@ -200,7 +202,7 @@ pub fn draw_flight_hud(
                         ui.label(format!("({:.0} kts)", tgt_kts));
                     });
                 }
-                if let (Some(ref mut profile), Some(handle)) = (profile, tuning_handle) {
+                if let (Some(profile), Some(handle)) = (profile.as_deref_mut(), tuning_handle) {
                     if let Some(pt) = tuning_assets.get(&handle.0) {
                         let mut profiles: Vec<&str> =
                             pt.level_hold.keys().map(|s| s.as_str()).collect();
@@ -220,6 +222,9 @@ pub fn draw_flight_hud(
                         ui.label("(T / Shift+T to cycle)");
                     }
                 }
+                if ui.button("Load tuning…").clicked() {
+                    file_load::spawn_tuning_load(current_entity, false, &mut pending);
+                }
             }
 
             if *kind == ControllerKind::Orbit {
@@ -237,6 +242,28 @@ pub fn draw_flight_hud(
                         orbit.radial_pid.reset();
                         orbit.heading_pid.reset();
                     }
+                }
+                if let (Some(profile), Some(handle)) = (profile.as_deref_mut(), tuning_handle) {
+                    if let Some(pt) = tuning_assets.get(&handle.0) {
+                        let mut profiles: Vec<&str> = pt.orbit.keys().map(|s| s.as_str()).collect();
+                        profiles.sort();
+                        let current_profile = profile.0.clone();
+                        let mut selected_profile = current_profile.clone();
+                        egui::ComboBox::from_label("Tune Profile")
+                            .selected_text(&selected_profile)
+                            .show_ui(ui, |ui| {
+                                for &p in &profiles {
+                                    ui.selectable_value(&mut selected_profile, p.to_string(), p);
+                                }
+                            });
+                        if selected_profile != current_profile {
+                            profile.0 = selected_profile;
+                        }
+                        ui.label("(T / Shift+T to cycle)");
+                    }
+                }
+                if ui.button("Load tuning…").clicked() {
+                    file_load::spawn_tuning_load(current_entity, true, &mut pending);
                 }
             }
 
@@ -439,6 +466,10 @@ pub fn draw_flight_hud(
                         }
                         ui.label("(T / Shift+T to cycle)");
                     }
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                if ui.button("Load model…").clicked() {
+                    file_load::spawn_model_load(current_entity, &mut pending);
                 }
             }
         });

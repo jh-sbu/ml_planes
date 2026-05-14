@@ -188,7 +188,12 @@ impl WuOrbitEnv {
             CurriculumStage::Coarse | CurriculumStage::HeadingFine => rtt,
             CurriculumStage::Full => {
                 rtt * r_ps(pitch, alt_err, alt_dot, cfg)
-                    * r_rs(terms.guidance_heading_error, heading_err_dot, roll_rate, cfg)
+                    * r_rs(
+                        terms.guidance_heading_error,
+                        heading_err_dot,
+                        roll_rate,
+                        cfg,
+                    )
             }
         }
     }

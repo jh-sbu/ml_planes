@@ -144,7 +144,12 @@ pub fn r_ps(pitch: f32, alt_err: f32, alt_dot: f32, cfg: &WuOrbitRewardConfig) -
 /// `heading_err`     is orbit guidance heading error [rad].
 /// `heading_err_dot` is finite-difference derivative of heading_err [rad/s].
 /// `roll_rate`       is p (body-frame roll angular velocity) [rad/s].
-pub fn r_rs(heading_err: f32, heading_err_dot: f32, roll_rate: f32, cfg: &WuOrbitRewardConfig) -> f32 {
+pub fn r_rs(
+    heading_err: f32,
+    heading_err_dot: f32,
+    roll_rate: f32,
+    cfg: &WuOrbitRewardConfig,
+) -> f32 {
     use std::f32::consts::FRAC_PI_3;
     let phi_tgt_star = (0.35 * heading_err + 0.1 * heading_err_dot).clamp(-FRAC_PI_3, FRAC_PI_3);
     let omega_phi_star =

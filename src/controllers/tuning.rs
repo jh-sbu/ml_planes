@@ -156,6 +156,12 @@ impl PlaneTuning {
     pub fn get_orbit(&self, profile: &str) -> Option<&OrbitTuning> {
         self.orbit.get(profile)
     }
+
+    /// Merge all profiles from `other` into `self`, overwriting on name collision.
+    pub fn merge(&mut self, other: PlaneTuning) {
+        self.level_hold.extend(other.level_hold);
+        self.orbit.extend(other.orbit);
+    }
 }
 
 /// Tracks which named tuning profile is selected for this plane entity.
@@ -208,6 +214,66 @@ mod tests {
         assert!((t.alt_kp - 0.015).abs() < 1e-6);
         assert!((t.pitch_kp - 2.0).abs() < 1e-6);
         assert!(pt.get_level_hold("missing").is_none());
+    }
+
+    #[test]
+    fn plan_tuning_merge_adds_and_overwrites() {
+        let mut base = PlaneTuning::default();
+        base.level_hold.insert(
+            "normal".into(),
+            LevelHoldTuning {
+                alt_kp: 0.01,
+                ..Default::default()
+            },
+        );
+
+        let mut incoming = PlaneTuning::default();
+        incoming.level_hold.insert(
+            "normal".into(),
+            LevelHoldTuning {
+                alt_kp: 0.99,
+                ..Default::default()
+            },
+        );
+        incoming.level_hold.insert(
+            "custom".into(),
+            LevelHoldTuning {
+                alt_kp: 0.05,
+                ..Default::default()
+            },
+        );
+        incoming.orbit.insert(
+            "custom".into(),
+            OrbitTuning {
+                radial_kp: 0.42,
+                ..Default::default()
+            },
+        );
+
+        base.merge(incoming);
+
+        assert_eq!(base.level_hold.len(), 2);
+        assert!(
+            (base.level_hold["normal"].alt_kp - 0.99).abs() < 1e-6,
+            "overwrite"
+        );
+        assert!(
+            (base.level_hold["custom"].alt_kp - 0.05).abs() < 1e-6,
+            "new profile"
+        );
+        assert!(
+            (base.orbit["custom"].radial_kp - 0.42).abs() < 1e-6,
+            "orbit profile"
+        );
+    }
+
+    #[test]
+    fn plan_tuning_merge_into_empty() {
+        let mut base = PlaneTuning::default();
+        let mut incoming = PlaneTuning::default();
+        incoming.orbit.insert("a".into(), OrbitTuning::default());
+        base.merge(incoming);
+        assert!(base.orbit.contains_key("a"));
     }
 
     #[test]
