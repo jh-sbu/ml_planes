@@ -8,8 +8,9 @@ use ml_planes::plane::{PlaneConfig, PlanePlugin};
 
 /// Build a headless Bevy app with Rapier physics and PlanePlugin.
 ///
-/// Each `app.update()` advances virtual time by exactly 1/60 s,
+/// Each `app.update()` advances virtual time by exactly 1/64 s,
 /// making FixedUpdate steps deterministic regardless of wall-clock speed.
+/// One update = one fixed tick = one Rapier step (no accumulator overflow).
 ///
 /// `app.finish()` is called before returning so that plugins which initialize
 /// resources in their `finish()` impl are properly set up (required when
@@ -19,11 +20,17 @@ pub fn build_headless_app() -> App {
     app.add_plugins(MinimalPlugins)
         .add_plugins(bevy::transform::TransformPlugin)
         .add_plugins(bevy::asset::AssetPlugin::default())
-        .add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
+        .insert_resource(TimestepMode::Fixed {
+            dt: 1.0 / 64.0,
+            substeps: 1,
+        })
+        .add_plugins(RapierPhysicsPlugin::<NoUserData>::default().in_fixed_schedule())
         .add_plugins(PlanePlugin);
 
+    // 1/64 s per update = exactly one fixed tick per update (no accumulator overflow).
+    // Tests are deterministic: 1 update = 1 fixed tick = 1 Rapier step.
     app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(
-        1.0 / 60.0,
+        1.0 / 64.0,
     )));
 
     // Finalize plugin setup — equivalent to what app.run() does internally.

@@ -9,8 +9,8 @@ use ml_planes::plane::{ControlInputs, FlightState, PlaneConfig, PlaneConfigHandl
 /// Full pipeline energy-conservation test.
 ///
 /// Spawns a plane at 500 m altitude flying at 100 m/s with zero control
-/// deflections (ManualController outputs zeros). Runs 300 FixedUpdate steps
-/// (= 5 s at 60 Hz). Asserts altitude stays within ±50 m of initial value,
+/// deflections (ManualController outputs zeros). Runs 320 FixedUpdate steps
+/// (= 5 s at 64 Hz). Asserts altitude stays within ±50 m of initial value,
 /// confirming the aero→Rapier integration doesn't produce runaway forces.
 #[test]
 fn energy_conservation_5s() {
@@ -45,8 +45,8 @@ fn energy_conservation_5s() {
         Transform::from_translation(Vec3::new(0.0, 500.0, 0.0)),
     ));
 
-    // 300 updates × 1/60 s = 5 simulated seconds
-    for _ in 0..300 {
+    // 320 updates × 1/64 s = 5 simulated seconds
+    for _ in 0..320 {
         app.update();
     }
 

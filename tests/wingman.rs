@@ -118,8 +118,8 @@ fn wingman_and_leader_stay_airborne() {
         .entity_mut(wingman)
         .insert((LeaderRef(leader), LeaderState::default(), offset));
 
-    // Run for 30 simulated seconds (1800 updates × 1/60 s).
-    for _ in 0..1800 {
+    // Run for 30 simulated seconds (1920 updates × 1/64 s).
+    for _ in 0..1920 {
         app.update();
     }
 
@@ -200,7 +200,7 @@ fn wingman_follows_leader_altitude_change() {
         .insert((LeaderRef(leader), LeaderState::default(), offset));
 
     // Establish steady-state (10 s).
-    for _ in 0..600 {
+    for _ in 0..640 {
         app.update();
     }
 
@@ -214,7 +214,7 @@ fn wingman_follows_leader_altitude_change() {
     }
 
     // Run another 20 s for wingman to begin tracking the climb.
-    for _ in 0..1200 {
+    for _ in 0..1280 {
         app.update();
     }
 

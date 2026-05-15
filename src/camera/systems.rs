@@ -25,6 +25,13 @@ pub struct FollowCamera {
     pub yaw: f32,
     pub pitch: f32,
     pub distance: f32,
+    /// Exponentially smoothed position of the follow target. Initialized to
+    /// Vec3::ZERO and snap-set to the physics target on the first valid frame
+    /// (detected by distance > 500 m from target), so the camera never jumps
+    /// from the world origin to the target plane.
+    pub smoothed_pos: Vec3,
+    /// Exponentially smoothed rotation of the follow target.
+    pub smoothed_rot: Quat,
 }
 
 impl Default for FollowCamera {
@@ -34,6 +41,8 @@ impl Default for FollowCamera {
             yaw: 0.0,
             pitch: 10.0_f32.atan2(30.0),
             distance: (10.0_f32.powi(2) + 30.0_f32.powi(2)).sqrt(),
+            smoothed_pos: Vec3::ZERO,
+            smoothed_rot: Quat::IDENTITY,
         }
     }
 }
@@ -153,7 +162,7 @@ pub fn update_follow_camera(
     mode: Res<CameraMode>,
     time: Res<Time>,
     target_query: Query<&Transform, Without<Camera3d>>,
-    mut camera_query: Query<(&mut Transform, &FollowCamera), With<Camera3d>>,
+    mut camera_query: Query<(&mut Transform, &mut FollowCamera), With<Camera3d>>,
 ) {
     let CameraMode::Follow(target_entity) = *mode else {
         return;
@@ -162,23 +171,33 @@ pub fn update_follow_camera(
     let Ok(target_transform) = target_query.get(target_entity) else {
         return;
     };
-    let Ok((mut cam_transform, follow)) = camera_query.single_mut() else {
+    let Ok((mut cam_transform, mut follow)) = camera_query.single_mut() else {
         return;
     };
 
     let target_pos = target_transform.translation;
     let target_rot = target_transform.rotation;
 
+    // Snap-initialize on the first frame (smoothed_pos starts at Vec3::ZERO which
+    // is far from any flying plane) so the camera doesn't sweep across the world.
+    if follow.smoothed_pos.distance(target_pos) > 500.0 {
+        follow.smoothed_pos = target_pos;
+        follow.smoothed_rot = target_rot;
+    }
+
+    // Smooth the target pose at tau=12 rad/s — fast enough to track turns,
+    // slow enough to filter the 64 Hz fixed-step snaps from Rapier.
+    let alpha = 1.0 - (-12.0_f32 * time.delta_secs()).exp();
+    follow.smoothed_pos = follow.smoothed_pos.lerp(target_pos, alpha);
+    follow.smoothed_rot = follow.smoothed_rot.slerp(target_rot, alpha);
+
     let horiz = follow.distance * follow.pitch.cos();
     let vert = follow.distance * follow.pitch.sin();
     // Body frame: −X = behind (nose), +Y = right wing, +Z = up
     let local_offset = Vec3::new(-horiz * follow.yaw.cos(), horiz * follow.yaw.sin(), vert);
-    let offset = target_rot * local_offset;
-    let camera_pos = target_pos + offset;
-
-    let alpha = 1.0 - (-8.0_f32 * time.delta_secs()).exp();
-    cam_transform.translation = cam_transform.translation.lerp(camera_pos, alpha);
-    cam_transform.look_at(target_pos, Vec3::Y);
+    let offset = follow.smoothed_rot * local_offset;
+    cam_transform.translation = follow.smoothed_pos + offset;
+    cam_transform.look_at(follow.smoothed_pos, Vec3::Y);
 }
 
 #[cfg(test)]

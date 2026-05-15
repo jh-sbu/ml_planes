@@ -60,7 +60,7 @@ fn read_state(app: &mut App) -> FlightState {
 ///
 /// NOTE: FixedUpdate does not fire on frame 0 in Bevy's fixed-timestep model
 /// (the virtual-time accumulator starts empty).  The loop therefore runs the
-/// full 1 800 frames without any early-exit; a break based on FlightState
+/// full 1 920 frames without any early-exit; a break based on FlightState
 /// altitude before the first FixedUpdate fires would see altitude = 0 (the
 /// component default) and exit prematurely.
 #[test]
@@ -78,7 +78,7 @@ fn altitude_hold_prevents_crash() {
         ctrl,
     );
 
-    // 600 updates × 1/60 s = 10 simulated seconds.
+    // 640 updates × 1/64 s = 10 simulated seconds.
     //
     // We cap at 10 s rather than 30 s: without a controller the plane enters a
     // high-speed dive (>300 m/s) that produces forces large enough to cause NaN
@@ -86,7 +86,7 @@ fn altitude_hold_prevents_crash() {
     // and airspeed ~100 m/s — well within finite range — so the assertion
     // `altitude > 700 m` cleanly distinguishes a working controller from a
     // broken one.
-    for _ in 0..600 {
+    for _ in 0..640 {
         app.update();
     }
 
@@ -131,8 +131,8 @@ fn large_altitude_offset_does_not_stall() {
         ctrl,
     );
 
-    // 1 800 updates × 1/60 s = 30 simulated seconds.
-    for _ in 0..1800 {
+    // 1 920 updates × 1/64 s = 30 simulated seconds.
+    for _ in 0..1920 {
         app.update();
     }
 
@@ -171,7 +171,7 @@ fn airspeed_hold_maintains_speed() {
         ctrl,
     );
 
-    for _ in 0..600 {
+    for _ in 0..640 {
         app.update();
     }
 

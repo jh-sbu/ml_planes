@@ -43,7 +43,11 @@ fn main() {
         bevy::transform::TransformPlugin,
     ));
 
-    app.add_plugins(RapierPhysicsPlugin::<NoUserData>::default());
+    app.insert_resource(TimestepMode::Fixed {
+        dt: 1.0 / 64.0,
+        substeps: 1,
+    });
+    app.add_plugins(RapierPhysicsPlugin::<NoUserData>::default().in_fixed_schedule());
     app.add_plugins(PlanePlugin);
     app.add_plugins(EnvironmentPlugin);
 
