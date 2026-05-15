@@ -19,6 +19,7 @@ use ml_planes::controllers::OrbitTuning;
 #[cfg(feature = "visual")]
 use ml_planes::controllers::{
     ActiveController, ControllerTuning, OrbitParams, PlaneTuning, SelectedTuningProfile,
+    TuningApplied,
 };
 #[cfg(feature = "visual")]
 use ml_planes::plane::PlaneTuningHandle;
@@ -72,7 +73,13 @@ fn main() {
     app.add_systems(Update, cycle_rl_model);
 
     #[cfg(feature = "visual")]
-    app.add_systems(PostUpdate, apply_controller_switch);
+    app.add_systems(
+        PostUpdate,
+        (
+            apply_initial_tuning,
+            apply_controller_switch.after(apply_initial_tuning),
+        ),
+    );
     #[cfg(all(feature = "visual", feature = "training"))]
     app.add_systems(
         PostUpdate,
@@ -827,6 +834,70 @@ fn extract_orbit_params(ctrl: &mut ActiveController) -> Option<OrbitParams> {
         }
     }
     None
+}
+
+/// Apply the named tuning profile to a controller that was spawned before the PlaneTuning asset
+/// finished loading. Runs once per entity (guarded by `Without<TuningApplied>`) and fires before
+/// `apply_controller_switch` so any explicit profile switch in the same frame takes precedence.
+#[cfg(feature = "visual")]
+fn apply_initial_tuning(
+    mut query: Query<
+        (
+            Entity,
+            &FlightState,
+            &mut ActiveController,
+            &ControllerKind,
+            &ControlInputs,
+            &PlaneTuningHandle,
+            &SelectedTuningProfile,
+        ),
+        Without<TuningApplied>,
+    >,
+    tuning_assets: Res<Assets<PlaneTuning>>,
+    mut commands: Commands,
+) {
+    for (entity, state, mut controller, kind, prev_inputs, tuning_handle, profile) in
+        query.iter_mut()
+    {
+        let Some(pt) = tuning_assets.get(&tuning_handle.0) else {
+            continue;
+        };
+        let profile_name = profile.0.as_str();
+        let tuning: Option<&dyn ControllerTuning> = match *kind {
+            ControllerKind::Orbit
+            | ControllerKind::RlOrbit
+            | ControllerKind::RlOrbitResidual
+            | ControllerKind::RlLstmOrbit => pt
+                .get_orbit(profile_name)
+                .map(|t| t as &dyn ControllerTuning),
+            _ => pt
+                .get_level_hold(profile_name)
+                .map(|t| t as &dyn ControllerTuning),
+        };
+
+        // Preserve orbit geometry: extract before rebuild, restore after.
+        let orbit_params = if matches!(
+            *kind,
+            ControllerKind::Orbit
+                | ControllerKind::RlOrbit
+                | ControllerKind::RlOrbitResidual
+                | ControllerKind::RlLstmOrbit
+        ) {
+            extract_orbit_params(&mut controller)
+        } else {
+            None
+        };
+
+        controller.0 = kind.build(state, tuning, prev_inputs);
+
+        if let Some(params) = orbit_params {
+            if let Some(orbit) = controller.0.as_any_mut().downcast_mut::<OrbitController>() {
+                orbit.apply_params(&params, state.airspeed);
+            }
+        }
+
+        commands.entity(entity).insert(TuningApplied);
+    }
 }
 
 /// Rebuild `ActiveController` whenever `ControllerKind` or `SelectedTuningProfile` changes.

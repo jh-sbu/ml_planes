@@ -40,5 +40,6 @@ pub use selected_model::{ModelLibrary, SelectedModel};
 pub use traits::FlightController;
 pub use tuning::{
     ControllerTuning, LevelHoldTuning, OrbitTuning, PlaneTuning, SelectedTuningProfile,
+    TuningApplied,
 };
 pub use wingman::{feed_leader_state, FormationOffset, LeaderRef, LeaderState, WingmanController};

@@ -169,6 +169,12 @@ impl PlaneTuning {
 #[derive(bevy::prelude::Component, Clone, Debug, PartialEq, Eq)]
 pub struct SelectedTuningProfile(pub String);
 
+/// Marker inserted by `apply_initial_tuning` once the PlaneTuning asset has loaded and the
+/// controller has been rebuilt from the named profile. Prevents the initial-apply system from
+/// running again on subsequent frames.
+#[derive(bevy::prelude::Component, Default)]
+pub struct TuningApplied;
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
