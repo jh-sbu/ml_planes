@@ -5,6 +5,9 @@ use crate::controllers::{ActiveController, ControllerKind, FlightController};
 use crate::plane::{ControlInputs, FlightState, PlaneConfig, PlaneConfigHandle};
 use crate::training::SpawnSpec;
 
+#[cfg(feature = "visual")]
+use super::visual::PhysicsInterp;
+
 /// Fired (via `Commands::trigger`) when a plane entity contacts the ground collider.
 /// In Bevy 0.18 events are observer-based: listen with `app.add_observer(|on: On<PlaneGroundContactEvent>| …)`.
 #[derive(Event, Debug, Clone)]
@@ -35,7 +38,7 @@ pub fn spawn_plane(
 
     let handle: Handle<PlaneConfig> = asset_server.load("planes/generic_jet.plane.ron");
 
-    commands
+    let entity = commands
         .spawn((
             RigidBody::Dynamic,
             Collider::cuboid(3.0, 0.5, 1.0),
@@ -67,7 +70,17 @@ pub fn spawn_plane(
             PlaneConfigHandle(handle),
             Transform::from_translation(position).with_rotation(attitude),
         ))
-        .id()
+        .id();
+
+    #[cfg(feature = "visual")]
+    commands.entity(entity).insert(PhysicsInterp {
+        prev_pos: position,
+        prev_rot: attitude,
+        curr_pos: position,
+        curr_rot: attitude,
+    });
+
+    entity
 }
 
 pub fn detect_ground_contact(

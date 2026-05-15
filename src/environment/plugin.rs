@@ -7,7 +7,7 @@ use super::spawner::detect_ground_contact;
 #[cfg(feature = "visual")]
 use super::grid_material::{follow_camera, GridMaterial};
 #[cfg(feature = "visual")]
-use super::visual::{draw_plane_gizmos, spawn_visual_ground};
+use super::visual::{draw_plane_gizmos, save_curr_physics_pose, save_prev_physics_pose, spawn_visual_ground};
 #[cfg(feature = "visual")]
 use bevy::pbr::MaterialPlugin;
 
@@ -29,6 +29,17 @@ impl Plugin for EnvironmentPlugin {
         app.add_systems(
             FixedUpdate,
             detect_ground_contact.after(PhysicsSet::StepSimulation),
+        );
+
+        #[cfg(feature = "visual")]
+        app.add_systems(
+            FixedUpdate,
+            save_prev_physics_pose.before(PhysicsSet::SyncBackend),
+        );
+        #[cfg(feature = "visual")]
+        app.add_systems(
+            FixedUpdate,
+            save_curr_physics_pose.after(PhysicsSet::Writeback),
         );
     }
 }

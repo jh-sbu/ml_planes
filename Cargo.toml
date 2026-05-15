@@ -5,7 +5,7 @@ edition = "2021"
 
 [features]
 default = ["visual"]
-visual = ["bevy/default", "bevy_egui", "bevy_rapier3d/debug-render-3d", "rfd"]
+visual = ["bevy/default", "bevy_egui", "rfd"]
 training = ["burn"]
 
 [dependencies]
