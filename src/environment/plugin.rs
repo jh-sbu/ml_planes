@@ -7,7 +7,9 @@ use super::spawner::detect_ground_contact;
 #[cfg(feature = "visual")]
 use super::grid_material::{follow_camera, GridMaterial};
 #[cfg(feature = "visual")]
-use super::visual::{draw_plane_gizmos, save_curr_physics_pose, save_prev_physics_pose, spawn_visual_ground};
+use super::visual::{
+    draw_plane_gizmos, save_curr_physics_pose, save_prev_physics_pose, spawn_visual_ground,
+};
 #[cfg(feature = "visual")]
 use bevy::pbr::MaterialPlugin;
 

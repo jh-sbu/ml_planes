@@ -26,12 +26,21 @@ name as `CONTROLLER` (default `level_hold` if omitted).
 + outer radial/heading PIDs). Proceed with the **Orbit phases** at the bottom of this file.
 Skip the level-hold phases entirely.
 
+**If `CONTROLLER` is `heading_hold`:** the heading-hold controller wraps the same inner
+`LevelHoldController` as orbit, with a 2-gain outer heading PID. Proceed with the
+**Heading-Hold phases** at the bottom of this file. Skip the level-hold phases entirely.
+
+> **Tip:** run `/tune PLANE level_hold` first to get well-tuned inner gains, then copy the
+> resulting `LevelHoldTuning` values into `HeadingHoldTuning.inner` in the `.tuning.ron` file.
+> Heading-hold outer gains are largely independent of the inner loop.
+
 **If `CONTROLLER` is anything else:** print:
 
 ```
 Controller "CONTROLLER" is not supported by /tune.
-Supported controllers: level_hold
-Orbit tuning guidance is available via: /tune PLANE orbit
+Supported controllers: level_hold, orbit, heading_hold
+Orbit tuning guidance: /tune PLANE orbit
+Heading-hold tuning:   /tune PLANE heading_hold
 ```
 
 Stop here.
@@ -768,3 +777,104 @@ Use **Edit** to insert `orbit: { … }` before the final `)` of the `PlaneTuning
         ),
     },
 ```
+
+---
+
+---
+
+# Heading-Hold tuning phases
+
+> These phases run when `CONTROLLER` is `heading_hold`. They replace Phases 1–6 above entirely.
+> The heading-hold controller wraps `LevelHoldController` (inner, 7 gains) plus a 2-gain outer
+> heading PID (`heading_kp`, `heading_kd`). Tune the inner loop first with `/tune PLANE level_hold`,
+> then use these phases to tune only the 2 outer gains.
+
+---
+
+## H1 — Read config and derive physics-based gain estimates
+
+Use the Read tool to open `PLANE`. Extract `mass`, `wing_area`, `cl0`, `cl_alpha`.
+
+Compute cruise speed:
+```
+V_c = sqrt(2 * mass * 9.81 / (1.225 * wing_area * (cl0 + cl_alpha * 0.05)))
+```
+
+**Outer-loop candidates:**
+```
+heading_kp = 0.7    [centripetal kinematics; ≈ constant across speeds]
+heading_kd = 0.1    [damps roll oscillation during turn transient]
+```
+
+Show the table. Use `heading_kp = 0.7`, `heading_kd = 0.1` as Round 0.
+
+Also determine the **inner gains** to use. If `PLANE.tuning.ron` already has a
+`level_hold."normal"` profile, copy those 7 values into `HeadingHoldTuning.inner`.
+Otherwise use `LevelHoldTuning::default()` (see `src/controllers/tuning.rs`).
+
+---
+
+## H2 — Scenario matrix
+
+Use 5 heading-offset scenarios, all at 1000 m altitude, 80 m/s:
+
+| # | Initial heading | Target heading | Offset | Rationale |
+|---|---|---|---|---|
+| A | 0° | 0° | 0° | Disturbance hold |
+| B | 0° | +10° | 10° small step | Small correction |
+| C | 0° | +30° | 30° medium step | Typical maneuver |
+| D | 0° | +60° | 60° large step | Max bank excursion |
+| E | 0° | −30° | 30° opposite | Symmetry check |
+
+For each scenario, use `observe-state` or manual simulation. Run 20 s. Measure:
+- **Peak heading error** (deg) — max absolute deviation from target
+- **Settle time** (s) — time to reach and stay within ±5°
+- **Overshoot** (deg) — exceedance past target before settling
+
+Pass criteria: peak error < 10°, settle time < 15 s, no divergence.
+
+---
+
+## H3 — Iterative refinement (up to 3 rounds)
+
+Diagnose by symptom:
+
+| Symptom | Diagnosis | Adjustment |
+|---|---|---|
+| Slow convergence, sluggish bank | kp too low | ↑ heading_kp by 20% |
+| Overshoot > 10° then oscillates | kp too high or kd too low | ↓ heading_kp 15%, ↑ heading_kd 20% |
+| Oscillating roll during turn | kd too low | ↑ heading_kd 20% |
+| Heading oscillates around target | kp too high | ↓ heading_kp 15% |
+| Roll axis unstable (aileron saturates) | outer loop too fast for inner loop | ↓ heading_kp 25% |
+
+Re-run only the failing scenarios after each change. Stop when all pass or 3 rounds reached.
+
+---
+
+## H4 — Write-back
+
+Use the same write-back logic as Orbit Phase O6 (a/b/c/d), but for `HeadingHoldTuning`:
+
+```ron
+    heading_hold: {
+        "PROFILE": HeadingHoldTuning(
+            heading_kp: F,
+            heading_kd: F,
+            inner: LevelHoldTuning(
+                alt_kp:           F,
+                alt_ki:           F,
+                alt_kd:           F,
+                pitch_kp:         F,
+                pitch_kd:         F,
+                spd_kp:           F,
+                spd_ki:           F,
+                throttle_ff_gain: 0.7,
+            ),
+        ),
+    },
+```
+
+If the `heading_hold` map already exists, insert a new profile or replace the existing one.
+If it does not exist, add `heading_hold: { … },` before the closing `)` of `PlaneTuning(`.
+
+Add a comment above the heading_hold block with the date and brief result summary.

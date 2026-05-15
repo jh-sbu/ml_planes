@@ -424,6 +424,7 @@ fn cycle_tune_profile(
         ControllerKind::Orbit | ControllerKind::RlOrbit => {
             pt.orbit.keys().map(|s| s.as_str()).collect()
         }
+        ControllerKind::HeadingHold => pt.heading_hold.keys().map(|s| s.as_str()).collect(),
         _ => return,
     };
     names.sort();
@@ -941,6 +942,9 @@ fn apply_controller_switch(
                 | ControllerKind::RlOrbitResidual
                 | ControllerKind::RlLstmOrbit => pt
                     .get_orbit(profile_name)
+                    .map(|t| t as &dyn ControllerTuning),
+                ControllerKind::HeadingHold => pt
+                    .get_heading_hold(profile_name)
                     .map(|t| t as &dyn ControllerTuning),
                 _ => pt
                     .get_level_hold(profile_name)

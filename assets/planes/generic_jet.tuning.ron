@@ -34,4 +34,20 @@ PlaneTuning(
             ),
         ),
     },
+    heading_hold: {
+        "normal": HeadingHoldTuning(
+            heading_kp: 0.7,
+            heading_kd: 0.1,
+            inner: LevelHoldTuning(
+                alt_kp:           0.01,
+                alt_ki:           0.12,
+                alt_kd:           0.04,
+                pitch_kp:         1.000,
+                pitch_kd:         0.500,
+                spd_kp:           0.010,
+                spd_ki:           0.06,
+                throttle_ff_gain: 0.7,
+            ),
+        ),
+    },
 )

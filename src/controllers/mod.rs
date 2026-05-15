@@ -1,5 +1,6 @@
 pub mod ascent;
 pub mod component;
+pub mod heading_hold;
 pub mod kind;
 pub mod level_hold;
 pub mod manual;
@@ -20,6 +21,7 @@ pub mod wingman;
 
 pub use ascent::AscentController;
 pub use component::ActiveController;
+pub use heading_hold::HeadingHoldController;
 pub use kind::ControllerKind;
 pub use level_hold::LevelHoldController;
 pub use manual::ManualController;
@@ -39,7 +41,7 @@ pub use rl_orbit_residual::{RlOrbitResidualConfig, RlOrbitResidualController, RE
 pub use selected_model::{ModelLibrary, SelectedModel};
 pub use traits::FlightController;
 pub use tuning::{
-    ControllerTuning, LevelHoldTuning, OrbitTuning, PlaneTuning, SelectedTuningProfile,
-    TuningApplied,
+    ControllerTuning, HeadingHoldTuning, LevelHoldTuning, OrbitTuning, PlaneTuning,
+    SelectedTuningProfile, TuningApplied,
 };
 pub use wingman::{feed_leader_state, FormationOffset, LeaderRef, LeaderState, WingmanController};

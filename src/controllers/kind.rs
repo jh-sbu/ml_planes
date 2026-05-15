@@ -1,5 +1,6 @@
 use bevy::prelude::Component;
 
+use crate::controllers::heading_hold::HeadingHoldController;
 use crate::controllers::orbit::OrbitController;
 use crate::controllers::tuning::ControllerTuning;
 use crate::controllers::{
@@ -42,17 +43,26 @@ pub enum ControllerKind {
     /// constructed explicitly via `RlLstmOrbitController::load()`; `build()`
     /// falls back to `Orbit` when no model is available.
     RlLstmOrbit,
+    /// Holds a configurable heading (yaw direction) while maintaining altitude
+    /// and airspeed via an inner level-hold cascade.
+    HeadingHold,
 }
 
 impl ControllerKind {
     #[cfg(not(feature = "training"))]
-    pub const ALL: &'static [ControllerKind] =
-        &[Self::Manual, Self::LevelHold, Self::Ascent, Self::Orbit];
+    pub const ALL: &'static [ControllerKind] = &[
+        Self::Manual,
+        Self::LevelHold,
+        Self::HeadingHold,
+        Self::Ascent,
+        Self::Orbit,
+    ];
 
     #[cfg(feature = "training")]
     pub const ALL: &'static [ControllerKind] = &[
         Self::Manual,
         Self::LevelHold,
+        Self::HeadingHold,
         Self::Ascent,
         Self::RlLevelHold,
         Self::Orbit,
@@ -65,6 +75,7 @@ impl ControllerKind {
         match self {
             ControllerKind::Manual => "Manual",
             ControllerKind::LevelHold => "Level Hold",
+            ControllerKind::HeadingHold => "Heading Hold",
             ControllerKind::Wingman => "Wingman",
             ControllerKind::Ascent => "Ascent",
             ControllerKind::RlLevelHold => "RL Level Hold",
@@ -85,6 +96,11 @@ impl ControllerKind {
             ControllerKind::RlLstmOrbit => Some("lstm_orbit"),
             _ => None,
         }
+    }
+
+    /// Whether this kind uses the `heading_hold` tuning pool.
+    pub fn is_heading_hold(self) -> bool {
+        matches!(self, ControllerKind::HeadingHold)
     }
 
     /// Return the next kind in the cycle (interactive UI; Wingman is excluded).
@@ -121,6 +137,10 @@ impl ControllerKind {
             ControllerKind::Ascent => {
                 Box::new(AscentController::new(state, state.altitude + 1000.0))
             }
+            ControllerKind::HeadingHold => match tuning {
+                Some(t) => t.build(state, prev_inputs),
+                None => Box::new(HeadingHoldController::from_state(state, prev_inputs)),
+            },
             ControllerKind::Orbit
             | ControllerKind::RlOrbit
             | ControllerKind::RlOrbitResidual

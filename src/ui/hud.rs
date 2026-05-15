@@ -4,8 +4,8 @@ use std::f32::consts::PI;
 
 use crate::camera::CameraMode;
 use crate::controllers::{
-    ActiveController, AscentController, ControllerKind, LeaderRef, LevelHoldController,
-    ModelLibrary, OrbitController, OrbitDirection, PlaneTuning, SelectedModel,
+    ActiveController, AscentController, ControllerKind, HeadingHoldController, LeaderRef,
+    LevelHoldController, ModelLibrary, OrbitController, OrbitDirection, PlaneTuning, SelectedModel,
     SelectedTuningProfile,
 };
 use crate::plane::{ControlInputs, FlightState, PlaneIndex, PlaneTuningHandle};
@@ -208,6 +208,77 @@ pub fn draw_flight_hud(
                     if let Some(pt) = tuning_assets.get(&handle.0) {
                         let mut profiles: Vec<&str> =
                             pt.level_hold.keys().map(|s| s.as_str()).collect();
+                        profiles.sort();
+                        let current_profile = profile.0.clone();
+                        let mut selected_profile = current_profile.clone();
+                        egui::ComboBox::from_label("Tune Profile")
+                            .selected_text(&selected_profile)
+                            .show_ui(ui, |ui| {
+                                for &p in &profiles {
+                                    ui.selectable_value(&mut selected_profile, p.to_string(), p);
+                                }
+                            });
+                        if selected_profile != current_profile {
+                            profile.0 = selected_profile;
+                        }
+                        ui.label("(T / Shift+T to cycle)");
+                    }
+                }
+                if ui.button("Load tuning…").clicked() {
+                    file_load::spawn_tuning_load(current_entity, false, &mut pending);
+                }
+            }
+
+            if *kind == ControllerKind::HeadingHold {
+                if let Some(hh) = controller
+                    .0
+                    .as_any_mut()
+                    .downcast_mut::<HeadingHoldController>()
+                {
+                    // Display current heading in degrees for reference.
+                    let speed_xz = (state.velocity.x.powi(2) + state.velocity.z.powi(2)).sqrt();
+                    let cur_heading_deg = if speed_xz > 1.0 {
+                        state.velocity.z.atan2(state.velocity.x).to_degrees()
+                    } else {
+                        0.0
+                    };
+                    ui.label(format!("Heading: {:.1}°", cur_heading_deg));
+
+                    // Target heading: edit in degrees, store in radians.
+                    let mut tgt_deg = hh.target_heading.to_degrees();
+                    ui.horizontal(|ui| {
+                        ui.label("Target Hdg:");
+                        ui.add(egui::DragValue::new(&mut tgt_deg).speed(1.0).suffix("°"));
+                    });
+                    hh.target_heading = tgt_deg.to_radians();
+
+                    ui.horizontal(|ui| {
+                        ui.label("Target Alt:");
+                        ui.add(
+                            egui::DragValue::new(&mut hh.inner.target_altitude)
+                                .speed(10.0)
+                                .range(100.0..=15000.0)
+                                .suffix(" m"),
+                        );
+                    });
+                    let tgt_kts = hh.inner.target_airspeed * 1.944;
+                    ui.horizontal(|ui| {
+                        ui.label("Target Spd:");
+                        ui.add(
+                            egui::DragValue::new(&mut hh.inner.target_airspeed)
+                                .speed(1.0)
+                                .range(30.0..=200.0)
+                                .suffix(" m/s"),
+                        );
+                        ui.label(format!("({:.0} kts)", tgt_kts));
+                    });
+                }
+                if let (Some(ref mut profile), Some(handle)) =
+                    (profile.as_mut().map(|p| p.reborrow()), tuning_handle)
+                {
+                    if let Some(pt) = tuning_assets.get(&handle.0) {
+                        let mut profiles: Vec<&str> =
+                            pt.heading_hold.keys().map(|s| s.as_str()).collect();
                         profiles.sort();
                         let current_profile = profile.0.clone();
                         let mut selected_profile = current_profile.clone();

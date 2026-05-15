@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::plane::{ControlInputs, FlightState};
 
+use super::heading_hold::HeadingHoldController;
 use super::level_hold::LevelHoldController;
 use super::orbit::OrbitController;
 use super::FlightController;
@@ -117,6 +118,37 @@ impl ControllerTuning for OrbitTuning {
 }
 
 // ---------------------------------------------------------------------------
+// HeadingHoldTuning
+// ---------------------------------------------------------------------------
+
+/// Tunable outer-loop gains for [`HeadingHoldController`].
+#[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
+pub struct HeadingHoldTuning {
+    /// Heading error [rad] → bank command [rad] proportional gain.
+    pub heading_kp: f32,
+    /// Heading error [rad] → bank command [rad] derivative gain.
+    pub heading_kd: f32,
+    /// Inner level-hold gains (altitude, airspeed, roll, beta loops).
+    pub inner: LevelHoldTuning,
+}
+
+impl Default for HeadingHoldTuning {
+    fn default() -> Self {
+        Self {
+            heading_kp: 0.7,
+            heading_kd: 0.1,
+            inner: LevelHoldTuning::default(),
+        }
+    }
+}
+
+impl ControllerTuning for HeadingHoldTuning {
+    fn build(&self, state: &FlightState, prev_inputs: &ControlInputs) -> Box<dyn FlightController> {
+        Box::new(HeadingHoldController::with_tuning(state, self, prev_inputs))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // PlaneTuning asset
 // ---------------------------------------------------------------------------
 
@@ -124,18 +156,6 @@ impl ControllerTuning for OrbitTuning {
 ///
 /// Each controller kind has its own map of named profiles. Controllers not
 /// listed here fall back to their [`Default`] tuning.
-///
-/// Example file:
-/// ```ron
-/// PlaneTuning(
-///   level_hold: {
-///     "normal": LevelHoldTuning(alt_kp: 0.01, alt_ki: 0.12, ...),
-///   },
-///   orbit: {
-///     "normal": OrbitTuning(radial_kp: 0.002, ...),
-///   },
-/// )
-/// ```
 #[derive(bevy::asset::Asset, Reflect, Serialize, Deserialize, Debug, Clone, Default)]
 pub struct PlaneTuning {
     /// Named tuning profiles for [`LevelHoldController`].
@@ -144,6 +164,9 @@ pub struct PlaneTuning {
     /// Named tuning profiles for [`OrbitController`].
     #[serde(default)]
     pub orbit: HashMap<String, OrbitTuning>,
+    /// Named tuning profiles for [`HeadingHoldController`].
+    #[serde(default)]
+    pub heading_hold: HashMap<String, HeadingHoldTuning>,
 }
 
 impl PlaneTuning {
@@ -157,10 +180,16 @@ impl PlaneTuning {
         self.orbit.get(profile)
     }
 
+    /// Return the named heading-hold profile, or `None` if not present.
+    pub fn get_heading_hold(&self, profile: &str) -> Option<&HeadingHoldTuning> {
+        self.heading_hold.get(profile)
+    }
+
     /// Merge all profiles from `other` into `self`, overwriting on name collision.
     pub fn merge(&mut self, other: PlaneTuning) {
         self.level_hold.extend(other.level_hold);
         self.orbit.extend(other.orbit);
+        self.heading_hold.extend(other.heading_hold);
     }
 }
 
