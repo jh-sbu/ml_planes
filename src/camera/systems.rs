@@ -3,6 +3,7 @@ use bevy::prelude::*;
 use std::f32::consts::{FRAC_PI_2, PI};
 
 use super::mode::CameraMode;
+use crate::environment::PhysicsInterp;
 use crate::plane::{FlightState, PlaneIndex};
 
 #[derive(Component)]
@@ -161,22 +162,32 @@ pub fn handle_follow_camera_input(
 pub fn update_follow_camera(
     mode: Res<CameraMode>,
     time: Res<Time>,
-    target_query: Query<&Transform, Without<Camera3d>>,
+    time_fixed: Res<Time<Fixed>>,
+    target_query: Query<(&Transform, Option<&PhysicsInterp>), Without<Camera3d>>,
     mut camera_query: Query<(&mut Transform, &mut FollowCamera), With<Camera3d>>,
 ) {
     let CameraMode::Follow(target_entity) = *mode else {
         return;
     };
 
-    let Ok(target_transform) = target_query.get(target_entity) else {
+    let Ok((target_transform, target_interp)) = target_query.get(target_entity) else {
         return;
     };
     let Ok((mut cam_transform, mut follow)) = camera_query.single_mut() else {
         return;
     };
 
-    let target_pos = target_transform.translation;
-    let target_rot = target_transform.rotation;
+    // Use the same interpolated pose as the plane gizmos so camera and visual
+    // move from the same source — eliminates the fixed-step mismatch bounce.
+    let alpha = time_fixed.overstep_fraction();
+    let (target_pos, target_rot) = if let Some(interp) = target_interp {
+        (
+            interp.prev_pos.lerp(interp.curr_pos, alpha),
+            interp.prev_rot.slerp(interp.curr_rot, alpha),
+        )
+    } else {
+        (target_transform.translation, target_transform.rotation)
+    };
 
     // Snap-initialize on the first frame (smoothed_pos starts at Vec3::ZERO which
     // is far from any flying plane) so the camera doesn't sweep across the world.
@@ -185,11 +196,12 @@ pub fn update_follow_camera(
         follow.smoothed_rot = target_rot;
     }
 
-    // Smooth the target pose at tau=12 rad/s — fast enough to track turns,
-    // slow enough to filter the 64 Hz fixed-step snaps from Rapier.
-    let alpha = 1.0 - (-12.0_f32 * time.delta_secs()).exp();
-    follow.smoothed_pos = follow.smoothed_pos.lerp(target_pos, alpha);
-    follow.smoothed_rot = follow.smoothed_rot.slerp(target_rot, alpha);
+    // Smooth the target pose at tau=12 rad/s for cinematic camera lag.
+    // The input is now the smooth interpolated pose, so this no longer produces
+    // aliased bounce — it just adds pleasant camera inertia.
+    let alpha_smooth = 1.0 - (-12.0_f32 * time.delta_secs()).exp();
+    follow.smoothed_pos = follow.smoothed_pos.lerp(target_pos, alpha_smooth);
+    follow.smoothed_rot = follow.smoothed_rot.slerp(target_rot, alpha_smooth);
 
     let horiz = follow.distance * follow.pitch.cos();
     let vert = follow.distance * follow.pitch.sin();
