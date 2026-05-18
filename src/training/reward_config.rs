@@ -18,6 +18,25 @@ pub struct LevelHoldRewardConfig {
     pub max_episode_steps: u32,
 }
 
+impl LevelHoldRewardConfig {
+    pub fn log_fields(&self) -> Vec<(&'static str, String)> {
+        vec![
+            ("alt_error_scale", self.alt_error_scale.to_string()),
+            ("alt_error_weight", self.alt_error_weight.to_string()),
+            ("speed_error_scale", self.speed_error_scale.to_string()),
+            ("speed_error_weight", self.speed_error_weight.to_string()),
+            ("roll_scale", self.roll_scale.to_string()),
+            ("roll_weight", self.roll_weight.to_string()),
+            ("beta_scale", self.beta_scale.to_string()),
+            ("beta_weight", self.beta_weight.to_string()),
+            ("alive_bonus", self.alive_bonus.to_string()),
+            ("min_altitude", self.min_altitude.to_string()),
+            ("max_altitude_error", self.max_altitude_error.to_string()),
+            ("max_episode_steps", self.max_episode_steps.to_string()),
+        ]
+    }
+}
+
 impl Default for LevelHoldRewardConfig {
     fn default() -> Self {
         Self {
@@ -68,6 +87,74 @@ pub struct OrbitRewardConfig {
     pub max_episode_steps: u32,
 }
 
+impl OrbitRewardConfig {
+    pub fn log_fields(&self) -> Vec<(&'static str, String)> {
+        vec![
+            ("radial_reward_scale", self.radial_reward_scale.to_string()),
+            (
+                "radial_reward_weight",
+                self.radial_reward_weight.to_string(),
+            ),
+            (
+                "heading_reward_scale",
+                self.heading_reward_scale.to_string(),
+            ),
+            (
+                "heading_reward_weight",
+                self.heading_reward_weight.to_string(),
+            ),
+            (
+                "altitude_reward_scale",
+                self.altitude_reward_scale.to_string(),
+            ),
+            (
+                "altitude_reward_weight",
+                self.altitude_reward_weight.to_string(),
+            ),
+            ("speed_reward_scale", self.speed_reward_scale.to_string()),
+            ("speed_reward_weight", self.speed_reward_weight.to_string()),
+            ("roll_reward_scale", self.roll_reward_scale.to_string()),
+            ("roll_reward_weight", self.roll_reward_weight.to_string()),
+            ("beta_reward_scale", self.beta_reward_scale.to_string()),
+            ("beta_reward_weight", self.beta_reward_weight.to_string()),
+            (
+                "pitch_rate_reward_scale",
+                self.pitch_rate_reward_scale.to_string(),
+            ),
+            (
+                "pitch_rate_reward_weight",
+                self.pitch_rate_reward_weight.to_string(),
+            ),
+            (
+                "roll_rate_reward_scale",
+                self.roll_rate_reward_scale.to_string(),
+            ),
+            (
+                "roll_rate_reward_weight",
+                self.roll_rate_reward_weight.to_string(),
+            ),
+            (
+                "yaw_rate_reward_scale",
+                self.yaw_rate_reward_scale.to_string(),
+            ),
+            (
+                "yaw_rate_reward_weight",
+                self.yaw_rate_reward_weight.to_string(),
+            ),
+            ("alive_reward", self.alive_reward.to_string()),
+            (
+                "terminal_failure_penalty",
+                self.terminal_failure_penalty.to_string(),
+            ),
+            ("min_altitude", self.min_altitude.to_string()),
+            ("max_altitude_error", self.max_altitude_error.to_string()),
+            ("max_radial_error", self.max_radial_error.to_string()),
+            ("min_airspeed", self.min_airspeed.to_string()),
+            ("max_episode_steps", self.max_episode_steps.to_string()),
+        ]
+    }
+}
+
 impl Default for OrbitRewardConfig {
     fn default() -> Self {
         Self {
@@ -112,6 +199,25 @@ pub fn load_reward_config<T: serde::de::DeserializeOwned>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn level_hold_log_fields_covers_all_fields() {
+        let cfg = LevelHoldRewardConfig::default();
+        let fields = cfg.log_fields();
+        assert_eq!(fields.len(), 12);
+        assert!(fields.iter().any(|(k, _)| *k == "alt_error_scale"));
+        assert!(fields.iter().any(|(k, _)| *k == "max_episode_steps"));
+    }
+
+    #[test]
+    fn orbit_log_fields_covers_all_fields() {
+        let cfg = OrbitRewardConfig::default();
+        let fields = cfg.log_fields();
+        assert_eq!(fields.len(), 25);
+        assert!(fields.iter().any(|(k, _)| *k == "radial_reward_scale"));
+        assert!(fields.iter().any(|(k, _)| *k == "max_episode_steps"));
+        assert!(fields.iter().any(|(k, _)| *k == "terminal_failure_penalty"));
+    }
 
     #[test]
     fn level_hold_ron_parses() {

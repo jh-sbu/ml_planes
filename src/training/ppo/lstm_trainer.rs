@@ -646,10 +646,10 @@ mod tests {
         // We'll just check that after a rollout, some steps have been stored.
         let (buf, _, _) = trainer.collect_rollout();
         assert!(buf.len() > 0);
-        // All stored hidden states should be finite.
-        for step in &buf.steps {
-            for &v in &step.policy_h {
-                assert!(v.is_finite(), "policy_h NaN");
+        // Hidden states are stored in seq_start_hidden as (ph, pc, vh, vc) tuples.
+        for (_, (ph, pc, vh, vc)) in &buf.seq_start_hidden {
+            for &v in ph.iter().chain(pc).chain(vh).chain(vc) {
+                assert!(v.is_finite(), "hidden state NaN");
             }
         }
     }

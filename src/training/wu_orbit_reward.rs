@@ -76,6 +76,35 @@ pub struct WuOrbitRewardConfig {
     pub stage3_threshold: f32,
 }
 
+impl WuOrbitRewardConfig {
+    pub fn log_fields(&self) -> Vec<(&'static str, String)> {
+        vec![
+            ("b_radial", self.b_radial.to_string()),
+            ("b_heading_coarse", self.b_heading_coarse.to_string()),
+            ("b_heading_fine", self.b_heading_fine.to_string()),
+            ("b_altitude", self.b_altitude.to_string()),
+            ("b_speed", self.b_speed.to_string()),
+            ("b_roll_vs_ff", self.b_roll_vs_ff.to_string()),
+            ("pitch_target_denom", self.pitch_target_denom.to_string()),
+            (
+                "roll_rate_target_denom",
+                self.roll_rate_target_denom.to_string(),
+            ),
+            ("min_altitude", self.min_altitude.to_string()),
+            ("max_altitude_error", self.max_altitude_error.to_string()),
+            ("max_radial_error", self.max_radial_error.to_string()),
+            ("min_airspeed", self.min_airspeed.to_string()),
+            ("max_episode_steps", self.max_episode_steps.to_string()),
+            (
+                "terminal_failure_penalty",
+                self.terminal_failure_penalty.to_string(),
+            ),
+            ("stage2_threshold", self.stage2_threshold.to_string()),
+            ("stage3_threshold", self.stage3_threshold.to_string()),
+        ]
+    }
+}
+
 impl Default for WuOrbitRewardConfig {
     fn default() -> Self {
         Self {

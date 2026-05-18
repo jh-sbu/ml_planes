@@ -14,6 +14,8 @@
 //!                             ppo_orbit_1.mpk, … (never overwrites an existing file).
 //!   --steps <n>               Total environment steps (default: 2_000_000).
 //!   --backend <wgpu|ndarray>  Compute backend (default: wgpu).
+//!   --log-file <path>         Write a CSV training log (reward config header + per-iteration
+//!                             metrics) to <path>. Compatible with pandas / gnuplot / Excel.
 
 #[cfg(not(feature = "training"))]
 fn main() {
@@ -70,13 +72,20 @@ fn main() {
         .find(|w| w[0] == "--init-from")
         .map(|w| w[1].clone());
 
+    let log_file: Option<String> = args
+        .windows(2)
+        .find(|w| w[0] == "--log-file")
+        .map(|w| w[1].clone());
+
     let save_path = save_path_for(task, output_stem);
 
     match backend {
         Backend::NdArray => {
-            run::<Autodiff<NdArray>>(plain, save_path, task, total_timesteps, init_from)
+            run::<Autodiff<NdArray>>(plain, save_path, task, total_timesteps, init_from, log_file)
         }
-        Backend::Wgpu => run::<Autodiff<Wgpu>>(plain, save_path, task, total_timesteps, init_from),
+        Backend::Wgpu => {
+            run::<Autodiff<Wgpu>>(plain, save_path, task, total_timesteps, init_from, log_file)
+        }
     }
 }
 
@@ -175,6 +184,7 @@ fn run<B>(
     task: Task,
     total_timesteps: usize,
     init_from: Option<String>,
+    log_file: Option<String>,
 ) where
     B: burn::tensor::backend::AutodiffBackend,
     B::Device: Default,
@@ -182,12 +192,34 @@ fn run<B>(
     use bevy::math::Vec3;
 
     use ml_planes::plane::config::PlaneConfig;
+    use ml_planes::training::ppo::CsvLog;
     use ml_planes::training::reward_config::{
         load_reward_config, LevelHoldRewardConfig, OrbitRewardConfig,
     };
     use ml_planes::training::{
         LevelHoldEnv, OrbitEnv, ResidualOrbitEnv, WuOrbitEnv, WuOrbitRewardConfig,
     };
+
+    fn open_log(
+        path: &Option<String>,
+        task_name: &str,
+        config_fields: Vec<(&'static str, String)>,
+    ) -> Option<CsvLog> {
+        let path = path.as_deref()?;
+        match CsvLog::new(path) {
+            Ok(mut log) => {
+                let mut comments = vec![("task", task_name.to_string())];
+                comments.extend(config_fields);
+                log.write_comments(&comments).ok();
+                log.write_header().ok();
+                Some(log)
+            }
+            Err(e) => {
+                eprintln!("Warning: could not open log file {path}: {e}");
+                None
+            }
+        }
+    }
 
     // Generic jet values matching assets/planes/generic_jet.plane.ron
     let cfg = PlaneConfig {
@@ -223,57 +255,89 @@ fn run<B>(
         Task::LevelHold => {
             let path = task.reward_config_path();
             let reward_cfg: LevelHoldRewardConfig = match load_reward_config(path) {
-                Ok(cfg) => { println!("Loaded reward config from {path}"); cfg }
-                Err(e) => { eprintln!("Warning: could not load {path}: {e}. Using defaults."); LevelHoldRewardConfig::default() }
+                Ok(cfg) => {
+                    println!("Loaded reward config from {path}");
+                    cfg
+                }
+                Err(e) => {
+                    eprintln!("Warning: could not load {path}: {e}. Using defaults.");
+                    LevelHoldRewardConfig::default()
+                }
             };
+            let log = open_log(&log_file, "level_hold", reward_cfg.log_fields());
             run_training_loop::<B, _>(
                 plain,
                 save_path,
                 total_timesteps,
                 init_from,
                 LevelHoldEnv::with_reward_config(1000.0, 100.0, cfg, reward_cfg),
+                log,
             )
         }
         Task::Orbit => {
             let path = task.reward_config_path();
             let reward_cfg: OrbitRewardConfig = match load_reward_config(path) {
-                Ok(cfg) => { println!("Loaded reward config from {path}"); cfg }
-                Err(e) => { eprintln!("Warning: could not load {path}: {e}. Using defaults."); OrbitRewardConfig::default() }
+                Ok(cfg) => {
+                    println!("Loaded reward config from {path}");
+                    cfg
+                }
+                Err(e) => {
+                    eprintln!("Warning: could not load {path}: {e}. Using defaults.");
+                    OrbitRewardConfig::default()
+                }
             };
+            let log = open_log(&log_file, "orbit", reward_cfg.log_fields());
             run_training_loop::<B, _>(
                 plain,
                 save_path,
                 total_timesteps,
                 init_from,
                 OrbitEnv::with_reward_config(1000.0, 100.0, 1000.0, cfg, reward_cfg),
+                log,
             )
         }
         Task::ResidualOrbit => {
             let path = task.reward_config_path();
             let reward_cfg: OrbitRewardConfig = match load_reward_config(path) {
-                Ok(cfg) => { println!("Loaded reward config from {path}"); cfg }
-                Err(e) => { eprintln!("Warning: could not load {path}: {e}. Using defaults."); OrbitRewardConfig::default() }
+                Ok(cfg) => {
+                    println!("Loaded reward config from {path}");
+                    cfg
+                }
+                Err(e) => {
+                    eprintln!("Warning: could not load {path}: {e}. Using defaults.");
+                    OrbitRewardConfig::default()
+                }
             };
+            let log = open_log(&log_file, "residual_orbit", reward_cfg.log_fields());
             run_training_loop::<B, _>(
                 plain,
                 save_path,
                 total_timesteps,
                 init_from,
                 ResidualOrbitEnv::with_reward_config(1000.0, 100.0, 1000.0, cfg, reward_cfg),
+                log,
             )
         }
         Task::LstmOrbit => {
             let path = task.reward_config_path();
             let reward_cfg: WuOrbitRewardConfig = match load_reward_config(path) {
-                Ok(cfg) => { println!("Loaded Wu orbit reward config from {path}"); cfg }
-                Err(e) => { eprintln!("Warning: could not load {path}: {e}. Using defaults."); WuOrbitRewardConfig::default() }
+                Ok(cfg) => {
+                    println!("Loaded Wu orbit reward config from {path}");
+                    cfg
+                }
+                Err(e) => {
+                    eprintln!("Warning: could not load {path}: {e}. Using defaults.");
+                    WuOrbitRewardConfig::default()
+                }
             };
+            let log = open_log(&log_file, "lstm_orbit", reward_cfg.log_fields());
             run_lstm_training_loop::<B>(
                 plain,
                 save_path,
                 total_timesteps,
                 init_from,
                 WuOrbitEnv::with_reward_config(1000.0, 100.0, 3000.0, cfg, reward_cfg),
+                log,
             )
         }
     }
@@ -286,6 +350,7 @@ fn run_training_loop<B, E>(
     total_timesteps: usize,
     init_from: Option<String>,
     env: E,
+    mut log: Option<ml_planes::training::ppo::CsvLog>,
 ) where
     B: burn::tensor::backend::AutodiffBackend,
     B::Device: Default,
@@ -406,7 +471,24 @@ fn run_training_loop<B, E>(
         let metrics = trainer.update(&buffer);
         iteration += 1;
 
-        let steps_per_sec = steps as f64 / start.elapsed().as_secs_f64().max(1e-6);
+        let elapsed_s = start.elapsed().as_secs_f64();
+        let steps_per_sec = steps as f64 / elapsed_s.max(1e-6);
+
+        if let Some(ref mut log) = log {
+            log.write_row(
+                iteration,
+                steps,
+                total_timesteps,
+                elapsed_s,
+                steps_per_sec,
+                mean_return,
+                mean_ep_len,
+                metrics.policy_loss,
+                metrics.value_loss,
+                metrics.entropy,
+            )
+            .unwrap_or_else(|e| eprintln!("log write error: {e}"));
+        }
 
         renderer.update_train(numeric_state(
             id_mean_return.clone(),
@@ -463,6 +545,10 @@ fn run_training_loop<B, E>(
         fmt_duration(elapsed_secs),
     );
 
+    if let Some(ref mut log) = log {
+        log.flush().ok();
+    }
+
     let save_dir = std::path::Path::new(&save_path)
         .parent()
         .unwrap_or(std::path::Path::new("models"));
@@ -477,6 +563,7 @@ fn run_lstm_training_loop<B>(
     total_timesteps: usize,
     init_from: Option<String>,
     env: ml_planes::training::WuOrbitEnv,
+    mut log: Option<ml_planes::training::ppo::CsvLog>,
 ) where
     B: burn::tensor::backend::AutodiffBackend,
     B::Device: Default,
@@ -594,7 +681,24 @@ fn run_lstm_training_loop<B>(
         trainer.advance_curriculum_if_ready(mean_return);
         iteration += 1;
 
-        let steps_per_sec = steps as f64 / start.elapsed().as_secs_f64().max(1e-6);
+        let elapsed_s = start.elapsed().as_secs_f64();
+        let steps_per_sec = steps as f64 / elapsed_s.max(1e-6);
+
+        if let Some(ref mut log) = log {
+            log.write_row(
+                iteration,
+                steps,
+                total_timesteps,
+                elapsed_s,
+                steps_per_sec,
+                mean_return,
+                mean_ep_len,
+                metrics.policy_loss,
+                metrics.value_loss,
+                metrics.entropy,
+            )
+            .unwrap_or_else(|e| eprintln!("log write error: {e}"));
+        }
 
         renderer.update_train(numeric_state(
             id_mean_return.clone(),
@@ -650,6 +754,10 @@ fn run_lstm_training_loop<B>(
         "Training complete ({steps} steps, {iteration} iterations, elapsed {}).",
         fmt_duration(elapsed_secs),
     );
+
+    if let Some(ref mut log) = log {
+        log.flush().ok();
+    }
 
     let save_dir = std::path::Path::new(&save_path)
         .parent()
