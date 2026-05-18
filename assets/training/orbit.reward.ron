@@ -19,31 +19,31 @@
     speed_reward_weight:      0.4,
 
     // Roll angle term [rad]
-    roll_reward_scale:        0.8,
-    roll_reward_weight:       0.1,
+    roll_reward_scale:        0.008,
+    roll_reward_weight:       0.001,
 
     // Sideslip angle term [rad]
-    beta_reward_scale:        0.5,
-    beta_reward_weight:       0.1,
+    beta_reward_scale:        0.005,
+    beta_reward_weight:       0.001,
 
     // Angular rate penalties [rad/s] — damp phugoid oscillations
-    pitch_rate_reward_scale:  1.0,
+    pitch_rate_reward_scale:  0.5,
     pitch_rate_reward_weight: 0.3,
-    roll_rate_reward_scale:   1.0,
+    roll_rate_reward_scale:   0.5,
     roll_rate_reward_weight:  0.15,
-    yaw_rate_reward_scale:    1.0,
+    yaw_rate_reward_scale:    0.5,
     yaw_rate_reward_weight:   0.05,
 
     // Constant per-step bonus while alive
-    alive_reward:             0.01,
+    alive_reward:             0.5,
 
     // One-time penalty added on failure termination (should be negative)
-    terminal_failure_penalty: -25.0,
+    terminal_failure_penalty: -2500.0,
 
     // Termination conditions
     min_altitude:             10.0,   // [m] crash if below
     max_altitude_error:       700.0,  // [m] diverged if |alt - target| exceeds this
     max_radial_error:         1000.0, // [m] fail if |current_radius - target_radius| exceeds this
     min_airspeed:             20.0,   // [m/s] stall if below
-    max_episode_steps:        36000,
+    max_episode_steps:        3600,
 )
