@@ -222,11 +222,10 @@ fn run<B>(
     match task {
         Task::LevelHold => {
             let path = task.reward_config_path();
-            let reward_cfg: LevelHoldRewardConfig = load_reward_config(path).unwrap_or_else(|e| {
-                eprintln!("Warning: could not load {path}: {e}. Using defaults.");
-                LevelHoldRewardConfig::default()
-            });
-            println!("Loaded reward config from {path}");
+            let reward_cfg: LevelHoldRewardConfig = match load_reward_config(path) {
+                Ok(cfg) => { println!("Loaded reward config from {path}"); cfg }
+                Err(e) => { eprintln!("Warning: could not load {path}: {e}. Using defaults."); LevelHoldRewardConfig::default() }
+            };
             run_training_loop::<B, _>(
                 plain,
                 save_path,
@@ -237,11 +236,10 @@ fn run<B>(
         }
         Task::Orbit => {
             let path = task.reward_config_path();
-            let reward_cfg: OrbitRewardConfig = load_reward_config(path).unwrap_or_else(|e| {
-                eprintln!("Warning: could not load {path}: {e}. Using defaults.");
-                OrbitRewardConfig::default()
-            });
-            println!("Loaded reward config from {path}");
+            let reward_cfg: OrbitRewardConfig = match load_reward_config(path) {
+                Ok(cfg) => { println!("Loaded reward config from {path}"); cfg }
+                Err(e) => { eprintln!("Warning: could not load {path}: {e}. Using defaults."); OrbitRewardConfig::default() }
+            };
             run_training_loop::<B, _>(
                 plain,
                 save_path,
@@ -252,11 +250,10 @@ fn run<B>(
         }
         Task::ResidualOrbit => {
             let path = task.reward_config_path();
-            let reward_cfg: OrbitRewardConfig = load_reward_config(path).unwrap_or_else(|e| {
-                eprintln!("Warning: could not load {path}: {e}. Using defaults.");
-                OrbitRewardConfig::default()
-            });
-            println!("Loaded reward config from {path}");
+            let reward_cfg: OrbitRewardConfig = match load_reward_config(path) {
+                Ok(cfg) => { println!("Loaded reward config from {path}"); cfg }
+                Err(e) => { eprintln!("Warning: could not load {path}: {e}. Using defaults."); OrbitRewardConfig::default() }
+            };
             run_training_loop::<B, _>(
                 plain,
                 save_path,
@@ -267,11 +264,10 @@ fn run<B>(
         }
         Task::LstmOrbit => {
             let path = task.reward_config_path();
-            let reward_cfg: WuOrbitRewardConfig = load_reward_config(path).unwrap_or_else(|e| {
-                eprintln!("Warning: could not load {path}: {e}. Using defaults.");
-                WuOrbitRewardConfig::default()
-            });
-            println!("Loaded Wu orbit reward config from {path}");
+            let reward_cfg: WuOrbitRewardConfig = match load_reward_config(path) {
+                Ok(cfg) => { println!("Loaded Wu orbit reward config from {path}"); cfg }
+                Err(e) => { eprintln!("Warning: could not load {path}: {e}. Using defaults."); WuOrbitRewardConfig::default() }
+            };
             run_lstm_training_loop::<B>(
                 plain,
                 save_path,
