@@ -145,7 +145,7 @@ impl ResidualOrbitEnv {
     fn compute_base_reward(&self, terms: &OrbitObservationTerms) -> f32 {
         let c = &self.reward_cfg;
         let radial_err = terms.radial_error.abs();
-        let heading_err = terms.heading_error.abs();
+        let heading_err = terms.guidance_heading_error.abs();
         let alt_err = (self.state.altitude - self.target_altitude).abs();
         let speed_err = (self.state.airspeed - self.target_airspeed).abs();
         let roll = roll_angle(self.state.attitude).abs();
