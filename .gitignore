@@ -3,6 +3,7 @@
 /.agents
 /models
 /.cargo
+/training_logs
 
 # I use a softlink and keep everything in CLAUDE.md
 /AGENTS.md
