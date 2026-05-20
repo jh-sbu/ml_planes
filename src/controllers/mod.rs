@@ -37,7 +37,7 @@ pub use rl_lstm_orbit::{RlLstmOrbitConfig, RlLstmOrbitController};
 #[cfg(feature = "training")]
 pub use rl_orbit::{RlOrbitConfig, RlOrbitController};
 #[cfg(feature = "training")]
-pub use rl_orbit_residual::{RlOrbitResidualConfig, RlOrbitResidualController, RESIDUAL_SCALE};
+pub use rl_orbit_residual::{RlOrbitResidualConfig, RlOrbitResidualController};
 pub use selected_model::{ModelLibrary, SelectedModel};
 pub use traits::FlightController;
 pub use tuning::{

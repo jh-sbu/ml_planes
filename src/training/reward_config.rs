@@ -85,6 +85,7 @@ pub struct OrbitRewardConfig {
     pub max_radial_error: f32,
     pub min_airspeed: f32,
     pub max_episode_steps: u32,
+    pub residual_scale: f32,
 }
 
 impl OrbitRewardConfig {
@@ -151,6 +152,7 @@ impl OrbitRewardConfig {
             ("max_radial_error", self.max_radial_error.to_string()),
             ("min_airspeed", self.min_airspeed.to_string()),
             ("max_episode_steps", self.max_episode_steps.to_string()),
+            ("residual_scale", self.residual_scale.to_string()),
         ]
     }
 }
@@ -183,6 +185,7 @@ impl Default for OrbitRewardConfig {
             max_radial_error: 1000.0,
             min_airspeed: 20.0,
             max_episode_steps: 3_600,
+            residual_scale: 0.3,
         }
     }
 }
@@ -213,7 +216,7 @@ mod tests {
     fn orbit_log_fields_covers_all_fields() {
         let cfg = OrbitRewardConfig::default();
         let fields = cfg.log_fields();
-        assert_eq!(fields.len(), 25);
+        assert_eq!(fields.len(), 26);
         assert!(fields.iter().any(|(k, _)| *k == "radial_reward_scale"));
         assert!(fields.iter().any(|(k, _)| *k == "max_episode_steps"));
         assert!(fields.iter().any(|(k, _)| *k == "terminal_failure_penalty"));
@@ -268,6 +271,7 @@ mod tests {
             max_radial_error: 1000.0,
             min_airspeed: 20.0,
             max_episode_steps: 3600,
+            residual_scale: 0.3,
         )"#;
         let cfg: OrbitRewardConfig = ron::de::from_str(src).expect("parse failed");
         assert_eq!(cfg.terminal_failure_penalty, -25.0);

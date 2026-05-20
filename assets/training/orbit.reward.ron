@@ -46,4 +46,7 @@
     max_radial_error:         1000.0, // [m] fail if |current_radius - target_radius| exceeds this
     min_airspeed:             20.0,   // [m/s] stall if below
     max_episode_steps:        3600,
+
+    // Residual NN authority [fraction of full deflection, 0..1]
+    residual_scale:           0.3,
 )

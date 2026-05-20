@@ -22,8 +22,6 @@ use crate::controllers::FlightController;
 use crate::plane::{ControlInputs, FlightState, PlaneConfig};
 use crate::training::flight_env::{integrate_state, roll_angle, Lcg};
 
-// Residual authority: NN can correct ±30% of full control deflection.
-const RESIDUAL_SCALE: f32 = 0.3;
 use crate::training::reward_config::OrbitRewardConfig;
 use crate::training::{Observation, SpawnSpec, StepInfo, TrainingEnv};
 
@@ -291,11 +289,12 @@ impl TrainingEnv for ResidualOrbitEnv {
     fn step(&mut self, action: &[f32]) -> (Observation, f32, bool, StepInfo) {
         let pid_inputs = self.orbit_controller.update(&self.state, self.dt);
 
+        let scale = self.reward_cfg.residual_scale;
         let mut final_inputs = ControlInputs {
-            elevator: pid_inputs.elevator + action[0] * RESIDUAL_SCALE,
-            throttle: pid_inputs.throttle + action[1] * RESIDUAL_SCALE,
-            aileron: pid_inputs.aileron + action[2] * RESIDUAL_SCALE,
-            rudder: pid_inputs.rudder + action[3] * RESIDUAL_SCALE,
+            elevator: pid_inputs.elevator + action[0] * scale,
+            throttle: pid_inputs.throttle + action[1] * scale,
+            aileron: pid_inputs.aileron + action[2] * scale,
+            rudder: pid_inputs.rudder + action[3] * scale,
         };
         final_inputs.clamp();
 
@@ -465,6 +464,33 @@ mod tests {
 
         for (i, (e, r)) in env_obs.iter().zip(ref_obs.iter()).enumerate() {
             assert!((e - r).abs() < 1e-4, "obs[{i}] mismatch: env={e}, ref={r}");
+        }
+    }
+
+    #[test]
+    fn residual_scale_zero_matches_pid_output() {
+        // With residual_scale=0.0, any action has no effect — same as zero action.
+        let mut reward_cfg = OrbitRewardConfig::default();
+        reward_cfg.residual_scale = 0.0;
+        let mut env =
+            ResidualOrbitEnv::with_reward_config(1000.0, 100.0, 1000.0, jet_cfg(), reward_cfg);
+        env.offset_rng_seed(99);
+        let _ = env.reset();
+        let (obs_zero, _, _, _) = env.step(&[0.0, 0.0, 0.0, 0.0]);
+
+        let mut reward_cfg2 = OrbitRewardConfig::default();
+        reward_cfg2.residual_scale = 0.0;
+        let mut env2 =
+            ResidualOrbitEnv::with_reward_config(1000.0, 100.0, 1000.0, jet_cfg(), reward_cfg2);
+        env2.offset_rng_seed(99);
+        let _ = env2.reset();
+        let (obs_full, _, _, _) = env2.step(&[1.0, 0.5, -0.3, 0.8]);
+
+        for (i, (z, f)) in obs_zero.iter().zip(obs_full.iter()).enumerate() {
+            assert!(
+                (z - f).abs() < 1e-4,
+                "obs[{i}] should match when scale=0: zero={z} full={f}"
+            );
         }
     }
 

@@ -26,10 +26,6 @@ use crate::training::ppo::model::ActorCritic;
 
 type InfB = NdArray;
 
-/// Maximum authority the NN residual can add to any single control channel
-/// (as a fraction of full deflection). Keeps the PID the dominant signal.
-pub const RESIDUAL_SCALE: f32 = 0.3;
-
 #[derive(Clone, Copy, Debug)]
 pub struct RlOrbitResidualConfig {
     pub center_x: f32,
@@ -38,6 +34,9 @@ pub struct RlOrbitResidualConfig {
     pub target_altitude: f32,
     pub target_airspeed: f32,
     pub direction: OrbitDirection,
+    /// Maximum authority the NN residual can add to any single control channel
+    /// (as a fraction of full deflection). Keeps the PID the dominant signal.
+    pub residual_scale: f32,
 }
 
 impl RlOrbitResidualConfig {
@@ -54,6 +53,7 @@ impl RlOrbitResidualConfig {
             target_altitude: orbit.target_altitude,
             target_airspeed: orbit.target_airspeed,
             direction: orbit.direction,
+            residual_scale: 0.3,
         }
     }
 }
@@ -72,6 +72,7 @@ pub struct RlOrbitResidualController {
     pub target_altitude: f32,
     pub target_airspeed: f32,
     pub direction: OrbitDirection,
+    pub residual_scale: f32,
 }
 
 impl RlOrbitResidualController {
@@ -102,6 +103,7 @@ impl RlOrbitResidualController {
             target_altitude: config.target_altitude,
             target_airspeed: config.target_airspeed,
             direction: config.direction,
+            residual_scale: config.residual_scale,
         })
     }
 
@@ -113,6 +115,7 @@ impl RlOrbitResidualController {
             target_altitude: self.target_altitude,
             target_airspeed: self.target_airspeed,
             direction: self.direction,
+            residual_scale: self.residual_scale,
         }
     }
 }
@@ -149,10 +152,10 @@ impl FlightController for RlOrbitResidualController {
             .expect("rl orbit residual action data");
 
         let mut inputs = ControlInputs {
-            elevator: pid_inputs.elevator + action[0] * RESIDUAL_SCALE,
-            throttle: pid_inputs.throttle + action[1] * RESIDUAL_SCALE,
-            aileron: pid_inputs.aileron + action[2] * RESIDUAL_SCALE,
-            rudder: pid_inputs.rudder + action[3] * RESIDUAL_SCALE,
+            elevator: pid_inputs.elevator + action[0] * self.residual_scale,
+            throttle: pid_inputs.throttle + action[1] * self.residual_scale,
+            aileron: pid_inputs.aileron + action[2] * self.residual_scale,
+            rudder: pid_inputs.rudder + action[3] * self.residual_scale,
         };
         inputs.clamp();
         inputs
@@ -206,6 +209,7 @@ mod tests {
             target_altitude: 1000.0,
             target_airspeed: 100.0,
             direction: OrbitDirection::CounterClockwise,
+            residual_scale: 0.3,
         };
 
         let obs = build_orbit_observation(
