@@ -1,6 +1,6 @@
 # WASM Target Feasibility Report
 
-*Assessed against: Cargo.toml + Cargo.lock as of May 2026 (Bevy 0.18.1, bevy_rapier3d 0.33, burn 0.20.1, wgpu 26)*
+*Assessed against: Cargo.toml + Cargo.lock as of May 2026 (Bevy 0.18.1, bevy_rapier3d 0.33, burn 0.20.1 / burn-wgpu 0.20.1 (wgpu 26.0.1); Bevy visual stack (wgpu 27.0.1))*
 
 ---
 
@@ -27,7 +27,8 @@ requirements that WASM cannot satisfy without special browser headers.
 **Bevy 0.18** has an official `wasm32-unknown-unknown` target. The lock file
 confirms WASM wiring is already present: `bevy_window` pulls in `wasm-bindgen`,
 `wasm-bindgen-futures`, and `tracing-wasm` as conditional dependencies. Bevy
-renders via WebGL2 or WebGPU depending on browser support.
+renders via WebGL2 by default on WASM (`bevy/default` enables `webgl2`);
+WebGPU requires explicitly adding `bevy/webgpu`.
 
 **Rapier / bevy_rapier3d 0.33** is pure Rust. Its dependency tree
 (`rapier3d → parry3d → nalgebra`) carries no OS-specific code. The Rapier
@@ -94,9 +95,10 @@ no threading or OS calls. They compile to WASM unchanged.
 
 `burn-wgpu` (via `cubecl-wgpu`) already depends on `wgpu 26`, which has explicit
 WASM bindings (`js-sys`, `wasm-bindgen`, `web-sys` are all in the lock file for
-`wgpu 26`). WebGPU is available in Chrome 113+/Firefox 121+ (behind a flag on
-some versions). A trained model running inference on `Wgpu` backend would
-leverage the browser's GPU.
+`wgpu 26`). WebGPU is available in Chrome 113+ (default) and Firefox 141+
+(default on Windows; available behind a flag from Firefox 121 — treat Firefox
+141 as the practical floor for stable, no-opt-in WebGPU support). A trained
+model running inference on `Wgpu` backend would leverage the browser's GPU.
 
 `burn-ndarray` is a usable fallback *for inference only* — the rayon
 parallelism is a training-time optimization, not required for single forward
@@ -123,7 +125,7 @@ Mitigation options (pick one):
 
 **A. Embed weights at compile time**
 ```rust
-const MODEL_BYTES: &[u8] = include_bytes!("../models/orbit/ppo_orbit_1.mpk");
+const MODEL_BYTES: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/models/orbit/ppo_orbit_1.mpk"));
 ```
 Use `burn`'s `NamedMpkBytesRecorder` to deserialize from a byte slice —
 it uses the same msgpack format as existing `.mpk` checkpoints
@@ -234,15 +236,29 @@ If browser deployment is a goal, pursue in this order:
 2. Gate `std::fs::read_dir` model scanning behind `#[cfg(not(target_arch = "wasm32"))]`.
 3. Add a `wasm` Cargo feature (or a separate `[[bin]]`) that excludes the
    `training` feature entirely.
-4. Use `trunk` as the build/serve tool (`trunk serve`).
-5. Verify the visual + Rapier sim runs in Chrome with WebGL2.
-6. Confirm `assets/` is served correctly (`trunk serve` does this by default, but
-   verify that `planes/generic_jet.plane.ron` and `shaders/ground_grid.wgsl` return
-   HTTP 200). **If the plane config is not loaded, `apply_aerodynamic_forces`
-   (`src/plane/systems.rs:47`) silently skips force application** — the plane spawns
-   and the sim runs, but it flies ballistically with no aerodynamic response. Smoke-test
-   by confirming the HUD shows non-zero airspeed and the plane maintains altitude under
-   level-hold control within the first few seconds.
+4. Create `index.html` (minimal Trunk entry point — without it `trunk serve`
+   will not start) and `Trunk.toml` that explicitly copies the `assets/` directory:
+
+   ```toml
+   # Trunk.toml
+   [[asset]]
+   action = "copy"
+   dir = "assets"
+   ```
+
+   Trunk does **not** serve `assets/` by default; only folders declared via
+   `[[asset]]` entries or `data-trunk` attributes in `index.html` are copied to
+   `dist/`. Neither file exists in the repo yet — both must be created.
+
+5. Use `trunk` as the build/serve tool (`trunk serve`).
+6. Verify the visual + Rapier sim runs in Chrome with WebGL2.
+7. Confirm assets are served correctly: `planes/generic_jet.plane.ron` and
+   `shaders/ground_grid.wgsl` must return HTTP 200. **If the plane config is
+   not loaded, `apply_aerodynamic_forces` (`src/plane/systems.rs:47`) silently
+   skips force application** — the plane spawns and the sim runs, but it flies
+   ballistically with no aerodynamic response. Smoke-test by confirming the HUD
+   shows non-zero airspeed and the plane maintains altitude under level-hold
+   control within the first few seconds.
 
 **Deliverable:** playable flight sim in the browser, PID controllers only.
 
@@ -265,20 +281,61 @@ crates from the compile graph. A separate Cargo feature is required:
 burn = { version = "0.20", optional = true, default-features = false }
 
 [features]
-# WASM / native inference only — no training stack
-inference = ["burn/ndarray", "burn/wgpu"]
-# Full training build — all features
-training  = ["burn/ndarray", "burn/wgpu", "burn/autodiff", "burn/train", "burn/tui"]
+# WASM / native inference only — no training stack.
+# burn/webgpu (not burn/wgpu) is required for WASM: it additionally enables
+# burn-wgpu/webgpu → cubecl-wgsl (WGSL shaders required by the browser WebGPU API).
+# burn/webgpu is a strict superset of burn/wgpu so native inference also works.
+inference = ["burn/std", "burn/ndarray", "burn/webgpu", "rfd"]
+# rfd 0.15 is WASM-compatible (browser file-picker via <input type="file">):
+# keep it in the inference feature so src/ui/file_load.rs compiles.
+# src/ui/file_load.rs calls rfd::AsyncFileDialog::new() unconditionally;
+# if rfd is absent the crate will fail to compile.
+# Full training build — same features as the pre-split Cargo.toml:18 entry plus burn/std.
+training  = ["burn/std", "burn/ndarray", "burn/wgpu", "burn/autodiff", "burn/train", "burn/tui"]
 ```
 
 Verify with `cargo tree --no-default-features --features inference`: `burn-train`,
 `ratatui`, `sysinfo`, and `nvml-wrapper` must not appear in the tree.
+
+Also verify with `cargo tree --no-default-features --features training` that the
+training build pulls in the same burn sub-crates as the pre-split declaration
+(`wgpu`, `ndarray`, `autodiff`, `train`, `tui`). The current `Cargo.toml:18` has
+no `default-features = false`, so burn's own defaults are currently included
+implicitly; adding `default-features = false` may drop sub-features (e.g.
+`burn/fusion`) that are not in the explicit list above. If `cargo tree` reveals
+such omissions, add them to the `training` feature and document the change.
 
 Gate RL controllers on `#[cfg(any(feature = "inference", feature = "training"))]`.
 The WASM build enables `inference`; the native training build enables `training`.
 
 1. Add the `inference` feature to `Cargo.toml` and re-gate RL controller modules
    on `any(feature = "inference", feature = "training")`.
+
+   **All downstream wiring must also be re-gated** (currently `#[cfg(feature = "training")]`):
+   - `src/main.rs:8–12` — RL controller import block → `any(feature = "inference", feature = "training")`
+   - `src/main.rs:75` — `cycle_rl_model` system → `any(feature = "visual", feature = "inference")` + training
+   - `src/main.rs:86–93` — `apply_rl_controller_switch` / `apply_model_switch` system registrations → same
+   - `src/ui/hud.rs:345, 405, 443, 481, 519` — per-controller HUD blocks → `any(feature = "inference", feature = "training")`
+   - `src/main.rs:257–294` and `src/main.rs:298–330` — startup RL model-load
+     blocks. These are `#[cfg(feature = "training")]` today and use
+     `std::path::Path::exists()` to probe for `.mpk` files on disk.
+     `Path::exists()` compiles for WASM but always returns `false` at runtime
+     (no filesystem). For WASM/inference builds, replace the `Path::exists()`
+     probe with the same `include_bytes!` / `NamedMpkBytesRecorder` path used
+     in step 2 below. The native path can keep the existing `Path::exists()`
+     check unchanged behind `#[cfg(not(target_arch = "wasm32"))]`.
+
+   **1a. Split `src/training/ppo/` into inference-safe and training-only sub-modules.**
+   `src/controllers/rl_orbit.rs:20` imports `crate::training::ppo::model::ActorCritic`,
+   but `ppo` is currently gated `#[cfg(feature = "training")]` in
+   `src/training/mod.rs:6`. Re-gating RL controllers on `inference` without
+   also re-gating `ppo::model` will produce `error[E0432]: unresolved import`.
+   Move `model.rs` and `lstm_model.rs` (struct definitions + `forward()` only)
+   to a sub-module gated on `any(feature = "inference", feature = "training")`.
+   Keep `trainer.rs`, `buffer.rs`, and anything that imports `burn-train` or
+   `burn-autodiff` gated on `feature = "training"` only. Update
+   `src/training/mod.rs` accordingly.
+
 2. Switch RL controller loading from `DefaultFileRecorder` to
    `NamedMpkBytesRecorder` with `include_bytes!()` embedded weights, gated on
    `wasm32` (same msgpack format; drop-in compatible with existing `.mpk` files).
