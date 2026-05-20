@@ -74,7 +74,15 @@ no threading or OS calls. They compile to WASM unchanged.
   or load via `fetch()` + `wasm-bindgen-futures`.
 - Serve with correct MIME types (`application/wasm`); use `wasm-pack` or
   `trunk` as the bundler.
-- The `visual` feature as-is should otherwise compile; `rfd` needs smoke testing.
+- **Recommendation:** Rather than using `visual = ["bevy/default", ...]` for WASM,
+  introduce a dedicated `wasm` Cargo feature that enables only what the browser build
+  needs (e.g., `bevy/bevy_render`, `bevy/bevy_core_pipeline`, `bevy/bevy_pbr`,
+  `bevy/bevy_asset`, `bevy_rapier3d`) and explicitly excludes audio
+  (`bevy/bevy_audio`) and gamepad (`bevy/bevy_gilrs`) subsystems. This reduces binary
+  size, avoids runtime surprises from rodio/cpal's Web Audio path, and prevents gilrs
+  from accessing platform HID APIs unavailable in browsers. The current `visual` feature
+  *may* compile successfully for WASM (Bevy does test WASM CI and transitive deps have
+  stubs), but the lean dedicated feature is more robust and is the recommended approach.
 
 **Estimated effort: ~1–2 weeks** to get a playable browser demo without RL.
 
@@ -128,11 +136,29 @@ Load weights from a URL using `wasm-bindgen-futures` + `web-sys` fetch API,
 deserialize in-memory. More flexible but requires async entry points and a
 server to host the weight files.
 
-**C. Hard-code small networks**
-The ActorCritic networks are 2-layer MLPs (obs_dim→64→64→action_dim). At
-~50K parameters, they could be embedded as static float arrays and evaluated
-without burn's serialization infrastructure entirely. Extreme but eliminates
-all burn dependency from the WASM binary.
+**C. Hard-code small networks** *(MLP controllers only)*
+The MLP-based `ActorCritic` networks (`RlLevelHold` obs=10, `RlOrbit` obs=13,
+`RlOrbitResidual`) are 2-layer MLPs (obs_dim→64→64→action_dim) at ~50K parameters;
+they could be embedded as static float arrays evaluated without burn's serialization
+infrastructure entirely. Extreme but eliminates all burn dependency for those three
+controllers.
+
+**This option does not cover `RlLstmOrbit`.** That controller uses a larger
+FC-LSTM-FC architecture (`src/training/ppo/lstm_model.rs`): FC(obs→128)→FC(128→128)→
+LSTM(128→128)→FC(128→128)→out, with `LSTM_HIDDEN = LSTM_FC = 128`. More importantly,
+`RlLstmOrbit` is *stateful*: it carries a `LstmHiddenState` (h, c vectors of length 128)
+between inference steps. Representing this without reimplementing LSTM cell math is
+impractical. **Use Option A (`NamedMpkBytesRecorder` + `include_bytes!`) for any
+deployment that includes `RlLstmOrbit`** — it covers all four controller kinds with
+the same code path.
+
+**RL controller inventory:**
+| Kind | Architecture | Obs dim | Stateful? | Model dir |
+|---|---|---|---|---|
+| `RlLevelHold` | MLP 64×64 | 10 | No | `level_hold` |
+| `RlOrbit` | MLP 64×64 | 13 | No | `orbit` |
+| `RlOrbitResidual` | MLP 64×64 | 13 | No | `orbit_residual` |
+| `RlLstmOrbit` | FC-LSTM-FC 128×128 | 13 | Yes (h+c, 128 each) | `lstm_orbit` |
 
 ### Threading constraint for inference
 
@@ -210,6 +236,13 @@ If browser deployment is a goal, pursue in this order:
    `training` feature entirely.
 4. Use `trunk` as the build/serve tool (`trunk serve`).
 5. Verify the visual + Rapier sim runs in Chrome with WebGL2.
+6. Confirm `assets/` is served correctly (`trunk serve` does this by default, but
+   verify that `planes/generic_jet.plane.ron` and `shaders/ground_grid.wgsl` return
+   HTTP 200). **If the plane config is not loaded, `apply_aerodynamic_forces`
+   (`src/plane/systems.rs:47`) silently skips force application** — the plane spawns
+   and the sim runs, but it flies ballistically with no aerodynamic response. Smoke-test
+   by confirming the HUD shows non-zero airspeed and the plane maintains altitude under
+   level-hold control within the first few seconds.
 
 **Deliverable:** playable flight sim in the browser, PID controllers only.
 
@@ -223,8 +256,23 @@ guards inside the existing `training` feature does not remove these heavyweight
 crates from the compile graph. A separate Cargo feature is required:
 
 ```toml
+# Cargo.toml — burn dependency must opt out of its default features so that the
+# training-only crates (autodiff, train, tui) are not compiled into the inference build.
+# The current declaration (features = ["wgpu","ndarray","autodiff","train","tui"]) fires
+# all of those features whenever burn is enabled, regardless of which Cargo feature
+# (training vs inference) activated it.  Change the dependency to:
+[dependencies]
+burn = { version = "0.20", optional = true, default-features = false }
+
+[features]
+# WASM / native inference only — no training stack
 inference = ["burn/ndarray", "burn/wgpu"]
+# Full training build — all features
+training  = ["burn/ndarray", "burn/wgpu", "burn/autodiff", "burn/train", "burn/tui"]
 ```
+
+Verify with `cargo tree --no-default-features --features inference`: `burn-train`,
+`ratatui`, `sysinfo`, and `nvml-wrapper` must not appear in the tree.
 
 Gate RL controllers on `#[cfg(any(feature = "inference", feature = "training"))]`.
 The WASM build enables `inference`; the native training build enables `training`.
@@ -237,6 +285,17 @@ The WASM build enables `inference`; the native training build enables `training`
 3. Switch the inference backend from `NdArray` to `Wgpu` for the WASM build
    (feature-gate: `#[cfg(target_arch = "wasm32")]` selects `Wgpu`, native keeps
    `NdArray`).
+
+   **Required: async WASM device initialization.** `Default::default()` for
+   `WgpuDevice` panics on WASM — WebGPU adapter/device acquisition is inherently
+   async in browsers (`cubecl-wgpu` exposes `init_setup_async` for this reason).
+   The current synchronous pattern at `src/controllers/rl_orbit.rs:70`
+   (`let device: <InfB as Backend>::Device = Default::default();`) and its
+   analogues in `rl_level_hold.rs` and `rl_lstm_orbit.rs` must be replaced.
+   Recommended pattern: pre-initialize the `WgpuDevice` at WASM app startup via
+   `wasm-bindgen-futures::spawn_local`, store it in a shared handle, and pass it
+   as a parameter into each controller's `load()` function instead of calling
+   `Default::default()` inside `load()`.
 4. Validate forward-pass correctness against the native NdArray baseline with
    known test observations.
 
