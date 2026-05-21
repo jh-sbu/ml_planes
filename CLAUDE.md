@@ -331,5 +331,6 @@ app.add_plugins(EguiPlugin { enable_multipass_for_primary_context: false });
 ## 8. Implementation Roadmap
 
 > Full plan: `plans/roadmap.md`
+> WASM feasibility: `plans/wasm_feasibility.md`
 
 M0–M12 (environment phase + level hold + formation flight + orbit + RL training) are complete. M13 (aerial refueling) is next.
