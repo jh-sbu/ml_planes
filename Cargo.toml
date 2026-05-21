@@ -6,6 +6,7 @@ edition = "2021"
 [features]
 default = ["visual"]
 visual = ["bevy/default", "bevy_egui", "rfd"]
+wasm = ["visual"]
 training = ["burn"]
 
 [dependencies]
