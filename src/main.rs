@@ -36,6 +36,9 @@ use ml_planes::ui::UiPlugin;
 fn main() {
     let mut app = App::new();
 
+    // This project does not use Bevy .meta sidecar files; skipping the check
+    // eliminates spurious HTTP 404 errors in the WASM build and is safe because
+    // no asset requires custom loader settings or processing overrides.
     #[cfg(feature = "visual")]
     app.add_plugins(DefaultPlugins.set(AssetPlugin {
         meta_check: AssetMetaCheck::Never,
