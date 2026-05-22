@@ -6,13 +6,13 @@ pub mod level_hold;
 pub mod manual;
 pub mod orbit;
 pub mod pid;
-#[cfg(feature = "training")]
+#[cfg(any(feature = "inference", feature = "training"))]
 pub mod rl_level_hold;
-#[cfg(feature = "training")]
+#[cfg(any(feature = "inference", feature = "training"))]
 pub mod rl_lstm_orbit;
-#[cfg(feature = "training")]
+#[cfg(any(feature = "inference", feature = "training"))]
 pub mod rl_orbit;
-#[cfg(feature = "training")]
+#[cfg(any(feature = "inference", feature = "training"))]
 pub mod rl_orbit_residual;
 pub mod selected_model;
 pub mod traits;
@@ -30,13 +30,13 @@ pub use orbit::{
     OrbitObservationTerms, OrbitParams,
 };
 pub use pid::PidController;
-#[cfg(feature = "training")]
+#[cfg(any(feature = "inference", feature = "training"))]
 pub use rl_level_hold::RlLevelHoldController;
-#[cfg(feature = "training")]
+#[cfg(any(feature = "inference", feature = "training"))]
 pub use rl_lstm_orbit::{RlLstmOrbitConfig, RlLstmOrbitController};
-#[cfg(feature = "training")]
+#[cfg(any(feature = "inference", feature = "training"))]
 pub use rl_orbit::{RlOrbitConfig, RlOrbitController};
-#[cfg(feature = "training")]
+#[cfg(any(feature = "inference", feature = "training"))]
 pub use rl_orbit_residual::{RlOrbitResidualConfig, RlOrbitResidualController};
 pub use selected_model::{ModelLibrary, SelectedModel};
 pub use traits::FlightController;

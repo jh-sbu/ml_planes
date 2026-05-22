@@ -9,10 +9,12 @@
 
 use std::any::Any;
 
+#[cfg(not(target_arch = "wasm32"))]
+use burn::record::DefaultFileRecorder;
 use burn::{
     backend::NdArray,
     module::Module,
-    record::{DefaultFileRecorder, FullPrecisionSettings},
+    record::{FullPrecisionSettings, NamedMpkBytesRecorder, Recorder},
     tensor::{backend::Backend, Tensor, TensorData},
 };
 
@@ -77,6 +79,7 @@ pub struct RlOrbitResidualController {
 
 impl RlOrbitResidualController {
     /// Load weights from `path` (without `.mpk` extension).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn load(
         path: &str,
         config: RlOrbitResidualConfig,
@@ -89,6 +92,35 @@ impl RlOrbitResidualController {
             &DefaultFileRecorder::<FullPrecisionSettings>::default(),
             &device,
         )?;
+        let pid = match tuning {
+            Some(t) => OrbitController::with_tuning(state, t, &ControlInputs::default()),
+            None => OrbitController::from_state(state, &ControlInputs::default()),
+        };
+        Ok(Self {
+            pid,
+            model: std::sync::Mutex::new(model),
+            device,
+            center_x: config.center_x,
+            center_z: config.center_z,
+            target_radius: config.target_radius,
+            target_altitude: config.target_altitude,
+            target_airspeed: config.target_airspeed,
+            direction: config.direction,
+            residual_scale: config.residual_scale,
+        })
+    }
+
+    /// Load weights from embedded bytes — for WASM builds where `std::fs` is unavailable.
+    pub fn load_bytes(
+        bytes: &[u8],
+        config: RlOrbitResidualConfig,
+        state: &FlightState,
+        tuning: Option<&OrbitTuning>,
+    ) -> Result<Self, burn::record::RecorderError> {
+        let device: <InfB as Backend>::Device = Default::default();
+        let record = NamedMpkBytesRecorder::<FullPrecisionSettings>::default()
+            .load(bytes.to_vec(), &device)?;
+        let model = ActorCritic::<InfB>::new(&device, ORBIT_OBS_DIM).load_record(record);
         let pid = match tuning {
             Some(t) => OrbitController::with_tuning(state, t, &ControlInputs::default()),
             None => OrbitController::from_state(state, &ControlInputs::default()),

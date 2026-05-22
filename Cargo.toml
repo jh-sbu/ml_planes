@@ -6,8 +6,9 @@ edition = "2021"
 [features]
 default = ["visual"]
 visual = ["bevy/default", "bevy_egui", "rfd"]
-wasm = ["visual"]
-training = ["burn"]
+wasm = ["visual", "inference"]
+inference = ["burn/std", "burn/ndarray"]
+training = ["inference", "burn/wgpu", "burn/autodiff", "burn/train", "burn/tui"]
 
 [dependencies]
 bevy = { version = "0.18", default-features = false, features = ["bevy_asset"] }
@@ -16,7 +17,7 @@ ron = "0.8"
 serde = { version = "1", features = ["derive"] }
 bevy_egui = { version = "0.39", optional = true }
 rfd = { version = "0.15", optional = true }
-burn = { version = "0.20", optional = true, features = ["wgpu", "ndarray", "autodiff", "train", "tui"] }
+burn = { version = "0.20", optional = true, default-features = false }
 naga = { version = "26", features = ["termcolor"] }
 
 [[bin]]

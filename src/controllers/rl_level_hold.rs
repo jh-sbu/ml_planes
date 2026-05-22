@@ -6,10 +6,12 @@
 use std::any::Any;
 
 use bevy::math::Quat;
+#[cfg(not(target_arch = "wasm32"))]
+use burn::record::DefaultFileRecorder;
 use burn::{
     backend::NdArray,
     module::Module,
-    record::{DefaultFileRecorder, FullPrecisionSettings},
+    record::{FullPrecisionSettings, NamedMpkBytesRecorder, Recorder},
     tensor::{backend::Backend, Tensor, TensorData},
 };
 
@@ -32,6 +34,7 @@ pub struct RlLevelHoldController {
 
 impl RlLevelHoldController {
     /// Load weights from `path` (without `.mpk` extension) saved by `PpoTrainer::save_policy`.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn load(
         path: &str,
         target_altitude: f32,
@@ -43,6 +46,24 @@ impl RlLevelHoldController {
             &DefaultFileRecorder::<FullPrecisionSettings>::default(),
             &device,
         )?;
+        Ok(Self {
+            model: std::sync::Mutex::new(model),
+            device,
+            target_altitude,
+            target_airspeed,
+        })
+    }
+
+    /// Load weights from embedded bytes — for WASM builds where `std::fs` is unavailable.
+    pub fn load_bytes(
+        bytes: &[u8],
+        target_altitude: f32,
+        target_airspeed: f32,
+    ) -> Result<Self, burn::record::RecorderError> {
+        let device: <InfB as Backend>::Device = Default::default();
+        let record = NamedMpkBytesRecorder::<FullPrecisionSettings>::default()
+            .load(bytes.to_vec(), &device)?;
+        let model = ActorCritic::<InfB>::new(&device, 10).load_record(record);
         Ok(Self {
             model: std::sync::Mutex::new(model),
             device,

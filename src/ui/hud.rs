@@ -342,7 +342,7 @@ pub fn draw_flight_hud(
                 }
             }
 
-            #[cfg(feature = "training")]
+            #[cfg(any(feature = "inference", feature = "training"))]
             if *kind == ControllerKind::RlLevelHold {
                 use crate::controllers::RlLevelHoldController;
 
@@ -402,7 +402,7 @@ pub fn draw_flight_hud(
                 }
             }
 
-            #[cfg(feature = "training")]
+            #[cfg(any(feature = "inference", feature = "training"))]
             if *kind == ControllerKind::RlOrbit {
                 use crate::controllers::RlOrbitController;
 
@@ -440,7 +440,7 @@ pub fn draw_flight_hud(
                 }
             }
 
-            #[cfg(feature = "training")]
+            #[cfg(any(feature = "inference", feature = "training"))]
             if *kind == ControllerKind::RlOrbitResidual {
                 use crate::controllers::RlOrbitResidualController;
 
@@ -478,7 +478,7 @@ pub fn draw_flight_hud(
                 }
             }
 
-            #[cfg(feature = "training")]
+            #[cfg(any(feature = "inference", feature = "training"))]
             if *kind == ControllerKind::RlLstmOrbit {
                 use crate::controllers::RlLstmOrbitController;
 
@@ -516,7 +516,7 @@ pub fn draw_flight_hud(
                 }
             }
 
-            #[cfg(feature = "training")]
+            #[cfg(any(feature = "inference", feature = "training"))]
             if let Some(dir_key) = kind.model_dir() {
                 if let Some(ref mut sel) = selected_model {
                     if let Some(available) = model_lib.0.get(dir_key) {
@@ -551,7 +551,7 @@ pub fn draw_flight_hud(
 }
 
 /// Returns the filename stem from a path like `"models/level_hold/ppo_level_hold"`.
-#[cfg(feature = "training")]
+#[cfg(any(feature = "inference", feature = "training"))]
 fn path_stem(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }

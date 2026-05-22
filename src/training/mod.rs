@@ -3,7 +3,7 @@ mod flight_env;
 pub mod level_hold_env;
 pub mod orbit_env;
 pub mod orbit_residual_env;
-#[cfg(feature = "training")]
+#[cfg(any(feature = "inference", feature = "training"))]
 pub mod ppo;
 pub mod reward_config;
 pub mod vec_env;
@@ -28,10 +28,12 @@ pub trait CurriculumEnv: TrainingEnv {
 pub use level_hold_env::LevelHoldEnv;
 pub use orbit_env::OrbitEnv;
 pub use orbit_residual_env::ResidualOrbitEnv;
+#[cfg(any(feature = "inference", feature = "training"))]
+pub use ppo::{ActorCritic, LstmActorCritic, LstmHiddenState, LSTM_HIDDEN};
+
 #[cfg(feature = "training")]
 pub use ppo::{
-    ActorCritic, LstmActorCritic, LstmHiddenState, LstmPpoTrainer, LstmRolloutBuffer,
-    LstmRolloutStep, LstmSequence, PpoTrainer, RolloutBuffer, LSTM_HIDDEN,
+    LstmPpoTrainer, LstmRolloutBuffer, LstmRolloutStep, LstmSequence, PpoTrainer, RolloutBuffer,
 };
 pub use reward_config::{LevelHoldRewardConfig, OrbitRewardConfig};
 pub use vec_env::VecEnv;

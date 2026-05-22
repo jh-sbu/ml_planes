@@ -5,7 +5,8 @@ use ml_planes::controllers::{
     ControllerKind, FormationOffset, LeaderRef, LeaderState, LevelHoldController, ModelLibrary,
     OrbitController, OrbitDirection, WingmanController,
 };
-#[cfg(feature = "training")]
+#[cfg(any(feature = "inference", feature = "training"))]
+#[allow(unused_imports)]
 use ml_planes::controllers::{
     RlLevelHoldController, RlLstmOrbitConfig, RlLstmOrbitController, RlOrbitConfig,
     RlOrbitController, RlOrbitResidualConfig, RlOrbitResidualController, SelectedModel,
@@ -14,7 +15,11 @@ use ml_planes::environment::{spawn_plane, EnvironmentPlugin};
 use ml_planes::plane::{config::PlaneConfig, ControlInputs, FlightState, PlaneIndex, PlanePlugin};
 use ml_planes::training::SpawnSpec;
 
-#[cfg(all(feature = "visual", feature = "training"))]
+#[cfg(all(
+    feature = "visual",
+    any(feature = "inference", feature = "training"),
+    not(target_arch = "wasm32")
+))]
 use ml_planes::controllers::OrbitTuning;
 #[cfg(feature = "visual")]
 use ml_planes::controllers::{
@@ -68,7 +73,7 @@ fn main() {
 
     app.init_resource::<ModelLibrary>();
     app.add_systems(Startup, setup);
-    #[cfg(feature = "training")]
+    #[cfg(all(feature = "training", not(target_arch = "wasm32")))]
     app.add_systems(Startup, scan_models);
 
     #[cfg(feature = "visual")]
@@ -80,7 +85,11 @@ fn main() {
             cycle_tune_profile,
         ),
     );
-    #[cfg(all(feature = "visual", feature = "training"))]
+    #[cfg(all(
+        feature = "visual",
+        any(feature = "inference", feature = "training"),
+        not(target_arch = "wasm32")
+    ))]
     app.add_systems(Update, cycle_rl_model);
 
     #[cfg(feature = "visual")]
@@ -91,7 +100,11 @@ fn main() {
             apply_controller_switch.after(apply_initial_tuning),
         ),
     );
-    #[cfg(all(feature = "visual", feature = "training"))]
+    #[cfg(all(
+        feature = "visual",
+        any(feature = "inference", feature = "training"),
+        not(target_arch = "wasm32")
+    ))]
     app.add_systems(
         PostUpdate,
         (
@@ -262,7 +275,11 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     }
 
     // --- Optional RL orbit plane: 3000 m radius around origin at 800 m / 100 m/s ---
-    #[cfg(feature = "training")]
+    // Native: probe filesystem at runtime.
+    #[cfg(all(
+        any(feature = "inference", feature = "training"),
+        not(target_arch = "wasm32")
+    ))]
     {
         let model_path = "models/orbit/ppo_orbit_1";
         if std::path::Path::new(&format!("{model_path}.mpk")).exists() {
@@ -301,9 +318,54 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
             }
         }
     }
+    // WASM: load from embedded bytes.
+    #[cfg(all(feature = "inference", target_arch = "wasm32"))]
+    {
+        const ORBIT_MPK: &[u8] = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/models/orbit/ppo_orbit_1.mpk"
+        ));
+        let rl_orbit_pos = Vec3::new(0.0, 800.0, orbit_radius);
+        let rl_orbit_vel = Vec3::new(-orbit_speed, 0.0, 0.0);
+        let rl_orbit_attitude = level_attitude_for_heading(rl_orbit_vel.x, rl_orbit_vel.z);
+        let config = RlOrbitConfig {
+            center_x: 0.0,
+            center_z: 0.0,
+            target_radius: orbit_radius,
+            target_altitude: rl_orbit_pos.y,
+            target_airspeed: orbit_speed,
+            direction: orbit_direction,
+        };
+        match RlOrbitController::load_bytes(ORBIT_MPK, config) {
+            Ok(rl_ctrl) => {
+                let rl_orbit = spawn_plane(
+                    &mut commands,
+                    &asset_server,
+                    &SpawnSpec {
+                        position: Some(rl_orbit_pos),
+                        velocity: Some(rl_orbit_vel),
+                        attitude: Some(rl_orbit_attitude),
+                        ..Default::default()
+                    },
+                    Box::new(rl_ctrl),
+                    ControllerKind::RlOrbit,
+                    &cfg,
+                );
+                commands.entity(rl_orbit).insert((
+                    PlaneIndex(4),
+                    SelectedModel("models/orbit/ppo_orbit_1".to_string()),
+                ));
+            }
+            Err(e) => eprintln!("Failed to load embedded RL orbit model: {e}"),
+        }
+    }
 
-    // --- Optional RL comparison plane (requires `training` feature + trained weights) ---
-    #[cfg(feature = "training")]
+    // --- Optional RL comparison plane ---
+    // Native: probe filesystem at runtime.
+    #[cfg(all(
+        any(feature = "inference", feature = "training"),
+        not(target_arch = "wasm32")
+    ))]
     {
         let model_path = "models/level_hold/ppo_level_hold";
         if std::path::Path::new(&format!("{model_path}.mpk")).exists() {
@@ -329,6 +391,36 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
                 }
                 Err(e) => eprintln!("Failed to load RL model from {model_path}.mpk: {e}"),
             }
+        }
+    }
+    // WASM: load from embedded bytes.
+    #[cfg(all(feature = "inference", target_arch = "wasm32"))]
+    {
+        const LEVEL_HOLD_MPK: &[u8] = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/models/level_hold/ppo_level_hold.mpk"
+        ));
+        match RlLevelHoldController::load_bytes(LEVEL_HOLD_MPK, 1000.0, 100.0) {
+            Ok(rl_ctrl) => {
+                let rl_pos = Vec3::new(0.0, 1000.0, -30.0);
+                let rl_plane = spawn_plane(
+                    &mut commands,
+                    &asset_server,
+                    &SpawnSpec {
+                        position: Some(rl_pos),
+                        velocity: Some(leader_vel),
+                        ..Default::default()
+                    },
+                    Box::new(rl_ctrl),
+                    ControllerKind::RlLevelHold,
+                    &cfg,
+                );
+                commands.entity(rl_plane).insert((
+                    PlaneIndex(5),
+                    SelectedModel("models/level_hold/ppo_level_hold".to_string()),
+                ));
+            }
+            Err(e) => eprintln!("Failed to load embedded RL level-hold model: {e}"),
         }
     }
 }
@@ -451,7 +543,11 @@ fn cycle_tune_profile(
 }
 
 /// T / Shift+T: cycle RL model forward/backward for the followed plane.
-#[cfg(all(feature = "visual", feature = "training"))]
+#[cfg(all(
+    feature = "visual",
+    any(feature = "inference", feature = "training"),
+    not(target_arch = "wasm32")
+))]
 fn cycle_rl_model(
     mode: Res<CameraMode>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -486,7 +582,7 @@ fn cycle_rl_model(
 }
 
 /// Scan `models/<category>/` subdirectories at startup and populate `ModelLibrary`.
-#[cfg(feature = "training")]
+#[cfg(all(feature = "training", not(target_arch = "wasm32")))]
 fn scan_models(mut commands: Commands) {
     let mut lib: std::collections::HashMap<String, Vec<String>> = Default::default();
     if let Ok(categories) = std::fs::read_dir("models/") {
@@ -518,7 +614,11 @@ fn scan_models(mut commands: Commands) {
 }
 
 /// Reload `ActiveController` whenever `SelectedModel` changes (HUD model dropdown).
-#[cfg(all(feature = "visual", feature = "training"))]
+#[cfg(all(
+    feature = "visual",
+    any(feature = "inference", feature = "training"),
+    not(target_arch = "wasm32")
+))]
 fn apply_model_switch(
     mut query: Query<
         (
@@ -584,7 +684,11 @@ fn apply_model_switch(
 /// overriding the PID fallback that `apply_controller_switch` produces.
 /// If the entity lacks `SelectedModel`, inserts a default so `apply_model_switch`
 /// loads the controller on the next frame.
-#[cfg(all(feature = "visual", feature = "training"))]
+#[cfg(all(
+    feature = "visual",
+    any(feature = "inference", feature = "training"),
+    not(target_arch = "wasm32")
+))]
 fn apply_rl_controller_switch(
     mut commands: Commands,
     mut query: Query<
@@ -678,7 +782,11 @@ fn apply_rl_controller_switch(
     }
 }
 
-#[cfg(all(feature = "visual", feature = "training"))]
+#[cfg(all(
+    feature = "visual",
+    any(feature = "inference", feature = "training"),
+    not(target_arch = "wasm32")
+))]
 fn selected_or_default_model_path(
     kind: ControllerKind,
     selected: Option<&SelectedModel>,
@@ -696,12 +804,20 @@ fn selected_or_default_model_path(
         .and_then(|paths| paths.first().cloned())
 }
 
-#[cfg(all(feature = "visual", feature = "training"))]
+#[cfg(all(
+    feature = "visual",
+    any(feature = "inference", feature = "training"),
+    not(target_arch = "wasm32")
+))]
 fn model_path_matches_dir(path: &str, dir: &str) -> bool {
     path.starts_with(&format!("models/{dir}/"))
 }
 
-#[cfg(all(feature = "visual", feature = "training"))]
+#[cfg(all(
+    feature = "visual",
+    any(feature = "inference", feature = "training"),
+    not(target_arch = "wasm32")
+))]
 fn level_hold_targets_from_controller(
     controller: &mut ActiveController,
     state: &FlightState,
@@ -723,7 +839,11 @@ fn level_hold_targets_from_controller(
     (state.altitude, state.airspeed)
 }
 
-#[cfg(all(feature = "visual", feature = "training"))]
+#[cfg(all(
+    feature = "visual",
+    any(feature = "inference", feature = "training"),
+    not(target_arch = "wasm32")
+))]
 fn orbit_config_from_controller(
     controller: &mut ActiveController,
     state: &FlightState,
@@ -745,7 +865,11 @@ fn orbit_config_from_controller(
     RlOrbitConfig::from_state(state)
 }
 
-#[cfg(all(feature = "visual", feature = "training"))]
+#[cfg(all(
+    feature = "visual",
+    any(feature = "inference", feature = "training"),
+    not(target_arch = "wasm32")
+))]
 fn residual_config_from_controller(
     controller: &mut ActiveController,
     state: &FlightState,
@@ -767,7 +891,11 @@ fn residual_config_from_controller(
     RlOrbitResidualConfig::from_state(state)
 }
 
-#[cfg(all(feature = "visual", feature = "training"))]
+#[cfg(all(
+    feature = "visual",
+    any(feature = "inference", feature = "training"),
+    not(target_arch = "wasm32")
+))]
 fn lstm_orbit_config_from_controller(
     controller: &mut ActiveController,
     state: &FlightState,
@@ -805,7 +933,7 @@ fn extract_orbit_params(ctrl: &mut ActiveController) -> Option<OrbitParams> {
             direction: orbit.direction,
         });
     }
-    #[cfg(feature = "training")]
+    #[cfg(any(feature = "inference", feature = "training"))]
     {
         if let Some(rl) = ctrl.0.as_any_mut().downcast_mut::<RlOrbitController>() {
             let cfg = rl.config();

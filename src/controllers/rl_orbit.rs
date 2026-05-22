@@ -5,10 +5,12 @@
 
 use std::any::Any;
 
+#[cfg(not(target_arch = "wasm32"))]
+use burn::record::DefaultFileRecorder;
 use burn::{
     backend::NdArray,
     module::Module,
-    record::{DefaultFileRecorder, FullPrecisionSettings},
+    record::{FullPrecisionSettings, NamedMpkBytesRecorder, Recorder},
     tensor::{backend::Backend, Tensor, TensorData},
 };
 
@@ -66,6 +68,7 @@ pub struct RlOrbitController {
 
 impl RlOrbitController {
     /// Load weights from `path` (without `.mpk` extension) saved by `PpoTrainer::save_policy`.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn load(path: &str, config: RlOrbitConfig) -> Result<Self, burn::record::RecorderError> {
         let device: <InfB as Backend>::Device = Default::default();
         let model = ActorCritic::<InfB>::new(&device, ORBIT_OBS_DIM).load_file(
@@ -73,6 +76,27 @@ impl RlOrbitController {
             &DefaultFileRecorder::<FullPrecisionSettings>::default(),
             &device,
         )?;
+        Ok(Self {
+            model: std::sync::Mutex::new(model),
+            device,
+            center_x: config.center_x,
+            center_z: config.center_z,
+            target_radius: config.target_radius,
+            target_altitude: config.target_altitude,
+            target_airspeed: config.target_airspeed,
+            direction: config.direction,
+        })
+    }
+
+    /// Load weights from embedded bytes — for WASM builds where `std::fs` is unavailable.
+    pub fn load_bytes(
+        bytes: &[u8],
+        config: RlOrbitConfig,
+    ) -> Result<Self, burn::record::RecorderError> {
+        let device: <InfB as Backend>::Device = Default::default();
+        let record = NamedMpkBytesRecorder::<FullPrecisionSettings>::default()
+            .load(bytes.to_vec(), &device)?;
+        let model = ActorCritic::<InfB>::new(&device, ORBIT_OBS_DIM).load_record(record);
         Ok(Self {
             model: std::sync::Mutex::new(model),
             device,

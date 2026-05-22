@@ -49,7 +49,7 @@ pub enum ControllerKind {
 }
 
 impl ControllerKind {
-    #[cfg(not(feature = "training"))]
+    #[cfg(not(any(feature = "inference", feature = "training")))]
     pub const ALL: &'static [ControllerKind] = &[
         Self::Manual,
         Self::LevelHold,
@@ -58,7 +58,7 @@ impl ControllerKind {
         Self::Orbit,
     ];
 
-    #[cfg(feature = "training")]
+    #[cfg(any(feature = "inference", feature = "training"))]
     pub const ALL: &'static [ControllerKind] = &[
         Self::Manual,
         Self::LevelHold,
@@ -175,7 +175,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "training")]
+    #[cfg(any(feature = "inference", feature = "training"))]
     #[test]
     fn rl_orbit_uses_orbit_model_dir() {
         assert_eq!(ControllerKind::RlOrbit.model_dir(), Some("orbit"));
