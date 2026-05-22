@@ -25,6 +25,8 @@ use ml_planes::controllers::{
 use ml_planes::plane::PlaneTuningHandle;
 
 #[cfg(feature = "visual")]
+use bevy::asset::{AssetMetaCheck, AssetPlugin};
+#[cfg(feature = "visual")]
 use bevy_egui::EguiPlugin;
 #[cfg(feature = "visual")]
 use ml_planes::camera::{CameraMode, CameraPlugin};
@@ -35,7 +37,10 @@ fn main() {
     let mut app = App::new();
 
     #[cfg(feature = "visual")]
-    app.add_plugins(DefaultPlugins);
+    app.add_plugins(DefaultPlugins.set(AssetPlugin {
+        meta_check: AssetMetaCheck::Never,
+        ..default()
+    }));
     #[cfg(not(feature = "visual"))]
     app.add_plugins((
         MinimalPlugins,
