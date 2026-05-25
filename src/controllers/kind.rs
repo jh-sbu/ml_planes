@@ -3,6 +3,7 @@ use bevy::prelude::Component;
 use crate::controllers::heading_hold::HeadingHoldController;
 use crate::controllers::orbit::OrbitController;
 use crate::controllers::tuning::ControllerTuning;
+use crate::controllers::waypoint::WaypointController;
 use crate::controllers::{
     AscentController, FlightController, LevelHoldController, ManualController,
 };
@@ -46,6 +47,8 @@ pub enum ControllerKind {
     /// Holds a configurable heading (yaw direction) while maintaining altitude
     /// and airspeed via an inner level-hold cascade.
     HeadingHold,
+    /// Flies to a configurable 3-D target point then orbits it.
+    Waypoint,
 }
 
 impl ControllerKind {
@@ -56,6 +59,7 @@ impl ControllerKind {
         Self::HeadingHold,
         Self::Ascent,
         Self::Orbit,
+        Self::Waypoint,
     ];
 
     #[cfg(any(feature = "inference", feature = "training"))]
@@ -69,6 +73,7 @@ impl ControllerKind {
         Self::RlOrbit,
         Self::RlOrbitResidual,
         Self::RlLstmOrbit,
+        Self::Waypoint,
     ];
 
     pub fn name(self) -> &'static str {
@@ -83,6 +88,7 @@ impl ControllerKind {
             ControllerKind::RlOrbit => "RL Orbit",
             ControllerKind::RlOrbitResidual => "RL Orbit Residual",
             ControllerKind::RlLstmOrbit => "RL LSTM Orbit",
+            ControllerKind::Waypoint => "Waypoint",
         }
     }
 
@@ -96,6 +102,11 @@ impl ControllerKind {
             ControllerKind::RlLstmOrbit => Some("lstm_orbit"),
             _ => None,
         }
+    }
+
+    /// Whether this kind uses the `waypoint` tuning pool.
+    pub fn is_waypoint(self) -> bool {
+        matches!(self, ControllerKind::Waypoint)
     }
 
     /// Whether this kind uses the `heading_hold` tuning pool.
@@ -153,6 +164,29 @@ impl ControllerKind {
                 match tuning {
                     Some(t) => t.build(state, prev_inputs),
                     None => Box::new(LevelHoldController::from_state(state, prev_inputs)),
+                }
+            }
+            ControllerKind::Waypoint => {
+                match tuning {
+                    Some(t) => t.build(state, prev_inputs),
+                    None => {
+                        // Default target: 1 km ahead of the current heading.
+                        let speed_xz = (state.velocity.x.powi(2) + state.velocity.z.powi(2))
+                            .sqrt()
+                            .max(1.0);
+                        let hx = state.velocity.x / speed_xz;
+                        let hz = state.velocity.z / speed_xz;
+                        let target_x = state.position.x + hx * 1000.0;
+                        let target_z = state.position.z + hz * 1000.0;
+                        Box::new(WaypointController::from_state(
+                            state,
+                            target_x,
+                            target_z,
+                            state.altitude,
+                            state.airspeed,
+                            prev_inputs,
+                        ))
+                    }
                 }
             }
         }

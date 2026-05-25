@@ -6,7 +6,7 @@ use crate::camera::CameraMode;
 use crate::controllers::{
     ActiveController, AscentController, ControllerKind, HeadingHoldController, LeaderRef,
     LevelHoldController, ModelLibrary, OrbitController, OrbitDirection, PlaneTuning, SelectedModel,
-    SelectedTuningProfile,
+    SelectedTuningProfile, WaypointController, WaypointPhase,
 };
 use crate::plane::{ControlInputs, FlightState, PlaneIndex, PlaneTuningHandle};
 use crate::ui::file_load::{self, PendingLoads};
@@ -342,6 +342,18 @@ pub fn draw_flight_hud(
                 }
             }
 
+            if *kind == ControllerKind::Waypoint {
+                if let Some(wpt) = controller
+                    .0
+                    .as_any_mut()
+                    .downcast_mut::<WaypointController>()
+                {
+                    if draw_waypoint_controls(ui, state, wpt) {
+                        wpt.reset_guidance();
+                    }
+                }
+            }
+
             #[cfg(any(feature = "inference", feature = "training"))]
             if *kind == ControllerKind::RlLevelHold {
                 use crate::controllers::RlLevelHoldController;
@@ -631,6 +643,71 @@ fn draw_orbit_controls(
     let r = (rx * rx + rz * rz).sqrt();
     ui.label(format!("Radius err: {:.1} m", r - *target_radius));
     direction_changed
+}
+
+/// Draw waypoint controller HUD section.
+///
+/// Returns `true` when `target_x` or `target_z` was changed so the caller
+/// can reset guidance PIDs accordingly.
+fn draw_waypoint_controls(
+    ui: &mut egui::Ui,
+    state: &FlightState,
+    wpt: &mut WaypointController,
+) -> bool {
+    let prev_x = wpt.target_x;
+    let prev_z = wpt.target_z;
+
+    ui.horizontal(|ui| {
+        ui.label("Target X:");
+        ui.add(
+            egui::DragValue::new(&mut wpt.target_x)
+                .speed(10.0)
+                .range(-50_000.0..=50_000.0)
+                .suffix(" m"),
+        );
+    });
+    ui.horizontal(|ui| {
+        ui.label("Target Z:");
+        ui.add(
+            egui::DragValue::new(&mut wpt.target_z)
+                .speed(10.0)
+                .range(-50_000.0..=50_000.0)
+                .suffix(" m"),
+        );
+    });
+    ui.horizontal(|ui| {
+        ui.label("Target Alt:");
+        ui.add(
+            egui::DragValue::new(&mut wpt.target_altitude)
+                .speed(10.0)
+                .range(100.0..=15000.0)
+                .suffix(" m"),
+        );
+    });
+    let tgt_kts = wpt.target_airspeed * 1.944;
+    ui.horizontal(|ui| {
+        ui.label("Target Spd:");
+        ui.add(
+            egui::DragValue::new(&mut wpt.target_airspeed)
+                .speed(1.0)
+                .range(30.0..=200.0)
+                .suffix(" m/s"),
+        );
+        ui.label(format!("({:.0} kts)", tgt_kts));
+    });
+
+    let dx = state.position.x - wpt.target_x;
+    let dz = state.position.z - wpt.target_z;
+    let horiz_dist = (dx * dx + dz * dz).sqrt();
+    let phase_label = match wpt.phase {
+        WaypointPhase::Approach => "Approach",
+        WaypointPhase::Orbit => "Orbit",
+    };
+    ui.label(format!("Phase:    {}", phase_label));
+    ui.label(format!("Distance: {:.0} m", horiz_dist));
+    ui.label("Right-click ground to set target");
+
+    wpt.target_x != prev_x || wpt.target_z != prev_z
 }
 
 fn add_surface_bar(

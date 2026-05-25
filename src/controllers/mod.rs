@@ -17,6 +17,7 @@ pub mod rl_orbit_residual;
 pub mod selected_model;
 pub mod traits;
 pub mod tuning;
+pub mod waypoint;
 pub mod wingman;
 
 pub use ascent::AscentController;
@@ -42,6 +43,7 @@ pub use selected_model::{ModelLibrary, SelectedModel};
 pub use traits::FlightController;
 pub use tuning::{
     ControllerTuning, HeadingHoldTuning, LevelHoldTuning, OrbitTuning, PlaneTuning,
-    SelectedTuningProfile, TuningApplied,
+    SelectedTuningProfile, TuningApplied, WaypointTuning,
 };
+pub use waypoint::{WaypointController, WaypointPhase};
 pub use wingman::{feed_leader_state, FormationOffset, LeaderRef, LeaderState, WingmanController};
