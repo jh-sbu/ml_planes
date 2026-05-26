@@ -19,7 +19,7 @@ use crate::controllers::orbit::{
     OrbitController, OrbitDirection, OrbitObservationTerms, ORBIT_OBS_DIM,
 };
 use crate::controllers::FlightController;
-use crate::plane::{ControlInputs, FlightState, PlaneConfig};
+use crate::plane::{ControlInputs, ControllerContext, FlightState, PlaneConfig, PlaneId};
 use crate::training::flight_env::{integrate_state, roll_angle, Lcg};
 
 use crate::training::reward_config::OrbitRewardConfig;
@@ -287,7 +287,11 @@ impl TrainingEnv for ResidualOrbitEnv {
     }
 
     fn step(&mut self, action: &[f32]) -> (Observation, f32, bool, StepInfo) {
-        let pid_inputs = self.orbit_controller.update(&self.state, self.dt);
+        let pid_inputs = self.orbit_controller.update(
+            &self.state,
+            &ControllerContext::empty_for(PlaneId::TEST),
+            self.dt,
+        );
 
         let scale = self.reward_cfg.residual_scale;
         let mut final_inputs = ControlInputs {
@@ -445,7 +449,11 @@ mod tests {
 
         // Manually advance the reference state using the PID output.
         let mut ref_ctrl = env.orbit_controller.clone();
-        let pid_inputs = ref_ctrl.update(&ref_state, env.dt);
+        let pid_inputs = ref_ctrl.update(
+            &ref_state,
+            &ControllerContext::empty_for(PlaneId::TEST),
+            env.dt,
+        );
         integrate_state(&mut ref_state, &pid_inputs, &env.cfg, env.dt);
         ref_state.update_air_data();
 

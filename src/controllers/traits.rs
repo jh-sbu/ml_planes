@@ -1,10 +1,12 @@
-use crate::plane::{ControlInputs, FlightState};
+use crate::plane::{ControlInputs, ControllerContext, FlightState};
 
 pub trait FlightController: Send + Sync + 'static {
-    fn update(&mut self, state: &FlightState, dt: f32) -> ControlInputs;
+    fn update(&mut self, own: &FlightState, ctx: &ControllerContext, dt: f32) -> ControlInputs;
+
     fn name(&self) -> &'static str {
         "Unknown"
     }
+
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 
     #[cfg(feature = "visual")]

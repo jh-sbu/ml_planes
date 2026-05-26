@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
 
 use ml_planes::controllers::{ActiveController, ManualController};
-use ml_planes::plane::{ControlInputs, FlightState, PlaneConfig, PlaneConfigHandle};
+use ml_planes::plane::{ControlInputs, FlightState, PlaneConfig, PlaneConfigHandle, PlaneId};
 
 /// Full pipeline energy-conservation test.
 ///
@@ -38,6 +38,7 @@ fn energy_conservation_5s() {
             principal_inertia: cfg.inertia,
             principal_inertia_local_frame: Quat::IDENTITY,
         }),
+        PlaneId::TEST,
         FlightState::default(),
         ControlInputs::default(),
         ActiveController(Box::new(ManualController::new())),

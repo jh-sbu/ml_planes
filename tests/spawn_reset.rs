@@ -5,7 +5,7 @@ use bevy::prelude::*;
 
 use ml_planes::controllers::{ControllerKind, ManualController};
 use ml_planes::environment::spawn_plane;
-use ml_planes::plane::FlightState;
+use ml_planes::plane::{FlightState, NextPlaneId};
 use ml_planes::training::SpawnSpec;
 
 /// Verify spawn_plane → sync_flight_state correctly populates FlightState.
@@ -32,9 +32,12 @@ fn spawn_then_sync_flight_state() {
     // applies deferred Commands — the entity exists in the world before update().
     app.world_mut()
         .run_system_once(
-            move |mut commands: Commands, asset_server: Res<AssetServer>| {
+            move |mut commands: Commands,
+                  asset_server: Res<AssetServer>,
+                  mut ids: ResMut<NextPlaneId>| {
                 spawn_plane(
                     &mut commands,
+                    &mut ids,
                     &asset_server,
                     &spec,
                     Box::new(ManualController::new()),

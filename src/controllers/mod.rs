@@ -46,4 +46,4 @@ pub use tuning::{
     SelectedTuningProfile, TuningApplied, WaypointTuning,
 };
 pub use waypoint::{WaypointController, WaypointPhase};
-pub use wingman::{feed_leader_state, FormationOffset, LeaderRef, LeaderState, WingmanController};
+pub use wingman::{FormationOffset, WingmanController};

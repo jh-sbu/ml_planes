@@ -134,7 +134,12 @@ impl WaypointController {
 }
 
 impl FlightController for WaypointController {
-    fn update(&mut self, state: &FlightState, dt: f32) -> ControlInputs {
+    fn update(
+        &mut self,
+        state: &FlightState,
+        ctx: &crate::plane::ControllerContext,
+        dt: f32,
+    ) -> ControlInputs {
         let dx = self.target_x - state.position.x;
         let dz = self.target_z - state.position.z;
         let horiz_dist = (dx * dx + dz * dz).sqrt();
@@ -150,8 +155,8 @@ impl FlightController for WaypointController {
         }
 
         match self.phase {
-            WaypointPhase::Approach => self.run_approach(state, dt),
-            WaypointPhase::Orbit => self.run_orbit(state, dt),
+            WaypointPhase::Approach => self.run_approach(state, ctx, dt),
+            WaypointPhase::Orbit => self.run_orbit(state, ctx, dt),
         }
     }
 
@@ -165,7 +170,12 @@ impl FlightController for WaypointController {
 }
 
 impl WaypointController {
-    fn run_approach(&mut self, state: &FlightState, dt: f32) -> ControlInputs {
+    fn run_approach(
+        &mut self,
+        state: &FlightState,
+        ctx: &crate::plane::ControllerContext,
+        dt: f32,
+    ) -> ControlInputs {
         let dx = self.target_x - state.position.x;
         let dz = self.target_z - state.position.z;
 
@@ -195,10 +205,15 @@ impl WaypointController {
         self.inner.target_roll = bank_cmd;
         self.inner.target_altitude = self.target_altitude;
         self.inner.target_airspeed = self.target_airspeed;
-        self.inner.update(state, dt)
+        self.inner.update(state, ctx, dt)
     }
 
-    fn run_orbit(&mut self, state: &FlightState, dt: f32) -> ControlInputs {
+    fn run_orbit(
+        &mut self,
+        state: &FlightState,
+        ctx: &crate::plane::ControllerContext,
+        dt: f32,
+    ) -> ControlInputs {
         // Identical to OrbitController::update() with center = (target_x, target_z)
         // and target_radius = orbit_radius.
         let rx = state.position.x - self.target_x;
@@ -208,7 +223,7 @@ impl WaypointController {
         if current_radius < 1.0 {
             self.inner.target_altitude = self.target_altitude;
             self.inner.target_airspeed = self.target_airspeed;
-            return self.inner.update(state, dt);
+            return self.inner.update(state, ctx, dt);
         }
 
         let (tang_x, tang_z) = match self.orbit_direction {
@@ -243,7 +258,7 @@ impl WaypointController {
         self.inner.target_roll = target_roll;
         self.inner.target_altitude = self.target_altitude;
         self.inner.target_airspeed = self.target_airspeed;
-        self.inner.update(state, dt)
+        self.inner.update(state, ctx, dt)
     }
 }
 
@@ -301,7 +316,11 @@ mod tests {
             80.0,
             &ControlInputs::default(),
         );
-        ctrl.update(&state, 1.0 / 64.0);
+        ctrl.update(
+            &state,
+            &crate::plane::ControllerContext::empty_for(crate::plane::PlaneId::TEST),
+            1.0 / 64.0,
+        );
         assert!(
             ctrl.inner.target_roll.abs() < 0.05,
             "zero bearing error should produce near-zero bank, got {}",
@@ -321,7 +340,11 @@ mod tests {
             &ControlInputs::default(),
         );
         // Force into orbit by transitioning.
-        ctrl.update(&state, 1.0 / 64.0);
+        ctrl.update(
+            &state,
+            &crate::plane::ControllerContext::empty_for(crate::plane::PlaneId::TEST),
+            1.0 / 64.0,
+        );
         // May have transitioned to Orbit since distance ≈ 150 m < 300 m arrival_radius.
         ctrl.reset_guidance();
         assert_eq!(ctrl.phase, WaypointPhase::Approach);

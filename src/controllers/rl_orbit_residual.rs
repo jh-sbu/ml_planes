@@ -153,7 +153,12 @@ impl RlOrbitResidualController {
 }
 
 impl FlightController for RlOrbitResidualController {
-    fn update(&mut self, state: &FlightState, dt: f32) -> ControlInputs {
+    fn update(
+        &mut self,
+        state: &FlightState,
+        ctx: &crate::plane::ControllerContext,
+        dt: f32,
+    ) -> ControlInputs {
         // Sync PID's orbit parameters with our public fields (allows runtime changes).
         self.pid.center_x = self.center_x;
         self.pid.center_z = self.center_z;
@@ -162,7 +167,7 @@ impl FlightController for RlOrbitResidualController {
         self.pid.target_airspeed = self.target_airspeed;
         self.pid.direction = self.direction;
 
-        let pid_inputs = self.pid.update(state, dt);
+        let pid_inputs = self.pid.update(state, ctx, dt);
 
         let obs = build_orbit_observation(
             state,
@@ -259,7 +264,11 @@ mod tests {
             "obs has NaN/inf: {obs:?}"
         );
 
-        let inputs = ctrl.update(&state, 1.0 / 60.0);
+        let inputs = ctrl.update(
+            &state,
+            &crate::plane::ControllerContext::empty_for(crate::plane::PlaneId::TEST),
+            1.0 / 60.0,
+        );
         assert!(inputs.aileron.is_finite());
         assert!(inputs.elevator.is_finite());
         assert!(inputs.rudder.is_finite());

@@ -48,13 +48,18 @@ impl AscentController {
 }
 
 impl FlightController for AscentController {
-    fn update(&mut self, state: &FlightState, dt: f32) -> ControlInputs {
+    fn update(
+        &mut self,
+        state: &FlightState,
+        ctx: &crate::plane::ControllerContext,
+        dt: f32,
+    ) -> ControlInputs {
         if (state.altitude - self.target_altitude).abs() < self.threshold {
             self.complete = true;
         }
         // Overwrite every tick (guard against external mutation of inner).
         self.inner.target_altitude = self.target_altitude;
-        self.inner.update(state, dt)
+        self.inner.update(state, ctx, dt)
     }
 
     fn name(&self) -> &'static str {
@@ -92,7 +97,11 @@ mod tests {
     fn positive_elevator_when_below_target() {
         let state = level_state(500.0, 100.0);
         let mut ctrl = AscentController::new(&state, 1000.0);
-        let inputs = ctrl.update(&state, 1.0 / 60.0);
+        let inputs = ctrl.update(
+            &state,
+            &crate::plane::ControllerContext::empty_for(crate::plane::PlaneId::TEST),
+            1.0 / 60.0,
+        );
         assert!(inputs.elevator > 0.0, "elevator={}", inputs.elevator);
     }
 
@@ -100,7 +109,11 @@ mod tests {
     fn complete_flag_set_within_threshold() {
         let state = level_state(995.0, 100.0); // 5 m below target, inside 10 m threshold
         let mut ctrl = AscentController::new(&state, 1000.0);
-        ctrl.update(&state, 1.0 / 60.0);
+        ctrl.update(
+            &state,
+            &crate::plane::ControllerContext::empty_for(crate::plane::PlaneId::TEST),
+            1.0 / 60.0,
+        );
         assert!(
             ctrl.complete,
             "expected complete=true at altitude 995 with target 1000"
@@ -111,7 +124,11 @@ mod tests {
     fn not_complete_when_far_below() {
         let state = level_state(800.0, 100.0);
         let mut ctrl = AscentController::new(&state, 1000.0);
-        ctrl.update(&state, 1.0 / 60.0);
+        ctrl.update(
+            &state,
+            &crate::plane::ControllerContext::empty_for(crate::plane::PlaneId::TEST),
+            1.0 / 60.0,
+        );
         assert!(
             !ctrl.complete,
             "expected complete=false at altitude 800 with target 1000"
@@ -122,7 +139,11 @@ mod tests {
     fn outputs_finite_on_first_tick() {
         let state = level_state(500.0, 100.0);
         let mut ctrl = AscentController::new(&state, 1500.0);
-        let inputs = ctrl.update(&state, 1.0 / 60.0);
+        let inputs = ctrl.update(
+            &state,
+            &crate::plane::ControllerContext::empty_for(crate::plane::PlaneId::TEST),
+            1.0 / 60.0,
+        );
         assert!(inputs.elevator.is_finite());
         assert!(inputs.aileron.is_finite());
         assert!(inputs.rudder.is_finite());
@@ -133,11 +154,19 @@ mod tests {
     fn complete_latches_and_stays_true() {
         let at_target = level_state(1000.0, 100.0);
         let mut ctrl = AscentController::new(&at_target, 1000.0);
-        ctrl.update(&at_target, 1.0 / 60.0);
+        ctrl.update(
+            &at_target,
+            &crate::plane::ControllerContext::empty_for(crate::plane::PlaneId::TEST),
+            1.0 / 60.0,
+        );
         assert!(ctrl.complete);
         // Simulate a temporary dip back below threshold (e.g. phugoid).
         let below = level_state(985.0, 100.0);
-        ctrl.update(&below, 1.0 / 60.0);
+        ctrl.update(
+            &below,
+            &crate::plane::ControllerContext::empty_for(crate::plane::PlaneId::TEST),
+            1.0 / 60.0,
+        );
         assert!(
             ctrl.complete,
             "complete should remain latched after leaving threshold"

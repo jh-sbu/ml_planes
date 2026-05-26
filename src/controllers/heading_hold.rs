@@ -79,7 +79,12 @@ fn heading_from_state(state: &FlightState) -> f32 {
 }
 
 impl FlightController for HeadingHoldController {
-    fn update(&mut self, state: &FlightState, dt: f32) -> ControlInputs {
+    fn update(
+        &mut self,
+        state: &FlightState,
+        ctx: &crate::plane::ControllerContext,
+        dt: f32,
+    ) -> ControlInputs {
         // Current heading unit vector from velocity (or attitude at low speed).
         let speed_xz = (state.velocity.x.powi(2) + state.velocity.z.powi(2)).sqrt();
         let (head_x, head_z) = if speed_xz > 1.0 {
@@ -103,7 +108,7 @@ impl FlightController for HeadingHoldController {
         // is CCW (left) of target, so we need to bank right → decrease target_roll.
         let bank_cmd = -self.heading_pid.update(heading_error, dt);
         self.inner.target_roll = bank_cmd;
-        self.inner.update(state, dt)
+        self.inner.update(state, ctx, dt)
     }
 
     fn name(&self) -> &'static str {
@@ -176,7 +181,11 @@ mod tests {
     fn zero_error_produces_zero_bank_command() {
         let state = level_state();
         let mut ctrl = HeadingHoldController::from_state(&state, &ControlInputs::default());
-        ctrl.update(&state, 1.0 / 60.0);
+        ctrl.update(
+            &state,
+            &crate::plane::ControllerContext::empty_for(crate::plane::PlaneId::TEST),
+            1.0 / 60.0,
+        );
         assert!(
             ctrl.inner.target_roll.abs() < 0.05,
             "target_roll={} expected ≈0 at sustained zero heading error",

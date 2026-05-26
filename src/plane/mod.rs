@@ -1,10 +1,12 @@
 pub mod config;
+pub mod context;
 pub mod inputs;
 pub mod plugin;
 pub mod state;
 pub mod systems;
 
 pub use config::PlaneConfig;
+pub use context::{ControllerContext, NextPlaneId, PlaneId, PlaneSnapshot, SpawnedPlane};
 pub use inputs::ControlInputs;
 pub use plugin::{PlaneConfigHandle, PlanePlugin, PlaneTuningHandle};
 pub use state::FlightState;

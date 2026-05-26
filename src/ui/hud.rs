@@ -4,11 +4,11 @@ use std::f32::consts::PI;
 
 use crate::camera::CameraMode;
 use crate::controllers::{
-    ActiveController, AscentController, ControllerKind, HeadingHoldController, LeaderRef,
-    LevelHoldController, ModelLibrary, OrbitController, OrbitDirection, PlaneTuning, SelectedModel,
-    SelectedTuningProfile, WaypointController, WaypointPhase,
+    ActiveController, AscentController, ControllerKind, HeadingHoldController, LevelHoldController,
+    ModelLibrary, OrbitController, OrbitDirection, PlaneTuning, SelectedModel,
+    SelectedTuningProfile, WaypointController, WaypointPhase, WingmanController,
 };
-use crate::plane::{ControlInputs, FlightState, PlaneIndex, PlaneTuningHandle};
+use crate::plane::{ControlInputs, FlightState, PlaneId, PlaneIndex, PlaneTuningHandle};
 use crate::ui::file_load::{self, PendingLoads};
 
 #[allow(unused_variables, unused_mut)]
@@ -24,9 +24,8 @@ pub fn draw_flight_hud(
         Option<&mut SelectedTuningProfile>,
         Option<&PlaneTuningHandle>,
         Option<&mut SelectedModel>,
-        Option<&mut LeaderRef>,
     )>,
-    all_planes: Query<(Entity, &PlaneIndex), With<FlightState>>,
+    all_planes: Query<(Entity, &PlaneId, &PlaneIndex), With<FlightState>>,
     tuning_assets: Res<Assets<PlaneTuning>>,
     model_lib: Res<ModelLibrary>,
     mut pending: ResMut<PendingLoads>,
@@ -46,7 +45,6 @@ pub fn draw_flight_hud(
         mut profile,
         tuning_handle,
         mut selected_model,
-        mut leader_ref,
     )) = result
     else {
         return;
@@ -54,14 +52,17 @@ pub fn draw_flight_hud(
 
     let Ok(ctx) = contexts.ctx_mut() else { return };
 
-    let mut pairs: Vec<(Entity, u32)> = all_planes.iter().map(|(e, idx)| (e, idx.0)).collect();
-    pairs.sort_by_key(|&(_, i)| i);
+    let mut pairs: Vec<(Entity, PlaneId, u32)> = all_planes
+        .iter()
+        .map(|(e, pid, idx)| (e, *pid, idx.0))
+        .collect();
+    pairs.sort_by_key(|&(_, _, i)| i);
     let camera_label = match *mode {
         CameraMode::FreeLook => "Camera: Free Look".to_string(),
         CameraMode::Follow(entity) => {
             let n = pairs
                 .iter()
-                .position(|&(e, _)| e == entity)
+                .position(|&(e, _, _)| e == entity)
                 .map(|i| i + 1)
                 .unwrap_or(0);
             format!("Camera: Follow Plane {}", n)
@@ -123,30 +124,34 @@ pub fn draw_flight_hud(
             ui.label("(C to cycle)");
 
             if *kind == ControllerKind::Wingman {
-                if let Some(ref mut lref) = leader_ref {
-                    let current_leader = lref.0;
-                    let mut selected_leader = current_leader;
+                if let Some(wc) = controller
+                    .0
+                    .as_any_mut()
+                    .downcast_mut::<WingmanController>()
+                {
+                    let current_leader_id = wc.leader_id;
+                    let mut selected_leader_id = current_leader_id;
                     let leader_label = pairs
                         .iter()
-                        .find(|&&(e, _)| e == current_leader)
-                        .map(|&(_, idx)| format!("Plane {}", idx))
+                        .find(|&&(_, pid, _)| pid == current_leader_id)
+                        .map(|&(_, _, idx)| format!("Plane {}", idx))
                         .unwrap_or_else(|| "Unknown".to_string());
                     egui::ComboBox::from_label("Leader")
                         .selected_text(&leader_label)
                         .show_ui(ui, |ui| {
-                            for &(entity, idx) in &pairs {
+                            for &(entity, pid, idx) in &pairs {
                                 if entity == current_entity {
                                     continue;
                                 }
                                 ui.selectable_value(
-                                    &mut selected_leader,
-                                    entity,
+                                    &mut selected_leader_id,
+                                    pid,
                                     format!("Plane {}", idx),
                                 );
                             }
                         });
-                    if selected_leader != current_leader {
-                        lref.0 = selected_leader;
+                    if selected_leader_id != current_leader_id {
+                        wc.leader_id = selected_leader_id;
                     }
                 }
             }

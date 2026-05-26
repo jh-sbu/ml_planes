@@ -9,7 +9,9 @@ use bevy_rapier3d::prelude::*;
 use ml_planes::controllers::{
     ActiveController, ControllerKind, FlightController, WaypointController, WaypointPhase,
 };
-use ml_planes::plane::{ControlInputs, FlightState, PlaneConfig, PlaneConfigHandle};
+use ml_planes::plane::{
+    ControlInputs, ControllerContext, FlightState, PlaneConfig, PlaneConfigHandle, PlaneId,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -55,6 +57,7 @@ fn spawn_plane(app: &mut App, pos: Vec3, velocity: Vec3, controller: WaypointCon
             principal_inertia: cfg.inertia,
             principal_inertia_local_frame: Quat::IDENTITY,
         }),
+        PlaneId::TEST,
         FlightState::default(),
         ControlInputs::default(),
         ActiveController(Box::new(controller)),
@@ -96,7 +99,8 @@ fn bearing_toward_target_banks_right() {
         &ControlInputs::default(),
     );
 
-    ctrl.update(&state, 1.0 / 64.0);
+    let ctx = ControllerContext::empty_for(PlaneId::TEST);
+    ctrl.update(&state, &ctx, 1.0 / 64.0);
 
     // Bearing to +X from a +Z heading is a right turn → negative target_roll.
     assert!(
@@ -131,7 +135,8 @@ fn phase_transitions_to_orbit_on_arrival() {
 
     assert_eq!(ctrl.phase, WaypointPhase::Approach, "starts in Approach");
 
-    ctrl.update(&state, 1.0 / 64.0);
+    let ctx = ControllerContext::empty_for(PlaneId::TEST);
+    ctrl.update(&state, &ctx, 1.0 / 64.0);
 
     assert_eq!(
         ctrl.phase,
@@ -145,7 +150,8 @@ fn phase_transitions_to_orbit_on_arrival() {
 fn build_no_panic() {
     let state = make_state(Vec3::new(0.0, 1000.0, 0.0), Vec3::new(100.0, 0.0, 0.0));
     let mut ctrl = ControllerKind::Waypoint.build(&state, None, &ControlInputs::default());
-    let inputs = ctrl.update(&state, 1.0 / 64.0);
+    let ctx = ControllerContext::empty_for(PlaneId::TEST);
+    let inputs = ctrl.update(&state, &ctx, 1.0 / 64.0);
     assert!(!ctrl.name().is_empty(), "name() must not be empty");
     assert!(
         inputs.elevator.is_finite()
@@ -171,7 +177,8 @@ fn large_initial_heading_error_stays_finite() {
         80.0,
         &ControlInputs::default(),
     );
-    let inputs = ctrl.update(&state, 1.0 / 64.0);
+    let ctx = ControllerContext::empty_for(PlaneId::TEST);
+    let inputs = ctrl.update(&state, &ctx, 1.0 / 64.0);
     assert!(
         inputs.aileron.is_finite() && inputs.elevator.is_finite(),
         "outputs must be finite at 180° heading error"

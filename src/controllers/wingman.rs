@@ -1,24 +1,12 @@
-use bevy::prelude::{Component, Entity, Vec3};
+use bevy::prelude::{Component, Vec3};
 
-use crate::controllers::component::ActiveController;
 use crate::controllers::level_hold::LevelHoldController;
 use crate::controllers::pid::PidController;
 use crate::controllers::traits::FlightController;
-use crate::plane::{ControlInputs, FlightState};
+use crate::plane::{ControlInputs, ControllerContext, FlightState, PlaneId};
 
 // ---------------------------------------------------------------------------
 // Components
-
-/// Marks a wingman entity. Holds the ECS Entity of its designated leader.
-/// Used by `feed_leader_state` to look up the leader's FlightState each tick.
-#[derive(Component)]
-pub struct LeaderRef(pub Entity);
-
-/// Scratch-pad component on wingman entities.
-/// Written by `feed_leader_state` before `run_flight_controllers`; not read
-/// directly by the controller (it uses `cached_leader` inside the struct).
-#[derive(Component, Default, Clone)]
-pub struct LeaderState(pub Option<FlightState>);
 
 /// Desired formation slot in the leader's body frame.
 /// Axes: +X = forward (nose), +Y = right wing, +Z = up cockpit.
@@ -46,10 +34,13 @@ impl Default for FormationOffset {
 ///   - Airspeed target  ← leader airspeed + fore-aft range correction
 ///   - Bank angle cmd   ← lateral cross-track correction
 /// All stabilization is delegated to an inner `LevelHoldController`.
+///
+/// The leader is identified by `leader_id`; its current state is read from
+/// `ControllerContext` each tick — no ECS side-channel required.
 pub struct WingmanController {
-    /// Most-recently-injected leader FlightState. Written by the ECS system
-    /// `feed_leader_state` before each controller tick.
-    pub cached_leader: Option<FlightState>,
+    /// Stable id of the leader plane. Set at construction; may be updated via
+    /// `downcast_mut` when the formation is reconfigured (one-time edit, not per-tick).
+    pub leader_id: PlaneId,
     /// Desired offset in leader body frame [m].
     pub offset: FormationOffset,
     /// Inner stabilization controller. Its target_altitude, target_airspeed,
@@ -66,11 +57,13 @@ pub struct WingmanController {
 impl WingmanController {
     /// Construct a wingman controller.
     ///
+    /// `leader_id`      — stable `PlaneId` of the designated leader.
     /// `leader_initial` — approximate initial leader state (used to seed the
-    /// inner controller's targets for a bumpless start).
-    /// `own_initial`    — wingman's own initial FlightState.
+    ///                    inner controller's targets for a bumpless start).
+    /// `own_initial`    — wingman's own initial `FlightState`.
     /// `offset`         — formation slot in leader body frame.
     pub fn new(
+        leader_id: PlaneId,
         leader_initial: &FlightState,
         own_initial: &FlightState,
         offset: FormationOffset,
@@ -83,7 +76,7 @@ impl WingmanController {
         inner.target_airspeed = leader_initial.airspeed;
 
         Self {
-            cached_leader: Some(leader_initial.clone()),
+            leader_id,
             offset,
             inner,
             range_pid: PidController::new(0.2, 0.02, 0.5, 15.0, -10.0, 10.0),
@@ -93,15 +86,16 @@ impl WingmanController {
 }
 
 impl FlightController for WingmanController {
-    fn update(&mut self, state: &FlightState, dt: f32) -> ControlInputs {
-        let Some(ref leader) = self.cached_leader.clone() else {
-            // No leader data yet — hold current targets in inner controller.
-            return self.inner.update(state, dt);
+    fn update(&mut self, own: &FlightState, ctx: &ControllerContext, dt: f32) -> ControlInputs {
+        let Some(leader_snap) = ctx.find(self.leader_id) else {
+            // Leader not in context — hold current targets in inner controller.
+            return self.inner.update(own, ctx, dt);
         };
+        let leader = &leader_snap.state;
 
         // 1. Desired formation position in world frame.
         let target_pos = leader.position + leader.attitude * self.offset.offset_body;
-        let pos_error = target_pos - state.position;
+        let pos_error = target_pos - own.position;
 
         // 2. Altitude: set inner target directly from formation geometry.
         self.inner.target_altitude = target_pos.y;
@@ -118,7 +112,7 @@ impl FlightController for WingmanController {
         self.inner.target_roll = self.lateral_pid.update(lateral_error, dt);
 
         // 5. Delegate stabilization to inner LevelHoldController.
-        self.inner.update(state, dt)
+        self.inner.update(own, ctx, dt)
     }
 
     fn name(&self) -> &'static str {
@@ -131,37 +125,15 @@ impl FlightController for WingmanController {
 }
 
 // ---------------------------------------------------------------------------
-// ECS system
-
-/// Pre-controller system: reads the leader plane's `FlightState` and injects
-/// it into each wingman's `WingmanController` via `cached_leader`.
-///
-/// Must run AFTER `sync_flight_state` (so leader state is current) and
-/// BEFORE `run_flight_controllers` (so the wingman sees fresh data).
-pub fn feed_leader_state(
-    leader_query: bevy::prelude::Query<&FlightState>,
-    mut wingman_query: bevy::prelude::Query<(&LeaderRef, &mut ActiveController)>,
-) {
-    for (leader_ref, mut controller) in wingman_query.iter_mut() {
-        let leader_state = leader_query.get(leader_ref.0).ok().cloned();
-
-        if let Some(wc) = controller
-            .0
-            .as_any_mut()
-            .downcast_mut::<WingmanController>()
-        {
-            wc.cached_leader = leader_state;
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use bevy::math::Quat;
+    use std::sync::Arc;
+
+    use crate::plane::{PlaneId, PlaneSnapshot};
 
     fn level_state(pos: Vec3, airspeed: f32) -> FlightState {
         FlightState {
@@ -174,13 +146,41 @@ mod tests {
         }
     }
 
-    #[test]
-    fn fallback_with_no_leader_returns_finite_outputs() {
-        let own = level_state(Vec3::new(0.0, 1000.0, 0.0), 100.0);
-        let mut ctrl = WingmanController::new(&own, &own, FormationOffset::default());
-        ctrl.cached_leader = None;
+    fn make_ctx(
+        own_id: PlaneId,
+        own: &FlightState,
+        leader_id: Option<PlaneId>,
+        leader: Option<&FlightState>,
+    ) -> ControllerContext {
+        let mut snaps = vec![PlaneSnapshot {
+            id: own_id,
+            state: own.clone(),
+        }];
+        if let (Some(lid), Some(ls)) = (leader_id, leader) {
+            snaps.push(PlaneSnapshot {
+                id: lid,
+                state: ls.clone(),
+            });
+        }
+        ControllerContext {
+            own_id,
+            planes: Arc::from(snaps),
+        }
+    }
 
-        let inputs = ctrl.update(&own, 1.0 / 60.0);
+    const LEADER_ID: PlaneId = PlaneId(1);
+    const OWN_ID: PlaneId = PlaneId(2);
+
+    #[test]
+    fn fallback_with_no_leader_in_ctx_returns_finite_outputs() {
+        let own = level_state(Vec3::new(0.0, 1000.0, 0.0), 100.0);
+        let leader_initial = level_state(Vec3::new(0.0, 1000.0, 0.0), 100.0);
+        let mut ctrl =
+            WingmanController::new(LEADER_ID, &leader_initial, &own, FormationOffset::default());
+
+        // ctx contains only own plane — no leader snapshot.
+        let ctx = make_ctx(OWN_ID, &own, None, None);
+        let inputs = ctrl.update(&own, &ctx, 1.0 / 60.0);
         assert!(inputs.elevator.is_finite());
         assert!(inputs.throttle.is_finite());
         assert!(inputs.aileron.is_finite());
@@ -190,22 +190,19 @@ mod tests {
     #[test]
     fn zero_position_error_produces_minimal_corrections() {
         // Leader at (0, 1000, 0); offset (-20, 15, 0) body frame.
-        // At level flight with identity-ish attitude, desired slot ≈ (-20, 1000, 15).
-        // Spawn wingman exactly at that slot — error should be zero.
+        // With rotation_x(-π/2): body +X maps to world +X, body +Y maps to world +Z,
+        // body +Z maps to world -Y. So desired slot = (0,1000,0) + (-20, 0, 15) = (-20, 1000, 15).
         let leader = level_state(Vec3::new(0.0, 1000.0, 0.0), 100.0);
         let offset = FormationOffset {
             offset_body: Vec3::new(-20.0, 15.0, 0.0),
         };
-
-        // With rotation_x(-π/2): body +X maps to world +X, body +Y maps to world +Z,
-        // body +Z maps to world -Y. So desired slot = (0,1000,0) + (-20, 0, 15) = (-20, 1000, 15).
-        // (The attitude rotates body Y (+right) to world Z.)
         let desired = leader.position + leader.attitude * offset.offset_body;
         let own = level_state(desired, 100.0);
 
-        let mut ctrl = WingmanController::new(&leader, &own, offset);
+        let mut ctrl = WingmanController::new(LEADER_ID, &leader, &own, offset);
+        let ctx = make_ctx(OWN_ID, &own, Some(LEADER_ID), Some(&leader));
         let dt = 1.0 / 60.0;
-        let inputs = ctrl.update(&own, dt);
+        let inputs = ctrl.update(&own, &ctx, dt);
 
         // PIDs start at zero, so first-tick corrections should be small.
         assert!(inputs.aileron.abs() < 0.5, "aileron={}", inputs.aileron);
@@ -225,8 +222,9 @@ mod tests {
         let own_pos = desired - leader_right * 5.0;
         let own = level_state(own_pos, 100.0);
 
-        let mut ctrl = WingmanController::new(&leader, &own, offset);
-        ctrl.update(&own, 1.0 / 60.0);
+        let mut ctrl = WingmanController::new(LEADER_ID, &leader, &own, offset);
+        let ctx = make_ctx(OWN_ID, &own, Some(LEADER_ID), Some(&leader));
+        ctrl.update(&own, &ctx, 1.0 / 60.0);
 
         // Positive lateral error (wingman left of slot) should command positive bank (right).
         assert!(
@@ -250,8 +248,9 @@ mod tests {
         let own_pos = desired - leader_fwd * 10.0;
         let own = level_state(own_pos, 100.0);
 
-        let mut ctrl = WingmanController::new(&leader, &own, offset);
-        ctrl.update(&own, 1.0 / 60.0);
+        let mut ctrl = WingmanController::new(LEADER_ID, &leader, &own, offset);
+        let ctx = make_ctx(OWN_ID, &own, Some(LEADER_ID), Some(&leader));
+        ctrl.update(&own, &ctx, 1.0 / 60.0);
 
         assert!(
             ctrl.inner.target_airspeed > leader.airspeed,

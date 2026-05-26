@@ -6,14 +6,14 @@ use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
 
 use ml_planes::controllers::{
-    ActiveController, FormationOffset, LeaderRef, LeaderState, LevelHoldController,
-    WingmanController,
+    ActiveController, FormationOffset, LevelHoldController, WingmanController,
 };
-use ml_planes::plane::{ControlInputs, FlightState, PlaneConfig, PlaneConfigHandle};
+use ml_planes::plane::{ControlInputs, FlightState, PlaneConfig, PlaneConfigHandle, PlaneId};
 
 /// Spawn a plane and return its Entity.
 fn spawn_plane_entity(
     app: &mut App,
+    id: PlaneId,
     pos: Vec3,
     velocity: Vec3,
     controller: impl ml_planes::controllers::FlightController + 'static,
@@ -41,6 +41,7 @@ fn spawn_plane_entity(
                 principal_inertia: cfg.inertia,
                 principal_inertia_local_frame: Quat::IDENTITY,
             }),
+            id,
             FlightState::default(),
             ControlInputs::default(),
             ActiveController(Box::new(controller)),
@@ -61,9 +62,7 @@ fn read_states(app: &mut App) -> Vec<FlightState> {
 // ---------------------------------------------------------------------------
 
 /// Both planes (leader + wingman) should produce finite flight states and stay
-/// airborne over 30 simulated seconds. This validates the full pipeline:
-/// feed_leader_state injects the leader's FlightState into the wingman controller,
-/// which then commands control surfaces that keep the wingman flying.
+/// airborne over 30 simulated seconds.
 #[test]
 fn wingman_and_leader_stay_airborne() {
     const TARGET_ALT: f32 = 1000.0;
@@ -75,7 +74,6 @@ fn wingman_and_leader_stay_airborne() {
     let leader_pos = Vec3::new(0.0, TARGET_ALT, 0.0);
     let leader_vel = Vec3::new(TARGET_SPD, 0.0, 0.0);
 
-    // Leader state approximation for WingmanController constructor.
     let leader_initial = FlightState {
         position: leader_pos,
         velocity: leader_vel,
@@ -85,16 +83,15 @@ fn wingman_and_leader_stay_airborne() {
         ..Default::default()
     };
 
-    // Spawn leader.
-    let leader = spawn_plane_entity(
+    spawn_plane_entity(
         &mut app,
+        PlaneId(1),
         leader_pos,
         leader_vel,
         LevelHoldController::new(TARGET_ALT, TARGET_SPD),
     );
 
-    // Compute wingman's initial position from the formation offset.
-    let offset = FormationOffset::default(); // (-20, 15, 0) body frame
+    let offset = FormationOffset::default();
     let wingman_pos = leader_pos + attitude * offset.offset_body;
     let own_initial = FlightState {
         position: wingman_pos,
@@ -105,18 +102,13 @@ fn wingman_and_leader_stay_airborne() {
         ..Default::default()
     };
 
-    // Spawn wingman.
-    let wingman = spawn_plane_entity(
+    spawn_plane_entity(
         &mut app,
+        PlaneId(2),
         wingman_pos,
         leader_vel,
-        WingmanController::new(&leader_initial, &own_initial, offset.clone()),
+        WingmanController::new(PlaneId(1), &leader_initial, &own_initial, offset.clone()),
     );
-
-    // Attach wingman-specific components.
-    app.world_mut()
-        .entity_mut(wingman)
-        .insert((LeaderRef(leader), LeaderState::default(), offset));
 
     // Run for 30 simulated seconds (1920 updates × 1/64 s).
     for _ in 0..1920 {
@@ -185,19 +177,18 @@ fn wingman_follows_leader_altitude_change() {
 
     let leader = spawn_plane_entity(
         &mut app,
+        PlaneId(1),
         leader_pos,
         leader_vel,
         LevelHoldController::new(INITIAL_ALT, TARGET_SPD),
     );
-    let wingman = spawn_plane_entity(
+    spawn_plane_entity(
         &mut app,
+        PlaneId(2),
         wingman_pos,
         leader_vel,
-        WingmanController::new(&leader_initial, &own_initial, offset.clone()),
+        WingmanController::new(PlaneId(1), &leader_initial, &own_initial, offset),
     );
-    app.world_mut()
-        .entity_mut(wingman)
-        .insert((LeaderRef(leader), LeaderState::default(), offset));
 
     // Establish steady-state (10 s).
     for _ in 0..640 {
@@ -219,9 +210,16 @@ fn wingman_follows_leader_altitude_change() {
     }
 
     let states = read_states(&mut app);
+    let wingman_entity = app
+        .world_mut()
+        .query::<(Entity, &PlaneId)>()
+        .iter(app.world())
+        .find(|(_, id)| id.0 == 2)
+        .map(|(e, _)| e)
+        .expect("wingman entity not found");
     let wingman_state = app
         .world()
-        .entity(wingman)
+        .entity(wingman_entity)
         .get::<FlightState>()
         .unwrap()
         .clone();
@@ -241,4 +239,83 @@ fn wingman_follows_leader_altitude_change() {
             state.altitude
         );
     }
+}
+
+/// Context delivery behavioral test: spawn wingman 200 m below the leader
+/// (clearly outside the formation slot). After two app.updates() (one FixedUpdate
+/// tick), the wingman's ControlInputs must be non-default, proving that
+/// `run_flight_controllers` delivered the leader's FlightState via ControllerContext
+/// and the guidance law fired.
+#[test]
+fn wingman_ctx_delivers_leader_state() {
+    const TARGET_ALT: f32 = 1000.0;
+    const TARGET_SPD: f32 = 100.0;
+    // Spawn wingman 200 m below the leader — creates a clear altitude error.
+    const WINGMAN_ALT: f32 = 800.0;
+
+    let mut app = common::build_headless_app();
+
+    let attitude = Quat::from_rotation_x(-FRAC_PI_2);
+    let leader_pos = Vec3::new(0.0, TARGET_ALT, 0.0);
+    let leader_vel = Vec3::new(TARGET_SPD, 0.0, 0.0);
+
+    let leader_initial = FlightState {
+        position: leader_pos,
+        velocity: leader_vel,
+        attitude,
+        airspeed: TARGET_SPD,
+        altitude: TARGET_ALT,
+        ..Default::default()
+    };
+
+    spawn_plane_entity(
+        &mut app,
+        PlaneId(1),
+        leader_pos,
+        leader_vel,
+        LevelHoldController::new(TARGET_ALT, TARGET_SPD),
+    );
+
+    // Wingman spawned 200 m below the leader, NOT at the formation slot.
+    let wingman_pos = Vec3::new(0.0, WINGMAN_ALT, 0.0);
+    let own_initial = FlightState {
+        position: wingman_pos,
+        velocity: leader_vel,
+        attitude,
+        airspeed: TARGET_SPD,
+        altitude: WINGMAN_ALT,
+        ..Default::default()
+    };
+
+    let wingman = spawn_plane_entity(
+        &mut app,
+        PlaneId(2),
+        wingman_pos,
+        leader_vel,
+        WingmanController::new(
+            PlaneId(1),
+            &leader_initial,
+            &own_initial,
+            FormationOffset::default(),
+        ),
+    );
+
+    // Two updates: frame 0 initializes timing, frame 1 fires FixedUpdate.
+    app.update();
+    app.update();
+
+    let inputs = app
+        .world()
+        .entity(wingman)
+        .get::<ControlInputs>()
+        .unwrap()
+        .clone();
+
+    // With a 200 m altitude error the guidance law must produce non-trivial
+    // elevator and/or throttle — proving context delivery worked.
+    assert!(
+        inputs.throttle.abs() > 0.01 || inputs.elevator.abs() > 0.01,
+        "wingman ControlInputs near-zero despite 200 m altitude error — \
+         context delivery may have failed: {inputs:?}"
+    );
 }

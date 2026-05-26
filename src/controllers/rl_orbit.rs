@@ -122,7 +122,12 @@ impl RlOrbitController {
 }
 
 impl FlightController for RlOrbitController {
-    fn update(&mut self, state: &FlightState, _dt: f32) -> ControlInputs {
+    fn update(
+        &mut self,
+        state: &FlightState,
+        _ctx: &crate::plane::ControllerContext,
+        _dt: f32,
+    ) -> ControlInputs {
         let obs = build_orbit_observation(
             state,
             self.center_x,
@@ -215,7 +220,11 @@ mod tests {
             "obs contains NaN/inf: {obs:?}"
         );
 
-        let inputs = ctrl.update(&state, 1.0 / 60.0);
+        let inputs = ctrl.update(
+            &state,
+            &crate::plane::ControllerContext::empty_for(crate::plane::PlaneId::TEST),
+            1.0 / 60.0,
+        );
         assert!(inputs.aileron.is_finite());
         assert!(inputs.elevator.is_finite());
         assert!(inputs.rudder.is_finite());

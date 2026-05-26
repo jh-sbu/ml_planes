@@ -58,7 +58,12 @@ impl Default for ManualController {
 }
 
 impl FlightController for ManualController {
-    fn update(&mut self, _state: &FlightState, _dt: f32) -> ControlInputs {
+    fn update(
+        &mut self,
+        _state: &FlightState,
+        _ctx: &crate::plane::ControllerContext,
+        _dt: f32,
+    ) -> ControlInputs {
         self.inputs.clone()
     }
 

@@ -167,7 +167,12 @@ impl LevelHoldController {
 }
 
 impl FlightController for LevelHoldController {
-    fn update(&mut self, state: &FlightState, dt: f32) -> ControlInputs {
+    fn update(
+        &mut self,
+        state: &FlightState,
+        _ctx: &crate::plane::ControllerContext,
+        dt: f32,
+    ) -> ControlInputs {
         // Altitude cascade: altitude error → pitch_target → elevator.
         //
         // Pitch angle is a world-frame quantity: it oscillates during phugoid motion,
@@ -320,7 +325,11 @@ mod tests {
     fn altitude_below_target_gives_positive_elevator() {
         let mut ctrl = LevelHoldController::new(1000.0, 80.0);
         let state = level_state(900.0, 80.0); // 100 m below target
-        let inputs = ctrl.update(&state, 1.0 / 60.0);
+        let inputs = ctrl.update(
+            &state,
+            &crate::plane::ControllerContext::empty_for(crate::plane::PlaneId::TEST),
+            1.0 / 60.0,
+        );
         assert!(inputs.elevator > 0.0, "elevator={}", inputs.elevator);
     }
 
@@ -328,7 +337,11 @@ mod tests {
     fn altitude_above_target_gives_negative_elevator() {
         let mut ctrl = LevelHoldController::new(1000.0, 80.0);
         let state = level_state(1100.0, 80.0); // 100 m above target
-        let inputs = ctrl.update(&state, 1.0 / 60.0);
+        let inputs = ctrl.update(
+            &state,
+            &crate::plane::ControllerContext::empty_for(crate::plane::PlaneId::TEST),
+            1.0 / 60.0,
+        );
         assert!(inputs.elevator < 0.0, "elevator={}", inputs.elevator);
     }
 
@@ -336,7 +349,11 @@ mod tests {
     fn airspeed_below_target_gives_positive_throttle() {
         let mut ctrl = LevelHoldController::new(1000.0, 80.0);
         let state = level_state(1000.0, 60.0); // 20 m/s slow
-        let inputs = ctrl.update(&state, 1.0 / 60.0);
+        let inputs = ctrl.update(
+            &state,
+            &crate::plane::ControllerContext::empty_for(crate::plane::PlaneId::TEST),
+            1.0 / 60.0,
+        );
         assert!(inputs.throttle > 0.0, "throttle={}", inputs.throttle);
     }
 
@@ -348,7 +365,11 @@ mod tests {
         let mut ctrl =
             LevelHoldController::from_state(&level_state(1000.0, 80.0), &ControlInputs::default());
         let state = level_state(1000.0, 80.0);
-        let inputs = ctrl.update(&state, 1.0 / 60.0);
+        let inputs = ctrl.update(
+            &state,
+            &crate::plane::ControllerContext::empty_for(crate::plane::PlaneId::TEST),
+            1.0 / 60.0,
+        );
         assert!(inputs.elevator.abs() < 0.05, "elevator={}", inputs.elevator);
         assert!(inputs.aileron.abs() < 0.05, "aileron={}", inputs.aileron);
         assert!(inputs.rudder.abs() < 0.05, "rudder={}", inputs.rudder);
@@ -368,7 +389,11 @@ mod tests {
         // state.alpha = 0 (synthetic level state), so altitude integral seeds to 0 too.
         let mut ctrl = LevelHoldController::from_state(&level_state(1000.0, 80.0), &prev_inputs);
         let state = level_state(1000.0, 80.0);
-        let inputs = ctrl.update(&state, 1.0 / 60.0);
+        let inputs = ctrl.update(
+            &state,
+            &crate::plane::ControllerContext::empty_for(crate::plane::PlaneId::TEST),
+            1.0 / 60.0,
+        );
         // ki_spd = 0.06; seeded integral = 0.058/0.06 = 0.967 (clamped to 1.0 by integral_clamp).
         // throttle_fb = ki * integral ≈ 0.06 * 0.967 = 0.058, within 5 % of trim.
         let rel_err = (inputs.throttle - trim_throttle).abs() / trim_throttle;
@@ -394,7 +419,11 @@ mod tests {
             ..Default::default()
         };
         let mut ctrl = LevelHoldController::from_state(&state, &prev_inputs);
-        let inputs = ctrl.update(&state, 1.0 / 60.0);
+        let inputs = ctrl.update(
+            &state,
+            &crate::plane::ControllerContext::empty_for(crate::plane::PlaneId::TEST),
+            1.0 / 60.0,
+        );
         // Elevator should be near zero: pitch_target ≈ current_pitch ≈ 0, error ≈ 0.
         assert!(
             inputs.elevator.abs() < 0.1,

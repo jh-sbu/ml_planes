@@ -143,7 +143,12 @@ impl RlLstmOrbitController {
 }
 
 impl FlightController for RlLstmOrbitController {
-    fn update(&mut self, state: &FlightState, _dt: f32) -> ControlInputs {
+    fn update(
+        &mut self,
+        state: &FlightState,
+        _ctx: &crate::plane::ControllerContext,
+        _dt: f32,
+    ) -> ControlInputs {
         let obs = build_orbit_observation(
             state,
             self.center_x,
@@ -247,7 +252,11 @@ mod tests {
             direction: OrbitDirection::CounterClockwise,
         };
         let state = make_state(Vec3::new(0.0, 1000.0, -1000.0), Vec3::new(100.0, 0.0, 0.0));
-        let inputs = ctrl.update(&state, 1.0 / 60.0);
+        let inputs = ctrl.update(
+            &state,
+            &crate::plane::ControllerContext::empty_for(crate::plane::PlaneId::TEST),
+            1.0 / 60.0,
+        );
         assert!(inputs.elevator.is_finite());
         assert!(inputs.aileron.is_finite());
         assert!(inputs.rudder.is_finite());
@@ -270,7 +279,11 @@ mod tests {
         };
         let state = make_state(Vec3::new(0.0, 1000.0, -1000.0), Vec3::new(100.0, 0.0, 0.0));
         let h_before = ctrl.policy_hidden.h[0];
-        ctrl.update(&state, 1.0 / 60.0);
+        ctrl.update(
+            &state,
+            &crate::plane::ControllerContext::empty_for(crate::plane::PlaneId::TEST),
+            1.0 / 60.0,
+        );
         let h_after = ctrl.policy_hidden.h[0];
         // After one step the LSTM hidden state should change from zero.
         // (With a freshly initialised model and zero obs this may stay 0 — check that it's finite)

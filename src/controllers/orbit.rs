@@ -288,7 +288,12 @@ impl OrbitController {
 }
 
 impl FlightController for OrbitController {
-    fn update(&mut self, state: &FlightState, dt: f32) -> ControlInputs {
+    fn update(
+        &mut self,
+        state: &FlightState,
+        ctx: &crate::plane::ControllerContext,
+        dt: f32,
+    ) -> ControlInputs {
         let rx = state.position.x - self.center_x;
         let rz = state.position.z - self.center_z;
         let current_radius = (rx * rx + rz * rz).sqrt();
@@ -297,7 +302,7 @@ impl FlightController for OrbitController {
         if current_radius < 1.0 {
             self.inner.target_altitude = self.target_altitude;
             self.inner.target_airspeed = self.target_airspeed;
-            return self.inner.update(state, dt);
+            return self.inner.update(state, ctx, dt);
         }
 
         // Tangent direction (unit vector perpendicular to radial, in XZ plane).
@@ -346,7 +351,7 @@ impl FlightController for OrbitController {
         self.inner.target_roll = target_roll;
         self.inner.target_altitude = self.target_altitude;
         self.inner.target_airspeed = self.target_airspeed;
-        self.inner.update(state, dt)
+        self.inner.update(state, ctx, dt)
     }
 
     fn name(&self) -> &'static str {
@@ -431,7 +436,11 @@ mod tests {
         // bank_ff = -CCW.sign() * atan(V²/gR) = -(-1) * atan(...) = positive (right bank).
         let mut ctrl = make_orbit(0.0, 0.0, R, OrbitDirection::CounterClockwise);
         let state = make_state(Vec3::new(0.0, ALT, -R), Vec3::new(V, 0.0, 0.0));
-        ctrl.update(&state, 1.0 / 60.0);
+        ctrl.update(
+            &state,
+            &crate::plane::ControllerContext::empty_for(crate::plane::PlaneId::TEST),
+            1.0 / 60.0,
+        );
         let expected = -OrbitDirection::CounterClockwise.sign() * (V * V / (G * R)).atan();
         assert!(
             (ctrl.inner.target_roll - expected).abs() < 0.05,
@@ -448,7 +457,11 @@ mod tests {
         let mut ctrl = make_orbit(0.0, 0.0, R, OrbitDirection::CounterClockwise);
         // Plane at (0, -(R+extra)): radial = (0, -(R+extra)), CCW tangent = (+1, 0) = heading +X.
         let state = make_state(Vec3::new(0.0, ALT, -(R + extra)), Vec3::new(V, 0.0, 0.0));
-        ctrl.update(&state, 1.0 / 60.0);
+        ctrl.update(
+            &state,
+            &crate::plane::ControllerContext::empty_for(crate::plane::PlaneId::TEST),
+            1.0 / 60.0,
+        );
         let bank_ff = -OrbitDirection::CounterClockwise.sign() * (V * V / (G * R)).atan();
         assert!(
             ctrl.inner.target_roll > bank_ff,
@@ -468,8 +481,9 @@ mod tests {
         let state_ccw = make_state(Vec3::new(0.0, ALT, -R), Vec3::new(V, 0.0, 0.0));
         let state_cw = make_state(Vec3::new(0.0, ALT, R), Vec3::new(V, 0.0, 0.0));
 
-        ctrl_ccw.update(&state_ccw, 1.0 / 60.0);
-        ctrl_cw.update(&state_cw, 1.0 / 60.0);
+        let ec = crate::plane::ControllerContext::empty_for(crate::plane::PlaneId::TEST);
+        ctrl_ccw.update(&state_ccw, &ec, 1.0 / 60.0);
+        ctrl_cw.update(&state_cw, &ec, 1.0 / 60.0);
 
         assert!(
             ctrl_ccw.inner.target_roll > 0.0,

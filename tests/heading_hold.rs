@@ -6,7 +6,9 @@ use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
 
 use ml_planes::controllers::{ActiveController, FlightController, HeadingHoldController};
-use ml_planes::plane::{ControlInputs, FlightState, PlaneConfig, PlaneConfigHandle};
+use ml_planes::plane::{
+    ControlInputs, ControllerContext, FlightState, PlaneConfig, PlaneConfigHandle, PlaneId,
+};
 
 fn level_attitude() -> Quat {
     Quat::from_rotation_x(-FRAC_PI_2)
@@ -33,6 +35,7 @@ fn spawn_plane(app: &mut App, pos: Vec3, velocity: Vec3, controller: HeadingHold
             principal_inertia: cfg.inertia,
             principal_inertia_local_frame: Quat::IDENTITY,
         }),
+        PlaneId::TEST,
         FlightState::default(),
         ControlInputs::default(),
         ActiveController(Box::new(controller)),
@@ -75,7 +78,8 @@ fn zero_error_gives_near_zero_aileron() {
     };
     // Target heading = 0 rad (same as current velocity direction along +X).
     let mut ctrl = HeadingHoldController::from_state(&state, &ControlInputs::default());
-    let inputs = ctrl.update(&state, 1.0 / 60.0);
+    let ctx = ControllerContext::empty_for(PlaneId::TEST);
+    let inputs = ctrl.update(&state, &ctx, 1.0 / 60.0);
     assert!(
         inputs.aileron.abs() < 0.1,
         "aileron={} expected ≈0 at zero heading error",
@@ -106,7 +110,8 @@ fn heading_left_gives_right_bank() {
     let mut ctrl = HeadingHoldController::new(
         &state, 0.0, // target heading = 0 rad
     );
-    let inputs = ctrl.update(&state, 1.0 / 60.0);
+    let ctx = ControllerContext::empty_for(PlaneId::TEST);
+    let inputs = ctrl.update(&state, &ctx, 1.0 / 60.0);
     // Positive roll_angle = left bank; to correct a left-drifted heading we bank right
     // (negative roll → negative aileron).
     assert!(
@@ -136,7 +141,8 @@ fn heading_right_gives_left_bank() {
         altitude: 1000.0,
     };
     let mut ctrl = HeadingHoldController::new(&state, 0.0);
-    let inputs = ctrl.update(&state, 1.0 / 60.0);
+    let ctx = ControllerContext::empty_for(PlaneId::TEST);
+    let inputs = ctrl.update(&state, &ctx, 1.0 / 60.0);
     assert!(
         inputs.aileron > 0.0,
         "aileron={} expected >0 (left bank) when current heading is right of target",
