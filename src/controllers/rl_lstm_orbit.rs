@@ -20,6 +20,7 @@ use crate::controllers::orbit::{
 };
 use crate::controllers::FlightController;
 use crate::plane::{ControlInputs, FlightState};
+use crate::training::direct_action_to_inputs;
 use crate::training::ppo::lstm_model::{LstmActorCritic, LstmHiddenState, LSTM_HIDDEN};
 
 type InfB = NdArray;
@@ -190,14 +191,8 @@ impl FlightController for RlLstmOrbitController {
             .to_vec::<f32>()
             .expect("lstm orbit action");
 
-        let mut inputs = ControlInputs {
-            elevator: action[0],
-            throttle: (action[1] + 1.0) / 2.0,
-            aileron: action[2],
-            rudder: action[3],
-        };
-        inputs.clamp();
-        inputs
+        // action = [elevator, throttle_norm, aileron, rudder]
+        direct_action_to_inputs(&action)
     }
 
     fn name(&self) -> &'static str {

@@ -12,6 +12,9 @@ pub mod wu_orbit_reward;
 
 pub use env::{Observation, SpawnSpec, StepInfo, TrainingEnv};
 
+#[cfg(any(feature = "inference", feature = "training"))]
+pub(crate) use flight_env::direct_action_to_inputs;
+
 /// Optional trait for training environments that support a curriculum.
 ///
 /// Implemented by `WuOrbitEnv`; `LstmPpoTrainer` requires this bound

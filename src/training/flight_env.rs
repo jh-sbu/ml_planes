@@ -90,3 +90,68 @@ pub(crate) fn direct_action_to_inputs(action: &[f32]) -> ControlInputs {
     inputs.clamp();
     inputs
 }
+
+/// Inverse of [`direct_action_to_inputs`]: map physical `ControlInputs` back to a
+/// normalized direct-action vector `[elevator, throttle_norm, aileron, rudder]` in [-1, 1].
+///
+/// Required for supervised / behavior-cloning targets built from PID outputs: training a
+/// network on raw `ControlInputs.throttle` (in [0, 1]) would be double-mapped by
+/// `direct_action_to_inputs` at inference (e.g. 0.2 → 0.6). The throttle channel must be
+/// pre-converted via `throttle * 2 - 1`.
+///
+/// Currently `#[cfg(test)]` only — promote out of the gate when the BC pipeline that
+/// consumes it lands.
+#[cfg(test)]
+pub(crate) fn inputs_to_direct_action(inputs: &ControlInputs) -> [f32; 4] {
+    [
+        inputs.elevator,
+        inputs.throttle * 2.0 - 1.0,
+        inputs.aileron,
+        inputs.rudder,
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn direct_action_round_trips_through_inverse() {
+        // throttle in [0, 1], other channels in [-1, 1].
+        let cases = [
+            ControlInputs {
+                elevator: 0.0,
+                throttle: 0.0,
+                aileron: 0.0,
+                rudder: 0.0,
+            },
+            ControlInputs {
+                elevator: 0.3,
+                throttle: 0.2,
+                aileron: -0.7,
+                rudder: 0.5,
+            },
+            ControlInputs {
+                elevator: -1.0,
+                throttle: 1.0,
+                aileron: 1.0,
+                rudder: -1.0,
+            },
+            ControlInputs {
+                elevator: -0.4,
+                throttle: 0.65,
+                aileron: 0.9,
+                rudder: -0.2,
+            },
+        ];
+
+        for expected in cases {
+            let action = inputs_to_direct_action(&expected);
+            let got = direct_action_to_inputs(&action);
+            assert!((got.elevator - expected.elevator).abs() < 1e-6);
+            assert!((got.throttle - expected.throttle).abs() < 1e-6);
+            assert!((got.aileron - expected.aileron).abs() < 1e-6);
+            assert!((got.rudder - expected.rudder).abs() < 1e-6);
+        }
+    }
+}
