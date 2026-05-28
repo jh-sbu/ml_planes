@@ -262,7 +262,7 @@ where
         for epoch in 0..bc_epochs {
             last_mse = trainer.pretrain_bc(&data, 1, minibatch);
             if epoch % print_every == 0 || epoch + 1 == bc_epochs {
-                println!("  epoch {:>4}/{bc_epochs}  mse {last_mse:.6}", epoch + 1);
+                println!("  epoch {:>4}/{bc_epochs}  mse {last_mse:.6}  {:.1}s", epoch + 1, train_start.elapsed().as_secs_f64());
             }
         }
         println!(
