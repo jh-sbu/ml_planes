@@ -4,12 +4,21 @@
 //!
 //!   cargo run --example observe_state --no-default-features -- [OPTIONS]
 //!
+//! To exercise trained RL policies, add `--features inference`:
+//!
+//!   cargo run --example observe_state --no-default-features --features inference -- [OPTIONS]
+//!
 //! Options:
 //!   --plane PATH         Path to a .plane.ron config file (default: built-in generic_jet)
 //!   --tuning-file PATH   Path to a .tuning.ron file; loads gains for --profile
 //!   --profile NAME       Named tuning profile to use (default: "normal")
 //!   --steps N            Total simulation steps at 60 Hz (default: 600 = 10 s)
-//!   --controller NAME    level_hold (default) | orbit | manual (zero inputs)
+//!   --controller NAME    Controller to use:
+//!                          level_hold (default) | orbit | manual
+//!                          rl_level_hold | rl_orbit | rl_orbit_residual | rl_lstm_orbit
+//!                          (the rl_* variants require --features inference and --model)
+//!   --model PATH         Path to a trained .mpk weights file (required for rl_* controllers).
+//!                        The .mpk extension is optional.
 //!   --interval N         Print every Nth step (default: 10)
 //!   --altitude F         Target altitude [m] and spawn altitude (default: 500)
 //!   --airspeed F         Target airspeed [m/s] (default: 100)
@@ -23,7 +32,7 @@
 //!   --spd-kp F           Airspeed loop Kp override
 //!   --spd-ki F           Airspeed loop Ki override
 //!
-//! Orbit geometry (only used with --controller orbit):
+//! Orbit geometry (used with --controller orbit and any rl_orbit* variant):
 //!   --center-x F         Orbit center X [m] (default: auto from spawn)
 //!   --center-z F         Orbit center Z [m] (default: auto from spawn)
 //!   --radius F           Orbit radius [m] (default: 1000)
@@ -57,10 +66,16 @@ use ml_planes::{
     plane::{ControlInputs, FlightState, PlaneConfig, PlaneConfigHandle, PlanePlugin},
 };
 
+#[cfg(any(feature = "inference", feature = "training"))]
+use ml_planes::controllers::{
+    RlLevelHoldController, RlLstmOrbitConfig, RlLstmOrbitController, RlOrbitConfig,
+    RlOrbitController, RlOrbitResidualConfig, RlOrbitResidualController,
+};
+
 fn main() {
     let args = parse_args();
 
-    let header = if args.controller == "orbit" {
+    let header = if is_orbit_like(&args.controller) {
         "step,time_s,altitude_m,airspeed_ms,alpha_deg,beta_deg,pitch_rate,roll_rate,yaw_rate,elevator,throttle,aileron,rudder,radial_error_m,heading_error_rad,bank_ff_rad"
     } else {
         "step,time_s,altitude_m,airspeed_ms,alpha_deg,beta_deg,pitch_rate,roll_rate,yaw_rate,elevator,throttle,aileron,rudder"
@@ -192,19 +207,13 @@ fn main() {
             ctrl.direction = args.direction;
             ctrl.target_altitude = args.altitude;
             ctrl.target_airspeed = args.airspeed;
-            if let Some(v) = args.center_x {
-                ctrl.center_x = v;
-            } else {
-                // Plane spawns at X=0 flying +X. CCW center is in +Z, CW center is in -Z.
-                ctrl.center_x = 0.0;
-            }
-            if let Some(v) = args.center_z {
-                ctrl.center_z = v;
-            } else {
-                // Recompute auto-center with the actual target radius (from_state uses
-                // DEFAULT_RADIUS=1000, which would be wrong when args.radius != 1000).
-                ctrl.center_z = args.direction.sign() * (-1.0) * args.radius;
-            }
+            // Plane spawns at X=0 flying +X. CCW center is in +Z, CW center is in -Z.
+            // Recompute auto-center with the actual target radius (from_state uses
+            // DEFAULT_RADIUS=1000, which would be wrong when args.radius != 1000).
+            let (cx, cz) =
+                resolve_orbit_center(args.center_x, args.center_z, args.radius, args.direction);
+            ctrl.center_x = cx;
+            ctrl.center_z = cz;
             // Re-seed bank feedforward with the actual target radius (from_state pre-seeds
             // with DEFAULT_RADIUS=1000, which is wrong when args.radius differs).
             ctrl.inner.target_roll = (-ctrl.direction.sign()
@@ -217,10 +226,102 @@ fn main() {
             orbit_center_z = ctrl.center_z;
             Box::new(ctrl)
         }
-        _ => {
+        "manual" => {
             orbit_center_x = 0.0;
             orbit_center_z = 0.0;
             Box::new(ManualController::new())
+        }
+        #[cfg(any(feature = "inference", feature = "training"))]
+        "rl_level_hold" => {
+            orbit_center_x = 0.0;
+            orbit_center_z = 0.0;
+            let path = require_model(&args, "rl_level_hold");
+            warn_on_model_dir_mismatch(&path, "level_hold");
+            let stem = strip_mpk(&path);
+            match RlLevelHoldController::load(&stem, args.altitude, args.airspeed) {
+                Ok(ctrl) => Box::new(ctrl),
+                Err(e) => fatal_model_load(&path, &e),
+            }
+        }
+        #[cfg(any(feature = "inference", feature = "training"))]
+        "rl_orbit" => {
+            let (cx, cz) =
+                resolve_orbit_center(args.center_x, args.center_z, args.radius, args.direction);
+            orbit_center_x = cx;
+            orbit_center_z = cz;
+            let path = require_model(&args, "rl_orbit");
+            warn_on_model_dir_mismatch(&path, "orbit");
+            let stem = strip_mpk(&path);
+            let config = RlOrbitConfig {
+                center_x: cx,
+                center_z: cz,
+                target_radius: args.radius,
+                target_altitude: args.altitude,
+                target_airspeed: args.airspeed,
+                direction: args.direction,
+            };
+            match RlOrbitController::load(&stem, config) {
+                Ok(ctrl) => Box::new(ctrl),
+                Err(e) => fatal_model_load(&path, &e),
+            }
+        }
+        #[cfg(any(feature = "inference", feature = "training"))]
+        "rl_orbit_residual" => {
+            let (cx, cz) =
+                resolve_orbit_center(args.center_x, args.center_z, args.radius, args.direction);
+            orbit_center_x = cx;
+            orbit_center_z = cz;
+            let path = require_model(&args, "rl_orbit_residual");
+            warn_on_model_dir_mismatch(&path, "orbit_residual");
+            let stem = strip_mpk(&path);
+            let config = RlOrbitResidualConfig {
+                center_x: cx,
+                center_z: cz,
+                target_radius: args.radius,
+                target_altitude: args.altitude,
+                target_airspeed: args.airspeed,
+                direction: args.direction,
+                residual_scale: 0.3,
+            };
+            let seed_state = FlightState {
+                altitude: args.altitude,
+                airspeed: args.airspeed,
+                ..FlightState::default()
+            };
+            match RlOrbitResidualController::load(&stem, config, &seed_state, None) {
+                Ok(ctrl) => Box::new(ctrl),
+                Err(e) => fatal_model_load(&path, &e),
+            }
+        }
+        #[cfg(any(feature = "inference", feature = "training"))]
+        "rl_lstm_orbit" => {
+            let (cx, cz) =
+                resolve_orbit_center(args.center_x, args.center_z, args.radius, args.direction);
+            orbit_center_x = cx;
+            orbit_center_z = cz;
+            let path = require_model(&args, "rl_lstm_orbit");
+            warn_on_model_dir_mismatch(&path, "lstm_orbit");
+            let stem = strip_mpk(&path);
+            let config = RlLstmOrbitConfig {
+                center_x: cx,
+                center_z: cz,
+                target_radius: args.radius,
+                target_altitude: args.altitude,
+                target_airspeed: args.airspeed,
+                direction: args.direction,
+            };
+            match RlLstmOrbitController::load(&stem, config) {
+                Ok(ctrl) => Box::new(ctrl),
+                Err(e) => fatal_model_load(&path, &e),
+            }
+        }
+        other => {
+            eprintln!(
+                "Unknown --controller '{}'. Available: {}",
+                other,
+                available_controllers()
+            );
+            std::process::exit(2);
         }
     };
 
@@ -248,7 +349,7 @@ fn main() {
         Transform::from_translation(Vec3::new(0.0, args.altitude, 0.0)).with_rotation(attitude),
     ));
 
-    let is_orbit = args.controller == "orbit";
+    let is_orbit = is_orbit_like(&args.controller);
 
     for step in 0..args.steps {
         app.update();
@@ -329,6 +430,11 @@ struct Args {
     profile: String,
     steps: usize,
     controller: String,
+    #[cfg_attr(
+        not(any(feature = "inference", feature = "training")),
+        allow(dead_code)
+    )]
+    model: Option<String>,
     interval: usize,
     altitude: f32,
     airspeed: f32,
@@ -362,6 +468,7 @@ fn parse_args() -> Args {
             .and_then(|v| v.parse().ok())
             .unwrap_or(600),
         controller: get_arg(&args, "--controller").unwrap_or_else(|| "level_hold".to_string()),
+        model: get_arg(&args, "--model"),
         interval: get_arg(&args, "--interval")
             .and_then(|v| v.parse().ok())
             .unwrap_or(10),
@@ -398,6 +505,74 @@ fn get_arg(args: &[String], flag: &str) -> Option<String> {
     args.windows(2)
         .find(|pair| pair[0] == flag)
         .map(|pair| pair[1].clone())
+}
+
+/// Whether the given --controller value emits the orbit-specific output columns
+/// (radial_error_m, heading_error_rad, bank_ff_rad).
+fn is_orbit_like(name: &str) -> bool {
+    matches!(
+        name,
+        "orbit" | "rl_orbit" | "rl_orbit_residual" | "rl_lstm_orbit"
+    )
+}
+
+/// Resolve the orbit center in world coordinates, applying the same defaults
+/// used by the `orbit` arm: plane spawns at X=0 flying +X, so CCW center is +Z
+/// and CW center is -Z, both at the target radius.
+fn resolve_orbit_center(
+    user_x: Option<f32>,
+    user_z: Option<f32>,
+    radius: f32,
+    direction: OrbitDirection,
+) -> (f32, f32) {
+    let cx = user_x.unwrap_or(0.0);
+    let cz = user_z.unwrap_or_else(|| direction.sign() * (-1.0) * radius);
+    (cx, cz)
+}
+
+fn available_controllers() -> &'static str {
+    if cfg!(any(feature = "inference", feature = "training")) {
+        "level_hold, orbit, manual, rl_level_hold, rl_orbit, rl_orbit_residual, rl_lstm_orbit"
+    } else {
+        "level_hold, orbit, manual  (rebuild with --features inference for rl_* controllers)"
+    }
+}
+
+#[cfg(any(feature = "inference", feature = "training"))]
+fn require_model(args: &Args, controller: &str) -> String {
+    match args.model.clone() {
+        Some(p) => p,
+        None => {
+            eprintln!("--controller {controller} requires --model PATH");
+            std::process::exit(2);
+        }
+    }
+}
+
+#[cfg(any(feature = "inference", feature = "training"))]
+fn strip_mpk(path: &str) -> String {
+    path.strip_suffix(".mpk").unwrap_or(path).to_string()
+}
+
+#[cfg(any(feature = "inference", feature = "training"))]
+fn warn_on_model_dir_mismatch(path: &str, expected_dir: &str) {
+    let parent = std::path::Path::new(path)
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|s| s.to_str());
+    if let Some(parent) = parent {
+        if parent != expected_dir {
+            eprintln!(
+                "Warning: --model parent directory '{parent}' does not match expected '{expected_dir}'"
+            );
+        }
+    }
+}
+
+#[cfg(any(feature = "inference", feature = "training"))]
+fn fatal_model_load(path: &str, err: impl std::fmt::Display) -> ! {
+    eprintln!("Failed to load model '{path}': {err}");
+    std::process::exit(2);
 }
 
 // ---------------------------------------------------------------------------
