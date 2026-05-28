@@ -5,9 +5,6 @@
 //!    alt_err/200, speed_err/50, alpha/0.5, pitch/0.5, pitch_rate/1,
 //!    roll/0.5, roll_rate/1, beta/0.5, yaw_rate/1, vertical_speed/30]
 //!
-//! Reward: angular acceleration penalties (rad/s²) replace angular rate
-//! penalties — steady banked turns are not penalized; jerky actuation is.
-//!
 //! Action (dim = 4, each in [-1, 1]):
 //!   [elevator, throttle_norm, aileron, rudder]
 //!   Throttle mapping: ControlInputs.throttle = (action[1] + 1) / 2
@@ -62,7 +59,6 @@ pub struct OrbitEnv {
     cfg: PlaneConfig,
     dt: f32,
     state: FlightState,
-    prev_angular_velocity: Vec3,
     direction: OrbitDirection,
     episode_step: u32,
     rng: Lcg,
@@ -94,7 +90,6 @@ impl OrbitEnv {
             cfg,
             dt: 1.0 / 60.0,
             state: FlightState::default(),
-            prev_angular_velocity: Vec3::ZERO,
             direction: OrbitDirection::CounterClockwise,
             episode_step: 0,
             rng: Lcg::new(4242),
@@ -155,11 +150,9 @@ impl OrbitEnv {
         let speed_err = (self.state.airspeed - self.target_airspeed).abs();
         let roll = roll_angle(self.state.attitude).abs();
         let beta = self.state.beta.abs();
-        let ang_accel =
-            (self.state.angular_velocity - self.prev_angular_velocity) / self.dt;
-        let p = ang_accel.x.abs();
-        let q = ang_accel.y.abs();
-        let r = ang_accel.z.abs();
+        let p = self.state.angular_velocity.x.abs();
+        let q = self.state.angular_velocity.y.abs();
+        let r = self.state.angular_velocity.z.abs();
 
         -(radial_err / c.radial_reward_scale) * c.radial_reward_weight
             - (heading_err / c.heading_reward_scale) * c.heading_reward_weight
@@ -167,9 +160,9 @@ impl OrbitEnv {
             - (speed_err / c.speed_reward_scale) * c.speed_reward_weight
             - (roll / c.roll_reward_scale) * c.roll_reward_weight
             - (beta / c.beta_reward_scale) * c.beta_reward_weight
-            - (q / c.pitch_accel_reward_scale) * c.pitch_accel_reward_weight
-            - (p / c.roll_accel_reward_scale) * c.roll_accel_reward_weight
-            - (r / c.yaw_accel_reward_scale) * c.yaw_accel_reward_weight
+            - (q / c.pitch_rate_reward_scale) * c.pitch_rate_reward_weight
+            - (p / c.roll_rate_reward_scale) * c.roll_rate_reward_weight
+            - (r / c.yaw_rate_reward_scale) * c.yaw_rate_reward_weight
             + c.alive_reward
     }
 
@@ -279,7 +272,6 @@ impl TrainingEnv for OrbitEnv {
             altitude,
         };
         self.state.update_air_data();
-        self.prev_angular_velocity = self.state.angular_velocity;
         self.episode_step = 0;
 
         let spawn_spec = SpawnSpec {
@@ -293,7 +285,6 @@ impl TrainingEnv for OrbitEnv {
     }
 
     fn step(&mut self, action: &[f32]) -> (Observation, f32, bool, StepInfo) {
-        self.prev_angular_velocity = self.state.angular_velocity;
         let inputs = direct_action_to_inputs(action);
         integrate_state(&mut self.state, &inputs, &self.cfg, self.dt);
         self.episode_step += 1;
@@ -489,27 +480,6 @@ mod tests {
         assert!(
             (reward - expected).abs() < 1e-4,
             "reward={reward} expected={expected}"
-        );
-    }
-
-    #[test]
-    fn reward_penalizes_angular_acceleration_not_rate() {
-        let mut env = OrbitEnv::new(1000.0, 100.0, 1000.0, jet_cfg());
-        env.state = state_at(1000.0, Vec3::X);
-
-        // Steady rotation: prev == current → acceleration ≈ 0, rate is nonzero
-        let rate = Vec3::new(0.0, 0.1, 0.0);
-        env.state.angular_velocity = rate;
-        env.prev_angular_velocity = rate;
-        let reward_steady_rate = env.compute_reward();
-
-        // Same current angular velocity but came from rest → nonzero acceleration
-        env.prev_angular_velocity = Vec3::ZERO;
-        let reward_accel = env.compute_reward();
-
-        assert!(
-            reward_steady_rate > reward_accel,
-            "steady rate should incur less penalty than angular acceleration: steady={reward_steady_rate} accel={reward_accel}"
         );
     }
 
