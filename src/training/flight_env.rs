@@ -99,9 +99,8 @@ pub(crate) fn direct_action_to_inputs(action: &[f32]) -> ControlInputs {
 /// `direct_action_to_inputs` at inference (e.g. 0.2 → 0.6). The throttle channel must be
 /// pre-converted via `throttle * 2 - 1`.
 ///
-/// Currently `#[cfg(test)]` only — promote out of the gate when the BC pipeline that
-/// consumes it lands.
-#[cfg(test)]
+/// Consumed by the behavior-cloning collector (`training::bc`) to turn PID
+/// `ControlInputs` into supervised action targets.
 pub(crate) fn inputs_to_direct_action(inputs: &ControlInputs) -> [f32; 4] {
     [
         inputs.elevator,

@@ -1,3 +1,4 @@
+pub mod bc;
 pub mod env;
 mod flight_env;
 pub mod level_hold_env;
@@ -10,6 +11,7 @@ pub mod vec_env;
 pub mod wu_orbit_env;
 pub mod wu_orbit_reward;
 
+pub use bc::{collect_demonstrations, BcDataset, DemonstrationEnv};
 pub use env::{Observation, SpawnSpec, StepInfo, TrainingEnv};
 
 #[cfg(any(feature = "inference", feature = "training"))]

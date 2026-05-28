@@ -13,7 +13,7 @@ use super::{
     buffer::{RolloutBuffer, RolloutStep},
     model::ActorCritic,
 };
-use crate::training::{LevelHoldEnv, Observation, TrainingEnv, VecEnv};
+use crate::training::{BcDataset, LevelHoldEnv, Observation, TrainingEnv, VecEnv};
 
 // ---------------------------------------------------------------------------
 // Trainer
@@ -359,6 +359,67 @@ where
         }
     }
 
+    /// Behavior-cloning pretraining: regress the policy's deterministic action
+    /// (`mean_action`, i.e. `tanh(policy_mean)`) onto expert `(obs, action)` pairs
+    /// via MSE, using the trainer's existing Adam optimizer.
+    ///
+    /// Expert actions are already in the `[-1, 1]` direct-action space (throttle
+    /// pre-converted), so they regress directly against `mean_action`. The critic
+    /// and `log_std` receive no gradient from this loss and are left untouched;
+    /// the warm policy then flows straight into `collect_rollout`/`update`.
+    ///
+    /// Returns the mean MSE over the final epoch.
+    pub fn pretrain_bc(&mut self, data: &BcDataset, epochs: usize, minibatch: usize) -> f32 {
+        let n = data.len();
+        let mb = minibatch;
+        assert!(
+            n >= mb,
+            "BC dataset ({n}) must be at least minibatch ({mb})"
+        );
+        let lr = self.lr;
+        let mut indices: Vec<usize> = (0..n).collect();
+        let mut final_mse = 0.0_f32;
+
+        for _epoch in 0..epochs {
+            lcg_shuffle(&mut indices, &mut self.rng_seed);
+            let num_batches = n / mb;
+
+            for batch_idx in 0..num_batches {
+                let start = batch_idx * mb;
+                let idx = &indices[start..start + mb];
+
+                let mut obs_flat = Vec::with_capacity(mb * self.obs_dim);
+                let mut act_flat = Vec::with_capacity(mb * 4);
+                for &i in idx {
+                    obs_flat.extend_from_slice(&data.obs[i]);
+                    act_flat.extend_from_slice(&data.actions[i]);
+                }
+
+                let obs_t = Tensor::<B, 2>::from_data(
+                    TensorData::new(obs_flat, vec![mb, self.obs_dim]),
+                    &self.device,
+                );
+                let act_t =
+                    Tensor::<B, 2>::from_data(TensorData::new(act_flat, vec![mb, 4]), &self.device);
+
+                let pred = self.model.mean_action(obs_t);
+                let loss = (pred - act_t).powf_scalar(2.0).mean();
+
+                // Sample the scalar once per epoch (final batch) to avoid a wgpu
+                // readback on every minibatch.
+                if batch_idx + 1 == num_batches {
+                    final_mse = loss.clone().into_data().to_vec::<f32>().expect("bc loss")[0];
+                }
+
+                let grads = loss.backward();
+                let grads_params = GradientsParams::from_grads(grads, &self.model);
+                self.model = self.optimizer.step(lr, self.model.clone(), grads_params);
+            }
+        }
+
+        final_mse
+    }
+
     /// Save the model to `path` using MessagePack format (burn default).
     /// The file will have `.mpk` appended automatically.
     pub fn save_policy(&self, path: &str) {
@@ -516,6 +577,42 @@ mod tests {
         for v in lp.into_data().to_vec::<f32>().unwrap() {
             assert!(v.is_finite(), "log_prob NaN after update: {v}");
         }
+    }
+
+    #[test]
+    fn bc_pretrain_reduces_mse() {
+        use crate::training::BcDataset;
+        let device = Default::default();
+        let env = LevelHoldEnv::new(1000.0, 80.0, jet_cfg());
+        let mut trainer = PpoTrainer::<B>::new(env, device);
+
+        // Synthetic dataset: random observations mapped to a constant, learnable
+        // target action. MSE should drop sharply with more epochs.
+        let target = [0.3_f32, -0.2, 0.1, 0.0];
+        let mut data = BcDataset::default();
+        let mut seed = 7u64;
+        for _ in 0..128 {
+            let mut obs = Vec::with_capacity(10);
+            for _ in 0..10 {
+                seed = seed
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                obs.push((((seed >> 40) as u32 % 1000) as f32 / 1000.0) - 0.5);
+            }
+            data.obs.push(obs);
+            data.actions.push(target);
+        }
+
+        let mse_early = trainer.pretrain_bc(&data, 1, 64);
+        let mse_late = trainer.pretrain_bc(&data, 100, 64);
+        assert!(
+            mse_early.is_finite() && mse_late.is_finite(),
+            "BC mse not finite: early={mse_early}, late={mse_late}"
+        );
+        assert!(
+            mse_late < mse_early,
+            "BC did not reduce mse: early={mse_early}, late={mse_late}"
+        );
     }
 
     #[test]

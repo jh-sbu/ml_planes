@@ -13,12 +13,13 @@ use bevy::math::{Mat3, Quat, Vec3};
 
 use crate::controllers::orbit::{
     build_orbit_observation, build_orbit_observation_from_terms, orbit_observation_terms,
-    OrbitDirection, OrbitObservationTerms, ORBIT_OBS_DIM,
+    OrbitController, OrbitDirection, OrbitObservationTerms, OrbitParams, ORBIT_OBS_DIM,
 };
-use crate::plane::{FlightState, PlaneConfig};
+use crate::controllers::FlightController;
+use crate::plane::{ControlInputs, FlightState, PlaneConfig};
 use crate::training::flight_env::{direct_action_to_inputs, integrate_state, roll_angle, Lcg};
 use crate::training::reward_config::OrbitRewardConfig;
-use crate::training::{Observation, SpawnSpec, StepInfo, TrainingEnv};
+use crate::training::{DemonstrationEnv, Observation, SpawnSpec, StepInfo, TrainingEnv};
 
 const TWO_PI: f32 = std::f32::consts::PI * 2.0;
 const HEADING_PERTURB_RANGE: f32 = 25.0 * std::f32::consts::PI / 180.0;
@@ -309,6 +310,32 @@ impl TrainingEnv for OrbitEnv {
     }
     fn action_dim(&self) -> usize {
         4
+    }
+}
+
+impl DemonstrationEnv for OrbitEnv {
+    fn current_state(&self) -> FlightState {
+        self.state.clone()
+    }
+
+    fn dt(&self) -> f32 {
+        self.dt
+    }
+
+    fn make_expert(&self) -> Box<dyn FlightController> {
+        let mut ctrl = OrbitController::from_state(&self.state, &ControlInputs::default());
+        ctrl.apply_params(
+            &OrbitParams {
+                center_x: self.center_x,
+                center_z: self.center_z,
+                target_radius: self.target_radius,
+                target_altitude: self.target_altitude,
+                target_airspeed: self.target_airspeed,
+                direction: self.direction,
+            },
+            self.state.airspeed,
+        );
+        Box::new(ctrl)
     }
 }
 

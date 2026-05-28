@@ -24,3 +24,8 @@ naga = { version = "26", features = ["termcolor"] }
 name = "train_ppo"
 path = "src/bin/train_ppo.rs"
 required-features = ["training"]
+
+[[bin]]
+name = "train_bc"
+path = "src/bin/train_bc.rs"
+required-features = ["training"]

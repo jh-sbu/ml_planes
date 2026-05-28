@@ -14,12 +14,13 @@
 
 use bevy::math::{Quat, Vec3};
 
+use crate::controllers::{FlightController, LevelHoldController};
 use crate::plane::{ControlInputs, FlightState, PlaneConfig};
 use crate::training::flight_env::{
     direct_action_to_inputs, integrate_state, pitch_angle, roll_angle, Lcg,
 };
 use crate::training::reward_config::LevelHoldRewardConfig;
-use crate::training::{Observation, SpawnSpec, StepInfo, TrainingEnv};
+use crate::training::{DemonstrationEnv, Observation, SpawnSpec, StepInfo, TrainingEnv};
 
 // Domain-randomization ranges applied at every reset.
 const ROLL_RANGE: f32 = 10.0 * std::f32::consts::PI / 180.0; // ±10°
@@ -229,6 +230,23 @@ impl TrainingEnv for LevelHoldEnv {
     }
     fn action_dim(&self) -> usize {
         4
+    }
+}
+
+impl DemonstrationEnv for LevelHoldEnv {
+    fn current_state(&self) -> FlightState {
+        self.state.clone()
+    }
+
+    fn dt(&self) -> f32 {
+        self.dt
+    }
+
+    fn make_expert(&self) -> Box<dyn FlightController> {
+        Box::new(LevelHoldController::new(
+            self.target_altitude,
+            self.target_airspeed,
+        ))
     }
 }
 

@@ -72,6 +72,30 @@ fn main() {
         .find(|w| w[0] == "--init-from")
         .map(|w| w[1].clone());
 
+    // Optional behavior-cloning warm-start: collect this many PID-expert demo steps
+    // and supervised-pretrain the policy before the PPO loop (level_hold / orbit only).
+    let bc_steps: usize = args
+        .windows(2)
+        .find(|w| w[0] == "--bc-steps")
+        .map(|w| {
+            w[1].parse::<usize>().unwrap_or_else(|_| {
+                eprintln!("--bc-steps must be a non-negative integer");
+                std::process::exit(2);
+            })
+        })
+        .unwrap_or(0);
+
+    let bc_epochs: usize = args
+        .windows(2)
+        .find(|w| w[0] == "--bc-epochs")
+        .map(|w| {
+            w[1].parse::<usize>().unwrap_or_else(|_| {
+                eprintln!("--bc-epochs must be a positive integer");
+                std::process::exit(2);
+            })
+        })
+        .unwrap_or(10);
+
     let log_file: Option<String> = args
         .windows(2)
         .find(|w| w[0] == "--log-file")
@@ -80,12 +104,26 @@ fn main() {
     let save_path = save_path_for(task, output_stem);
 
     match backend {
-        Backend::NdArray => {
-            run::<Autodiff<NdArray>>(plain, save_path, task, total_timesteps, init_from, log_file)
-        }
-        Backend::Wgpu => {
-            run::<Autodiff<Wgpu>>(plain, save_path, task, total_timesteps, init_from, log_file)
-        }
+        Backend::NdArray => run::<Autodiff<NdArray>>(
+            plain,
+            save_path,
+            task,
+            total_timesteps,
+            init_from,
+            log_file,
+            bc_steps,
+            bc_epochs,
+        ),
+        Backend::Wgpu => run::<Autodiff<Wgpu>>(
+            plain,
+            save_path,
+            task,
+            total_timesteps,
+            init_from,
+            log_file,
+            bc_steps,
+            bc_epochs,
+        ),
     }
 }
 
@@ -178,6 +216,7 @@ fn save_path_for(task: Task, output_stem: Option<String>) -> String {
 }
 
 #[cfg(feature = "training")]
+#[allow(clippy::too_many_arguments)]
 fn run<B>(
     plain: bool,
     save_path: String,
@@ -185,6 +224,8 @@ fn run<B>(
     total_timesteps: usize,
     init_from: Option<String>,
     log_file: Option<String>,
+    bc_steps: usize,
+    bc_epochs: usize,
 ) where
     B: burn::tensor::backend::AutodiffBackend,
     B::Device: Default,
@@ -265,13 +306,15 @@ fn run<B>(
                 }
             };
             let log = open_log(&log_file, "level_hold", reward_cfg.log_fields());
-            run_training_loop::<B, _>(
+            run_training_loop_bc::<B, _>(
                 plain,
                 save_path,
                 total_timesteps,
                 init_from,
                 LevelHoldEnv::with_reward_config(1000.0, 100.0, cfg, reward_cfg),
                 log,
+                bc_steps,
+                bc_epochs,
             )
         }
         Task::Orbit => {
@@ -287,13 +330,15 @@ fn run<B>(
                 }
             };
             let log = open_log(&log_file, "orbit", reward_cfg.log_fields());
-            run_training_loop::<B, _>(
+            run_training_loop_bc::<B, _>(
                 plain,
                 save_path,
                 total_timesteps,
                 init_from,
                 OrbitEnv::with_reward_config(1000.0, 100.0, 1000.0, cfg, reward_cfg),
                 log,
+                bc_steps,
+                bc_epochs,
             )
         }
         Task::ResidualOrbit => {
@@ -350,6 +395,78 @@ fn run_training_loop<B, E>(
     total_timesteps: usize,
     init_from: Option<String>,
     env: E,
+    log: Option<ml_planes::training::ppo::CsvLog>,
+) where
+    B: burn::tensor::backend::AutodiffBackend,
+    B::Device: Default,
+    E: ml_planes::training::TrainingEnv + Clone,
+{
+    use ml_planes::training::ppo::PpoTrainer;
+
+    let device: B::Device = Default::default();
+    let mut trainer = PpoTrainer::<B, E>::with_n_envs(env, 8, device);
+    if let Some(ref path) = init_from {
+        trainer.load_policy(path);
+    }
+    run_ppo_loop::<B, E>(trainer, plain, save_path, total_timesteps, log);
+}
+
+/// Like [`run_training_loop`], but optionally behavior-clones the policy from the
+/// task's PID expert (`bc_steps` demo steps, `bc_epochs` supervised epochs) before
+/// the PPO loop. With `total_timesteps == 0` this is effectively BC-only.
+#[cfg(feature = "training")]
+#[allow(clippy::too_many_arguments)]
+fn run_training_loop_bc<B, E>(
+    plain: bool,
+    save_path: String,
+    total_timesteps: usize,
+    init_from: Option<String>,
+    env: E,
+    log: Option<ml_planes::training::ppo::CsvLog>,
+    bc_steps: usize,
+    bc_epochs: usize,
+) where
+    B: burn::tensor::backend::AutodiffBackend,
+    B::Device: Default,
+    E: ml_planes::training::DemonstrationEnv + Clone,
+{
+    use ml_planes::training::{collect_demonstrations, ppo::PpoTrainer};
+
+    let device: B::Device = Default::default();
+    let mut trainer = PpoTrainer::<B, E>::with_n_envs(env.clone(), 8, device);
+    if let Some(ref path) = init_from {
+        trainer.load_policy(path);
+    }
+
+    if bc_steps > 0 {
+        use std::time::Instant;
+        println!("BC warm-start: collecting {bc_steps} PID-expert demo steps...");
+        let t0 = Instant::now();
+        let mut demo_env = env;
+        let data = collect_demonstrations(&mut demo_env, bc_steps);
+        println!(
+            "Collected {} pairs in {:.1}s; behavior cloning for {bc_epochs} epochs...",
+            data.len(),
+            t0.elapsed().as_secs_f64()
+        );
+        let mb = trainer.minibatch.min(data.len()).max(1);
+        let mut mse = f32::NAN;
+        for epoch in 0..bc_epochs {
+            mse = trainer.pretrain_bc(&data, 1, mb);
+            println!("  BC epoch {:>3}/{bc_epochs}  mse {mse:.6}", epoch + 1);
+        }
+        println!("BC warm-start complete (final mse {mse:.6}). Starting PPO fine-tune...");
+    }
+
+    run_ppo_loop::<B, E>(trainer, plain, save_path, total_timesteps, log);
+}
+
+#[cfg(feature = "training")]
+fn run_ppo_loop<B, E>(
+    mut trainer: ml_planes::training::ppo::PpoTrainer<B, E>,
+    plain: bool,
+    save_path: String,
+    total_timesteps: usize,
     mut log: Option<ml_planes::training::ppo::CsvLog>,
 ) where
     B: burn::tensor::backend::AutodiffBackend,
@@ -364,14 +481,6 @@ fn run_training_loop<B, E>(
     use burn::train::renderer::tui::TuiMetricsRenderer;
     use burn::train::renderer::{MetricsRenderer, TrainingProgress};
     use burn::train::Interrupter;
-
-    use ml_planes::training::ppo::PpoTrainer;
-
-    let device: B::Device = Default::default();
-    let mut trainer = PpoTrainer::<B, E>::with_n_envs(env, 8, device);
-    if let Some(ref path) = init_from {
-        trainer.load_policy(path);
-    }
 
     let total_iterations = total_timesteps.div_ceil(trainer.rollout_steps);
 
@@ -460,7 +569,6 @@ fn run_training_loop<B, E>(
         renderer.register_metric(def);
     }
 
-    let mut trainer = trainer;
     let mut steps = 0usize;
     let mut iteration = 0usize;
     let start = Instant::now();
