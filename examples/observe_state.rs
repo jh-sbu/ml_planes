@@ -63,7 +63,7 @@ use ml_planes::{
         orbit_observation_terms, ActiveController, FlightController, LevelHoldController,
         ManualController, OrbitController, OrbitDirection, OrbitTuning, PlaneTuning,
     },
-    plane::{ControlInputs, FlightState, PlaneConfig, PlaneConfigHandle, PlanePlugin},
+    plane::{ControlInputs, FlightState, PlaneConfig, PlaneConfigHandle, PlaneId, PlanePlugin},
 };
 
 #[cfg(any(feature = "inference", feature = "training"))]
@@ -346,6 +346,7 @@ fn main() {
         ControlInputs::default(),
         ActiveController(controller),
         PlaneConfigHandle(handle),
+        PlaneId(0),
         Transform::from_translation(Vec3::new(0.0, args.altitude, 0.0)).with_rotation(attitude),
     ));
 
