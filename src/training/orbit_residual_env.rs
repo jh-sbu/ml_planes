@@ -54,6 +54,7 @@ pub struct ResidualOrbitEnv {
     cfg: PlaneConfig,
     dt: f32,
     state: FlightState,
+    prev_angular_velocity: Vec3,
     direction: OrbitDirection,
     orbit_controller: OrbitController,
     episode_step: u32,
@@ -88,6 +89,7 @@ impl ResidualOrbitEnv {
             cfg,
             dt: 1.0 / 60.0,
             state: placeholder_state,
+            prev_angular_velocity: Vec3::ZERO,
             direction: OrbitDirection::CounterClockwise,
             orbit_controller,
             episode_step: 0,
@@ -148,9 +150,11 @@ impl ResidualOrbitEnv {
         let speed_err = (self.state.airspeed - self.target_airspeed).abs();
         let roll = roll_angle(self.state.attitude).abs();
         let beta = self.state.beta.abs();
-        let p = self.state.angular_velocity.x.abs();
-        let q = self.state.angular_velocity.y.abs();
-        let r = self.state.angular_velocity.z.abs();
+        let ang_accel =
+            (self.state.angular_velocity - self.prev_angular_velocity) / self.dt;
+        let p = ang_accel.x.abs();
+        let q = ang_accel.y.abs();
+        let r = ang_accel.z.abs();
 
         -(radial_err / c.radial_reward_scale) * c.radial_reward_weight
             - (heading_err / c.heading_reward_scale) * c.heading_reward_weight
@@ -158,9 +162,9 @@ impl ResidualOrbitEnv {
             - (speed_err / c.speed_reward_scale) * c.speed_reward_weight
             - (roll / c.roll_reward_scale) * c.roll_reward_weight
             - (beta / c.beta_reward_scale) * c.beta_reward_weight
-            - (q / c.pitch_rate_reward_scale) * c.pitch_rate_reward_weight
-            - (p / c.roll_rate_reward_scale) * c.roll_rate_reward_weight
-            - (r / c.yaw_rate_reward_scale) * c.yaw_rate_reward_weight
+            - (q / c.pitch_accel_reward_scale) * c.pitch_accel_reward_weight
+            - (p / c.roll_accel_reward_scale) * c.roll_accel_reward_weight
+            - (r / c.yaw_accel_reward_scale) * c.yaw_accel_reward_weight
             + c.alive_reward
     }
 
@@ -258,6 +262,7 @@ impl TrainingEnv for ResidualOrbitEnv {
             altitude,
         };
         self.state.update_air_data();
+        self.prev_angular_velocity = self.state.angular_velocity;
         self.episode_step = 0;
 
         // Build PID from spawn state, then fix up with the sampled env parameters.
@@ -287,6 +292,7 @@ impl TrainingEnv for ResidualOrbitEnv {
     }
 
     fn step(&mut self, action: &[f32]) -> (Observation, f32, bool, StepInfo) {
+        self.prev_angular_velocity = self.state.angular_velocity;
         let pid_inputs = self.orbit_controller.update(
             &self.state,
             &ControllerContext::empty_for(PlaneId::TEST),

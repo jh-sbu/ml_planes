@@ -26,13 +26,13 @@
     beta_reward_scale:        0.005,
     beta_reward_weight:       0.001,
 
-    // Angular rate penalties [rad/s] — damp phugoid oscillations
-    pitch_rate_reward_scale:  0.5,
-    pitch_rate_reward_weight: 0.3,
-    roll_rate_reward_scale:   0.5,
-    roll_rate_reward_weight:  0.15,
-    yaw_rate_reward_scale:    0.5,
-    yaw_rate_reward_weight:   0.05,
+    // Angular acceleration penalties [rad/s²] — damp oscillatory actuation
+    pitch_accel_reward_scale:  5.0,
+    pitch_accel_reward_weight: 0.3,
+    roll_accel_reward_scale:   5.0,
+    roll_accel_reward_weight:  0.15,
+    yaw_accel_reward_scale:    5.0,
+    yaw_accel_reward_weight:   0.05,
 
     // Constant per-step bonus while alive
     alive_reward:             0.5,
