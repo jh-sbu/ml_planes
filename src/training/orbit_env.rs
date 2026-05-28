@@ -61,6 +61,9 @@ pub struct OrbitEnv {
     state: FlightState,
     direction: OrbitDirection,
     episode_step: u32,
+    prev_angular_velocity: Vec3,
+    prev_angular_acceleration: Vec3,
+    pub last_jerk: Vec3,
     rng: Lcg,
     rng_seed: u64,
 }
@@ -92,6 +95,9 @@ impl OrbitEnv {
             state: FlightState::default(),
             direction: OrbitDirection::CounterClockwise,
             episode_step: 0,
+            prev_angular_velocity: Vec3::ZERO,
+            prev_angular_acceleration: Vec3::ZERO,
+            last_jerk: Vec3::ZERO,
             rng: Lcg::new(4242),
             rng_seed: 4242,
         }
@@ -150,9 +156,9 @@ impl OrbitEnv {
         let speed_err = (self.state.airspeed - self.target_airspeed).abs();
         let roll = roll_angle(self.state.attitude).abs();
         let beta = self.state.beta.abs();
-        let p = self.state.angular_velocity.x.abs();
-        let q = self.state.angular_velocity.y.abs();
-        let r = self.state.angular_velocity.z.abs();
+        let pitch_jerk = self.last_jerk.y.abs();
+        let roll_jerk = self.last_jerk.x.abs();
+        let yaw_jerk = self.last_jerk.z.abs();
 
         -(radial_err / c.radial_reward_scale) * c.radial_reward_weight
             - (heading_err / c.heading_reward_scale) * c.heading_reward_weight
@@ -160,9 +166,9 @@ impl OrbitEnv {
             - (speed_err / c.speed_reward_scale) * c.speed_reward_weight
             - (roll / c.roll_reward_scale) * c.roll_reward_weight
             - (beta / c.beta_reward_scale) * c.beta_reward_weight
-            - (q / c.pitch_rate_reward_scale) * c.pitch_rate_reward_weight
-            - (p / c.roll_rate_reward_scale) * c.roll_rate_reward_weight
-            - (r / c.yaw_rate_reward_scale) * c.yaw_rate_reward_weight
+            - (pitch_jerk / c.pitch_jerk_reward_scale) * c.pitch_jerk_reward_weight
+            - (roll_jerk / c.roll_jerk_reward_scale) * c.roll_jerk_reward_weight
+            - (yaw_jerk / c.yaw_jerk_reward_scale) * c.yaw_jerk_reward_weight
             + c.alive_reward
     }
 
@@ -273,6 +279,9 @@ impl TrainingEnv for OrbitEnv {
         };
         self.state.update_air_data();
         self.episode_step = 0;
+        self.prev_angular_velocity = self.state.angular_velocity;
+        self.prev_angular_acceleration = Vec3::ZERO;
+        self.last_jerk = Vec3::ZERO;
 
         let spawn_spec = SpawnSpec {
             position: Some(self.state.position),
@@ -286,8 +295,14 @@ impl TrainingEnv for OrbitEnv {
 
     fn step(&mut self, action: &[f32]) -> (Observation, f32, bool, StepInfo) {
         let inputs = direct_action_to_inputs(action);
+        let prev_ω = self.prev_angular_velocity;
         integrate_state(&mut self.state, &inputs, &self.cfg, self.dt);
         self.episode_step += 1;
+        let current_ω = self.state.angular_velocity;
+        let current_accel = (current_ω - prev_ω) / self.dt;
+        self.last_jerk = (current_accel - self.prev_angular_acceleration) / self.dt;
+        self.prev_angular_velocity = current_ω;
+        self.prev_angular_acceleration = current_accel;
 
         let terms = self.current_terms();
         let obs = self.build_observation_from_terms(&terms);
@@ -480,6 +495,26 @@ mod tests {
         assert!(
             (reward - expected).abs() < 1e-4,
             "reward={reward} expected={expected}"
+        );
+    }
+
+    #[test]
+    fn jerk_penalty_responds_to_angular_acceleration_change() {
+        let mut env = OrbitEnv::new(1000.0, 100.0, 1000.0, jet_cfg());
+        let (_, _) = env.reset();
+
+        // Zero action for two steps → steady state, near-zero jerk
+        let (_, _, _, _) = env.step(&[0.0, 0.0, 0.0, 0.0]);
+        let (_, reward_low_jerk, _, _) = env.step(&[0.0, 0.0, 0.0, 0.0]);
+
+        // Directly inflate last_jerk to simulate a large impulsive control input
+        env.last_jerk = Vec3::new(500.0, 500.0, 500.0);
+        let terms = env.current_terms();
+        let reward_high_jerk = env.compute_base_reward(&terms);
+
+        assert!(
+            reward_high_jerk < reward_low_jerk,
+            "high-jerk reward {reward_high_jerk} should be lower than low-jerk reward {reward_low_jerk}"
         );
     }
 
