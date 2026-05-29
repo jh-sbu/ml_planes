@@ -257,12 +257,16 @@ fn run<B>(
     fn open_log(
         path: &Option<String>,
         task_name: &str,
+        reward_config_path: &str,
         config_fields: Vec<(&'static str, String)>,
     ) -> Option<CsvLog> {
         let path = path.as_deref()?;
         match CsvLog::new(path) {
             Ok(mut log) => {
-                let mut comments = vec![("task", task_name.to_string())];
+                let mut comments = vec![
+                    ("task", task_name.to_string()),
+                    ("reward_config", reward_config_path.to_string()),
+                ];
                 comments.extend(config_fields);
                 log.write_comments(&comments).ok();
                 log.write_header().ok();
@@ -321,7 +325,7 @@ fn run<B>(
                     LevelHoldRewardConfig::default()
                 }
             };
-            let log = open_log(&log_file, "level_hold", reward_cfg.log_fields());
+            let log = open_log(&log_file, "level_hold", path, reward_cfg.log_fields());
             run_training_loop_bc::<B, _>(
                 plain,
                 save_path,
@@ -345,7 +349,7 @@ fn run<B>(
                     OrbitRewardConfig::default()
                 }
             };
-            let log = open_log(&log_file, "orbit", reward_cfg.log_fields());
+            let log = open_log(&log_file, "orbit", path, reward_cfg.log_fields());
             run_training_loop_bc::<B, _>(
                 plain,
                 save_path,
@@ -369,7 +373,7 @@ fn run<B>(
                     OrbitRewardConfig::default()
                 }
             };
-            let log = open_log(&log_file, "residual_orbit", reward_cfg.log_fields());
+            let log = open_log(&log_file, "residual_orbit", path, reward_cfg.log_fields());
             run_training_loop::<B, _>(
                 plain,
                 save_path,
@@ -391,7 +395,7 @@ fn run<B>(
                     WuOrbitRewardConfig::default()
                 }
             };
-            let log = open_log(&log_file, "lstm_orbit", reward_cfg.log_fields());
+            let log = open_log(&log_file, "lstm_orbit", path, reward_cfg.log_fields());
             run_lstm_training_loop::<B>(
                 plain,
                 save_path,
