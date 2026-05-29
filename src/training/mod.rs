@@ -7,6 +7,7 @@ pub mod orbit_env;
 pub mod orbit_residual_env;
 #[cfg(any(feature = "inference", feature = "training"))]
 pub mod ppo;
+pub mod ppo_config;
 pub mod reward_config;
 pub mod vec_env;
 pub mod wu_orbit_env;
@@ -42,6 +43,7 @@ pub use ppo::{ActorCritic, LstmActorCritic, LstmHiddenState, LSTM_HIDDEN};
 pub use ppo::{
     LstmPpoTrainer, LstmRolloutBuffer, LstmRolloutStep, LstmSequence, PpoTrainer, RolloutBuffer,
 };
+pub use ppo_config::PpoHyperparams;
 pub use reward_config::{LevelHoldRewardConfig, OrbitRewardConfig};
 pub use vec_env::VecEnv;
 pub use wu_orbit_env::WuOrbitEnv;

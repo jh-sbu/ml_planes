@@ -106,6 +106,22 @@ where
         }
     }
 
+    /// Override the training-loop hyperparameters from a runtime-loaded config.
+    ///
+    /// Only the post-construction scalar fields are touched; `n_envs`, the
+    /// optimizer grad-clipping, and `log_std` init are fixed at construction.
+    pub fn apply_hyperparams(&mut self, hp: &crate::training::PpoHyperparams) {
+        self.gamma = hp.gamma;
+        self.gae_lambda = hp.gae_lambda;
+        self.clip_epsilon = hp.clip_epsilon;
+        self.value_coef = hp.value_coef;
+        self.entropy_coef = hp.entropy_coef;
+        self.lr = hp.lr;
+        self.rollout_steps = hp.rollout_steps;
+        self.n_epochs = hp.n_epochs;
+        self.minibatch = hp.minibatch;
+    }
+
     /// Collect `rollout_steps` environment interactions using the current policy.
     ///
     /// Inference is batched over all N environments at once ([N, obs_dim] → [N, 4]),
@@ -510,6 +526,51 @@ mod tests {
             elevator_limit: 0.3491,
             rudder_limit: 0.2618,
         }
+    }
+
+    #[test]
+    fn hyperparams_default_mirrors_trainer_literals() {
+        use crate::training::PpoHyperparams;
+        let env = LevelHoldEnv::new(1000.0, 80.0, jet_cfg());
+        let trainer = PpoTrainer::<B>::new(env, Default::default());
+        let hp = PpoHyperparams::default();
+        assert_eq!(trainer.gamma, hp.gamma);
+        assert_eq!(trainer.gae_lambda, hp.gae_lambda);
+        assert_eq!(trainer.clip_epsilon, hp.clip_epsilon);
+        assert_eq!(trainer.value_coef, hp.value_coef);
+        assert_eq!(trainer.entropy_coef, hp.entropy_coef);
+        assert_eq!(trainer.lr, hp.lr);
+        assert_eq!(trainer.rollout_steps, hp.rollout_steps);
+        assert_eq!(trainer.n_epochs, hp.n_epochs);
+        assert_eq!(trainer.minibatch, hp.minibatch);
+    }
+
+    #[test]
+    fn apply_hyperparams_overrides_all_scalar_fields() {
+        use crate::training::PpoHyperparams;
+        let env = LevelHoldEnv::new(1000.0, 80.0, jet_cfg());
+        let mut trainer = PpoTrainer::<B>::new(env, Default::default());
+        let hp = PpoHyperparams {
+            gamma: 0.9,
+            gae_lambda: 0.8,
+            clip_epsilon: 0.1,
+            value_coef: 0.25,
+            entropy_coef: 0.05,
+            lr: 1e-3,
+            rollout_steps: 512,
+            n_epochs: 10,
+            minibatch: 32,
+        };
+        trainer.apply_hyperparams(&hp);
+        assert_eq!(trainer.gamma, 0.9);
+        assert_eq!(trainer.gae_lambda, 0.8);
+        assert_eq!(trainer.clip_epsilon, 0.1);
+        assert_eq!(trainer.value_coef, 0.25);
+        assert_eq!(trainer.entropy_coef, 0.05);
+        assert_eq!(trainer.lr, 1e-3);
+        assert_eq!(trainer.rollout_steps, 512);
+        assert_eq!(trainer.n_epochs, 10);
+        assert_eq!(trainer.minibatch, 32);
     }
 
     #[test]

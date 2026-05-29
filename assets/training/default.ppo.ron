@@ -1,0 +1,15 @@
+// PPO training-loop hyperparameters (category 1: affect only the gradient
+// update / rollout collection — never persisted in a checkpoint, ignored at
+// inference). These values match the compiled `PpoHyperparams::default()`.
+// Pass with: train_ppo --ppo-config assets/training/default.ppo.ron
+(
+    gamma: 0.99,
+    gae_lambda: 0.95,
+    clip_epsilon: 0.2,
+    value_coef: 0.5,
+    entropy_coef: 0.01,
+    lr: 0.0003,
+    rollout_steps: 2048,
+    n_epochs: 4,
+    minibatch: 64,
+)

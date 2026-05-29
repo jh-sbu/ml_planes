@@ -190,13 +190,21 @@ impl Default for OrbitRewardConfig {
     }
 }
 
-/// Load a reward config struct from a RON file on disk.
+/// Load any serde-deserializable config struct from a RON file on disk.
 /// Falls back gracefully: callers may use `unwrap_or_else(|_| T::default())`.
-pub fn load_reward_config<T: serde::de::DeserializeOwned>(
+pub fn load_ron_config<T: serde::de::DeserializeOwned>(
     path: &str,
 ) -> Result<T, Box<dyn std::error::Error>> {
     let file = std::fs::File::open(path)?;
     Ok(ron::de::from_reader(file)?)
+}
+
+/// Load a reward config struct from a RON file on disk.
+/// Thin alias over [`load_ron_config`] kept for call-site readability.
+pub fn load_reward_config<T: serde::de::DeserializeOwned>(
+    path: &str,
+) -> Result<T, Box<dyn std::error::Error>> {
+    load_ron_config(path)
 }
 
 #[cfg(test)]

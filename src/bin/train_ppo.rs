@@ -19,6 +19,11 @@
 //!   --reward-config <path>    Load reward/termination profile from <path> instead of the
 //!                             task default (assets/training/<task>.reward.ron). A missing
 //!                             file falls back to the compiled defaults with a warning.
+//!   --ppo-config <path>       Load PPO training-loop hyperparameters (gamma, gae_lambda,
+//!                             clip_epsilon, value/entropy coefs, lr, rollout_steps,
+//!                             n_epochs, minibatch) from a RON file. Applies to the MLP
+//!                             tasks (level_hold/orbit/residual_orbit); the lstm_orbit task
+//!                             ignores it. Absent or invalid → compiled defaults.
 
 #[cfg(not(feature = "training"))]
 fn main() {
@@ -111,6 +116,13 @@ fn main() {
         .find(|w| w[0] == "--reward-config")
         .map(|w| w[1].clone());
 
+    // Optional PPO hyperparameter override (level_hold / orbit / residual_orbit).
+    // Absent → compiled defaults; a missing/invalid file falls back with a warning.
+    let ppo_config: Option<String> = args
+        .windows(2)
+        .find(|w| w[0] == "--ppo-config")
+        .map(|w| w[1].clone());
+
     let save_path = save_path_for(task, output_stem);
 
     match backend {
@@ -122,6 +134,7 @@ fn main() {
             init_from,
             log_file,
             reward_config,
+            ppo_config,
             bc_steps,
             bc_epochs,
         ),
@@ -133,6 +146,7 @@ fn main() {
             init_from,
             log_file,
             reward_config,
+            ppo_config,
             bc_steps,
             bc_epochs,
         ),
@@ -237,6 +251,7 @@ fn run<B>(
     init_from: Option<String>,
     log_file: Option<String>,
     reward_config: Option<String>,
+    ppo_config: Option<String>,
     bc_steps: usize,
     bc_epochs: usize,
 ) where
@@ -248,10 +263,10 @@ fn run<B>(
     use ml_planes::plane::config::PlaneConfig;
     use ml_planes::training::ppo::CsvLog;
     use ml_planes::training::reward_config::{
-        load_reward_config, LevelHoldRewardConfig, OrbitRewardConfig,
+        load_reward_config, load_ron_config, LevelHoldRewardConfig, OrbitRewardConfig,
     };
     use ml_planes::training::{
-        LevelHoldEnv, OrbitEnv, ResidualOrbitEnv, WuOrbitEnv, WuOrbitRewardConfig,
+        LevelHoldEnv, OrbitEnv, PpoHyperparams, ResidualOrbitEnv, WuOrbitEnv, WuOrbitRewardConfig,
     };
 
     fn open_log(
@@ -312,6 +327,23 @@ fn run<B>(
     // Effective reward-profile path: the CLI override if given, else the task default.
     let reward_path = reward_config.unwrap_or_else(|| task.reward_config_path().to_string());
 
+    // PPO hyperparameters: CLI override if given, else compiled defaults.
+    // Applies to the MLP `PpoTrainer` tasks only (level_hold / orbit / residual_orbit);
+    // the LSTM task uses its own trainer and ignores this.
+    let hp: PpoHyperparams = match ppo_config.as_deref() {
+        Some(p) => match load_ron_config(p) {
+            Ok(cfg) => {
+                println!("Loaded PPO config from {p}");
+                cfg
+            }
+            Err(e) => {
+                eprintln!("Warning: could not load {p}: {e}. Using defaults.");
+                PpoHyperparams::default()
+            }
+        },
+        None => PpoHyperparams::default(),
+    };
+
     match task {
         Task::LevelHold => {
             let path = reward_path.as_str();
@@ -325,7 +357,9 @@ fn run<B>(
                     LevelHoldRewardConfig::default()
                 }
             };
-            let log = open_log(&log_file, "level_hold", path, reward_cfg.log_fields());
+            let mut log_fields = reward_cfg.log_fields();
+            log_fields.extend(hp.log_fields());
+            let log = open_log(&log_file, "level_hold", path, log_fields);
             run_training_loop_bc::<B, _>(
                 plain,
                 save_path,
@@ -333,6 +367,7 @@ fn run<B>(
                 init_from,
                 LevelHoldEnv::with_reward_config(1000.0, 100.0, cfg, reward_cfg),
                 log,
+                &hp,
                 bc_steps,
                 bc_epochs,
             )
@@ -349,7 +384,9 @@ fn run<B>(
                     OrbitRewardConfig::default()
                 }
             };
-            let log = open_log(&log_file, "orbit", path, reward_cfg.log_fields());
+            let mut log_fields = reward_cfg.log_fields();
+            log_fields.extend(hp.log_fields());
+            let log = open_log(&log_file, "orbit", path, log_fields);
             run_training_loop_bc::<B, _>(
                 plain,
                 save_path,
@@ -357,6 +394,7 @@ fn run<B>(
                 init_from,
                 OrbitEnv::with_reward_config(1000.0, 100.0, 1000.0, cfg, reward_cfg),
                 log,
+                &hp,
                 bc_steps,
                 bc_epochs,
             )
@@ -373,7 +411,9 @@ fn run<B>(
                     OrbitRewardConfig::default()
                 }
             };
-            let log = open_log(&log_file, "residual_orbit", path, reward_cfg.log_fields());
+            let mut log_fields = reward_cfg.log_fields();
+            log_fields.extend(hp.log_fields());
+            let log = open_log(&log_file, "residual_orbit", path, log_fields);
             run_training_loop::<B, _>(
                 plain,
                 save_path,
@@ -381,6 +421,7 @@ fn run<B>(
                 init_from,
                 ResidualOrbitEnv::with_reward_config(1000.0, 100.0, 1000.0, cfg, reward_cfg),
                 log,
+                &hp,
             )
         }
         Task::LstmOrbit => {
@@ -416,6 +457,7 @@ fn run_training_loop<B, E>(
     init_from: Option<String>,
     env: E,
     log: Option<ml_planes::training::ppo::CsvLog>,
+    hp: &ml_planes::training::PpoHyperparams,
 ) where
     B: burn::tensor::backend::AutodiffBackend,
     B::Device: Default,
@@ -425,6 +467,7 @@ fn run_training_loop<B, E>(
 
     let device: B::Device = Default::default();
     let mut trainer = PpoTrainer::<B, E>::with_n_envs(env, 8, device);
+    trainer.apply_hyperparams(hp);
     if let Some(ref path) = init_from {
         trainer.load_policy(path);
     }
@@ -443,6 +486,7 @@ fn run_training_loop_bc<B, E>(
     init_from: Option<String>,
     env: E,
     log: Option<ml_planes::training::ppo::CsvLog>,
+    hp: &ml_planes::training::PpoHyperparams,
     bc_steps: usize,
     bc_epochs: usize,
 ) where
@@ -454,6 +498,7 @@ fn run_training_loop_bc<B, E>(
 
     let device: B::Device = Default::default();
     let mut trainer = PpoTrainer::<B, E>::with_n_envs(env.clone(), 8, device);
+    trainer.apply_hyperparams(hp);
     if let Some(ref path) = init_from {
         trainer.load_policy(path);
     }
