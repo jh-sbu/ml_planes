@@ -29,3 +29,8 @@ required-features = ["training"]
 name = "train_bc"
 path = "src/bin/train_bc.rs"
 required-features = ["training"]
+
+[[bin]]
+name = "evaluate_policy"
+path = "src/bin/evaluate_policy.rs"
+required-features = ["training"]
