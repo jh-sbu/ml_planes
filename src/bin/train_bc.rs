@@ -16,6 +16,8 @@
 //!   --minibatch <n>             Minibatch size (default: 256).
 //!   --output <stem>             Save to models/<task>/<stem>.mpk (auto-increments if omitted).
 //!   --backend <wgpu|ndarray>    Compute backend (default: wgpu).
+//!   --reward-config <path>      Reward/termination profile path, overriding the task default
+//!                               (assets/training/<task>.reward.ron). Missing file → defaults.
 
 #[cfg(not(feature = "training"))]
 fn main() {
@@ -78,9 +80,16 @@ fn main() {
 
     let save_path = save_path_for(task, find("--output"));
 
+    // Optional reward-profile override; defaults to the task baseline profile.
+    let reward_config = find("--reward-config");
+
     match backend {
-        Backend::NdArray => run::<Autodiff<NdArray>>(task, steps, bc_epochs, minibatch, save_path),
-        Backend::Wgpu => run::<Autodiff<Wgpu>>(task, steps, bc_epochs, minibatch, save_path),
+        Backend::NdArray => {
+            run::<Autodiff<NdArray>>(task, steps, bc_epochs, minibatch, save_path, reward_config)
+        }
+        Backend::Wgpu => {
+            run::<Autodiff<Wgpu>>(task, steps, bc_epochs, minibatch, save_path, reward_config)
+        }
     }
 }
 
@@ -164,8 +173,14 @@ fn save_path_for(task: Task, output_stem: Option<String>) -> String {
 }
 
 #[cfg(feature = "training")]
-fn run<B>(task: Task, steps: usize, bc_epochs: usize, minibatch: usize, save_path: String)
-where
+fn run<B>(
+    task: Task,
+    steps: usize,
+    bc_epochs: usize,
+    minibatch: usize,
+    save_path: String,
+    reward_config: Option<String>,
+) where
     B: burn::tensor::backend::AutodiffBackend,
     B::Device: Default,
 {
@@ -222,7 +237,8 @@ where
         }
     }
 
-    let path = task.reward_config_path();
+    let path = reward_config.unwrap_or_else(|| task.reward_config_path().to_string());
+    let path = path.as_str();
     match task {
         Task::LevelHold => {
             let reward_cfg: LevelHoldRewardConfig = load_or_default(path);

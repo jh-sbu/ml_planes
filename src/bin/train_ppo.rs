@@ -16,6 +16,9 @@
 //!   --backend <wgpu|ndarray>  Compute backend (default: wgpu).
 //!   --log-file <path>         Write a CSV training log (reward config header + per-iteration
 //!                             metrics) to <path>. Compatible with pandas / gnuplot / Excel.
+//!   --reward-config <path>    Load reward/termination profile from <path> instead of the
+//!                             task default (assets/training/<task>.reward.ron). A missing
+//!                             file falls back to the compiled defaults with a warning.
 
 #[cfg(not(feature = "training"))]
 fn main() {
@@ -101,6 +104,13 @@ fn main() {
         .find(|w| w[0] == "--log-file")
         .map(|w| w[1].clone());
 
+    // Optional reward-profile override. Defaults to the task's baseline profile
+    // (see `Task::reward_config_path`). A missing file falls back to defaults.
+    let reward_config: Option<String> = args
+        .windows(2)
+        .find(|w| w[0] == "--reward-config")
+        .map(|w| w[1].clone());
+
     let save_path = save_path_for(task, output_stem);
 
     match backend {
@@ -111,6 +121,7 @@ fn main() {
             total_timesteps,
             init_from,
             log_file,
+            reward_config,
             bc_steps,
             bc_epochs,
         ),
@@ -121,6 +132,7 @@ fn main() {
             total_timesteps,
             init_from,
             log_file,
+            reward_config,
             bc_steps,
             bc_epochs,
         ),
@@ -224,6 +236,7 @@ fn run<B>(
     total_timesteps: usize,
     init_from: Option<String>,
     log_file: Option<String>,
+    reward_config: Option<String>,
     bc_steps: usize,
     bc_epochs: usize,
 ) where
@@ -292,9 +305,12 @@ fn run<B>(
         rudder_limit: 0.2618,
     };
 
+    // Effective reward-profile path: the CLI override if given, else the task default.
+    let reward_path = reward_config.unwrap_or_else(|| task.reward_config_path().to_string());
+
     match task {
         Task::LevelHold => {
-            let path = task.reward_config_path();
+            let path = reward_path.as_str();
             let reward_cfg: LevelHoldRewardConfig = match load_reward_config(path) {
                 Ok(cfg) => {
                     println!("Loaded reward config from {path}");
@@ -318,7 +334,7 @@ fn run<B>(
             )
         }
         Task::Orbit => {
-            let path = task.reward_config_path();
+            let path = reward_path.as_str();
             let reward_cfg: OrbitRewardConfig = match load_reward_config(path) {
                 Ok(cfg) => {
                     println!("Loaded reward config from {path}");
@@ -342,7 +358,7 @@ fn run<B>(
             )
         }
         Task::ResidualOrbit => {
-            let path = task.reward_config_path();
+            let path = reward_path.as_str();
             let reward_cfg: OrbitRewardConfig = match load_reward_config(path) {
                 Ok(cfg) => {
                     println!("Loaded reward config from {path}");
@@ -364,7 +380,7 @@ fn run<B>(
             )
         }
         Task::LstmOrbit => {
-            let path = task.reward_config_path();
+            let path = reward_path.as_str();
             let reward_cfg: WuOrbitRewardConfig = match load_reward_config(path) {
                 Ok(cfg) => {
                     println!("Loaded Wu orbit reward config from {path}");

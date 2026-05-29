@@ -3,6 +3,10 @@
 //! Example:
 //!   cargo run --release --no-default-features --features training --bin evaluate_policy -- \
 //!     --task orbit --model models/orbit/ppo_orbit_1 --episodes 64 --backend ndarray
+//!
+//! Flags:
+//!   --reward-config <path>  Reward/termination profile path (default:
+//!                           assets/training/orbit.reward.ron). Missing file → defaults.
 
 #[cfg(not(feature = "training"))]
 fn main() {
@@ -34,13 +38,13 @@ fn main() {
     }
     let episodes = parse_usize(&args, "--episodes", 64);
 
-    let reward_cfg: OrbitRewardConfig = load_reward_config("assets/training/orbit.reward.ron")
-        .unwrap_or_else(|e| {
-            eprintln!(
-                "Warning: could not load assets/training/orbit.reward.ron: {e}. Using defaults."
-            );
-            OrbitRewardConfig::default()
-        });
+    // Optional reward-profile override; defaults to the orbit baseline profile.
+    let reward_path = find_arg(&args, "--reward-config")
+        .unwrap_or_else(|| "assets/training/orbit.reward.ron".to_string());
+    let reward_cfg: OrbitRewardConfig = load_reward_config(&reward_path).unwrap_or_else(|e| {
+        eprintln!("Warning: could not load {reward_path}: {e}. Using defaults.");
+        OrbitRewardConfig::default()
+    });
     let max_steps = parse_u32(&args, "--max-steps", reward_cfg.max_episode_steps);
 
     let cfg = generic_jet_config();
