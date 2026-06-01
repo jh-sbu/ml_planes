@@ -226,8 +226,8 @@ impl TrainingEnv for OrbitEnv {
         let radial_z = sin_a;
 
         let (tang_x, tang_z) = match self.direction {
-            OrbitDirection::CounterClockwise => (-radial_z, radial_x),
-            OrbitDirection::Clockwise => (radial_z, -radial_x),
+            OrbitDirection::CounterClockwise => (radial_z, -radial_x),
+            OrbitDirection::Clockwise => (-radial_z, radial_x),
         };
         let heading_perturb = self
             .rng
@@ -394,7 +394,7 @@ mod tests {
     fn state_at(radius: f32, heading: Vec3) -> FlightState {
         let velocity = heading.normalize() * 100.0;
         let mut state = FlightState {
-            position: Vec3::new(0.0, 1000.0, -radius),
+            position: Vec3::new(0.0, 1000.0, radius),
             velocity,
             attitude: level_attitude_for_heading(velocity.x, velocity.z),
             angular_velocity: Vec3::ZERO,

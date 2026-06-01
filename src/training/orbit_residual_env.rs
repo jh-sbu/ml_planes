@@ -212,8 +212,8 @@ impl TrainingEnv for ResidualOrbitEnv {
         let radial_z = sin_a;
 
         let (tang_x, tang_z) = match self.direction {
-            OrbitDirection::CounterClockwise => (-radial_z, radial_x),
-            OrbitDirection::Clockwise => (radial_z, -radial_x),
+            OrbitDirection::CounterClockwise => (radial_z, -radial_x),
+            OrbitDirection::Clockwise => (-radial_z, radial_x),
         };
         let heading_perturb = self
             .rng
@@ -271,8 +271,8 @@ impl TrainingEnv for ResidualOrbitEnv {
         ctrl.inner.target_altitude = self.target_altitude;
         ctrl.inner.target_airspeed = self.target_airspeed;
         // Reseed bank feedforward with the actual sampled radius and direction.
-        let bank_ff =
-            self.direction.sign() * (self.state.airspeed.powi(2) / (G * self.target_radius)).atan();
+        let bank_ff = -self.direction.sign()
+            * (self.state.airspeed.powi(2) / (G * self.target_radius.max(1.0))).atan();
         ctrl.inner.target_roll = bank_ff.clamp(-FRAC_PI_3, FRAC_PI_3);
         self.orbit_controller = ctrl;
 
@@ -385,7 +385,7 @@ mod tests {
     fn state_at(radius: f32, heading: Vec3) -> FlightState {
         let velocity = heading.normalize() * 100.0;
         let mut state = FlightState {
-            position: Vec3::new(0.0, 1000.0, -radius),
+            position: Vec3::new(0.0, 1000.0, radius),
             velocity,
             attitude: level_attitude_for_heading(velocity.x, velocity.z),
             angular_velocity: Vec3::ZERO,
@@ -500,6 +500,22 @@ mod tests {
                 "obs[{i}] should match when scale=0: zero={z} full={f}"
             );
         }
+    }
+
+    #[test]
+    fn reset_seeds_pid_bank_with_orbit_controller_chirality() {
+        let mut env = ResidualOrbitEnv::new(1000.0, 100.0, 1000.0, jet_cfg());
+        let _ = env.reset();
+
+        let expected = -env.direction.sign()
+            * (env.state.airspeed.powi(2) / (G * env.target_radius.max(1.0))).atan();
+
+        assert!(
+            (env.orbit_controller.inner.target_roll - expected).abs() < 1e-5,
+            "seeded target_roll={} expected={expected} for {:?}",
+            env.orbit_controller.inner.target_roll,
+            env.direction
+        );
     }
 
     #[test]

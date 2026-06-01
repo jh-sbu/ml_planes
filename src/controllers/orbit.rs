@@ -13,21 +13,24 @@ const GUIDANCE_KP: f32 = 0.002;
 /// Maximum heading offset produced by radial guidance [rad]. Matches `radial_pid` output limit.
 const GUIDANCE_MAX: f32 = 0.5;
 
-/// Orbit direction as seen from above (+Y up, XZ horizontal).
+/// Orbit direction as seen in the Bevy top-down view (+Y up, +Z down on screen).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum OrbitDirection {
-    /// Right-hand turn (bank right). Center is to the right of the plane's heading.
+    /// Clockwise turn in the top-down view.
     Clockwise,
-    /// Left-hand turn (bank left). Center is to the left of the plane's heading.
+    /// Counterclockwise turn in the top-down view.
     CounterClockwise,
 }
 
 impl OrbitDirection {
-    /// +1.0 for CW (right bank), -1.0 for CCW (left bank).
+    /// Direction multiplier: -1.0 for visual CW, +1.0 for visual CCW.
+    ///
+    /// This is not the mathematical `atan2(z, x)` sign: the Bevy top-down view
+    /// has +Z downward on screen, so visual chirality is mirrored.
     pub fn sign(self) -> f32 {
         match self {
-            OrbitDirection::Clockwise => 1.0,
-            OrbitDirection::CounterClockwise => -1.0,
+            OrbitDirection::Clockwise => -1.0,
+            OrbitDirection::CounterClockwise => 1.0,
         }
     }
 }
@@ -72,8 +75,8 @@ pub fn orbit_observation_terms(
     let safe_radius = current_radius.max(1.0);
 
     let (tang_x, tang_z) = match direction {
-        OrbitDirection::CounterClockwise => (-rz / safe_radius, rx / safe_radius),
-        OrbitDirection::Clockwise => (rz / safe_radius, -rx / safe_radius),
+        OrbitDirection::CounterClockwise => (rz / safe_radius, -rx / safe_radius),
+        OrbitDirection::Clockwise => (-rz / safe_radius, rx / safe_radius),
     };
 
     let speed_xz = (state.velocity.x.powi(2) + state.velocity.z.powi(2)).sqrt();
@@ -173,7 +176,7 @@ fn pitch_angle(attitude: bevy::math::Quat) -> f32 {
 /// Guidance cascade:
 ///   1. Radial error [m] → `radial_pid` → heading offset [rad]
 ///   2. Heading error [rad] → `heading_pid` → Δbank [rad]
-///   3. Curvature feedforward: `atan(V² / (g·R)) · direction_sign`
+///   3. Curvature feedforward: `atan(V² / (g·R)) · -direction_sign`
 ///   4. Total bank = feedforward + Δbank, clamped ±60°, set on inner controller
 #[derive(Clone)]
 pub struct OrbitController {
@@ -187,7 +190,7 @@ pub struct OrbitController {
     pub target_altitude: f32,
     /// Target airspeed [m/s].
     pub target_airspeed: f32,
-    /// Orbit direction (CW = right-hand, CCW = left-hand).
+    /// Orbit direction in the visual top-down convention.
     pub direction: OrbitDirection,
     /// Radial error [m] → heading rotation offset [rad]. kp=0.002, output ±0.5 rad.
     pub radial_pid: PidController,
@@ -257,10 +260,10 @@ impl OrbitController {
             (1.0_f32, 0.0_f32)
         };
 
-        // Center is perpendicular to heading: left for CCW, right for CW.
+        // Center is perpendicular to heading in visual top-down convention.
         let (perp_x, perp_z) = match direction {
-            OrbitDirection::CounterClockwise => (-hz, hx),
-            OrbitDirection::Clockwise => (hz, -hx),
+            OrbitDirection::CounterClockwise => (hz, -hx),
+            OrbitDirection::Clockwise => (-hz, hx),
         };
         let center_x = state.position.x + perp_x * radius;
         let center_z = state.position.z + perp_z * radius;
@@ -306,11 +309,11 @@ impl FlightController for OrbitController {
         }
 
         // Tangent direction (unit vector perpendicular to radial, in XZ plane).
-        // CCW (viewed from +Y): (-rz, rx) / r
-        // CW:                   ( rz, -rx) / r
+        // Bevy top-down view has +Z downward, so visual chirality is mirrored
+        // from the mathematical atan2(z, x) sense.
         let (tang_x, tang_z) = match self.direction {
-            OrbitDirection::CounterClockwise => (-rz / current_radius, rx / current_radius),
-            OrbitDirection::Clockwise => (rz / current_radius, -rx / current_radius),
+            OrbitDirection::CounterClockwise => (rz / current_radius, -rx / current_radius),
+            OrbitDirection::Clockwise => (-rz / current_radius, rx / current_radius),
         };
 
         // Radial error > 0: too far out; < 0: too close.
@@ -319,7 +322,7 @@ impl FlightController for OrbitController {
 
         // Rotate tangent to steer toward the circle.
         // Positive radial error needs inward steering: rotate tangent inward by
-        // (correction) for CCW (dir_sign=-1) or (-correction) for CW (dir_sign=+1).
+        // -direction.sign() * correction in the visual top-down convention.
         let rotation_angle = -self.direction.sign() * correction;
         let (sin_a, cos_a) = rotation_angle.sin_cos();
         let desired_x = cos_a * tang_x - sin_a * tang_z;
@@ -339,8 +342,9 @@ impl FlightController for OrbitController {
         let heading_error = cross.atan2(dot);
 
         // Curvature feedforward holds steady orbit bank; PID corrects perturbations.
-        // Sign: body +Y maps to world −Z (pilot's left), so centripetal force toward the
-        // orbit center requires the OPPOSITE bank sign from the direction sign.
+        // Positive roll is left bank in this body-axis convention. Visual CCW needs
+        // right bank (negative roll), while visual CW needs left bank (positive roll),
+        // so feedforward is the opposite of direction.sign().
         let bank_ff =
             -self.direction.sign() * (state.airspeed.powi(2) / (G * self.target_radius)).atan();
         let heading_correction = self.heading_pid.update(heading_error, dt);
@@ -412,30 +416,39 @@ mod tests {
     }
 
     #[test]
-    fn tangent_ccw_at_pos_x_radial() {
-        // Plane at radial (R, 0) from center → CCW tangent should be (0, +1).
-        let (rx, rz, r) = (R, 0.0_f32, R);
-        let (tang_x, tang_z) = (-rz / r, rx / r);
-        assert!((tang_x - 0.0).abs() < 1e-5, "tang_x={tang_x}");
-        assert!((tang_z - 1.0).abs() < 1e-5, "tang_z={tang_z}");
+    fn visual_ccw_heading_error_zero_at_screen_bottom() {
+        // In Bevy's top-down view +Z reads downward. A visual CCW orbit at the
+        // screen bottom (world +Z radial) moves toward +X.
+        let state = make_state(Vec3::new(0.0, ALT, R), Vec3::new(V, 0.0, 0.0));
+        let terms = orbit_observation_terms(&state, 0.0, 0.0, R, OrbitDirection::CounterClockwise);
+
+        assert!(
+            terms.heading_error.abs() < 1e-5,
+            "heading_error={}",
+            terms.heading_error
+        );
     }
 
     #[test]
-    fn tangent_cw_at_pos_x_radial() {
-        // Plane at radial (R, 0) from center → CW tangent should be (0, -1).
-        let (rx, rz, r) = (R, 0.0_f32, R);
-        let (tang_x, tang_z) = (rz / r, -rx / r);
-        assert!((tang_x - 0.0).abs() < 1e-5, "tang_x={tang_x}");
-        assert!((tang_z - (-1.0)).abs() < 1e-5, "tang_z={tang_z}");
+    fn visual_cw_heading_error_zero_at_screen_top() {
+        // Visual CW at the screen top (world -Z radial) also moves toward +X.
+        let state = make_state(Vec3::new(0.0, ALT, -R), Vec3::new(V, 0.0, 0.0));
+        let terms = orbit_observation_terms(&state, 0.0, 0.0, R, OrbitDirection::Clockwise);
+
+        assert!(
+            terms.heading_error.abs() < 1e-5,
+            "heading_error={}",
+            terms.heading_error
+        );
     }
 
     #[test]
     fn zero_error_produces_bank_ff() {
-        // CCW orbit: plane at (0, -R) in XZ from center → heading +X is the CCW tangent.
+        // Visual CCW orbit: plane at (0, +R) in XZ from center → heading +X is the CCW tangent.
         // radial_error = 0, heading_error = 0 → inner.target_roll ≈ bank_ff.
-        // bank_ff = -CCW.sign() * atan(V²/gR) = -(-1) * atan(...) = positive (right bank).
+        // bank_ff = -CCW.sign() * atan(V²/gR) = -(+1) * atan(...) = negative (right bank).
         let mut ctrl = make_orbit(0.0, 0.0, R, OrbitDirection::CounterClockwise);
-        let state = make_state(Vec3::new(0.0, ALT, -R), Vec3::new(V, 0.0, 0.0));
+        let state = make_state(Vec3::new(0.0, ALT, R), Vec3::new(V, 0.0, 0.0));
         ctrl.update(
             &state,
             &crate::plane::ControllerContext::empty_for(crate::plane::PlaneId::TEST),
@@ -451,12 +464,12 @@ mod tests {
 
     #[test]
     fn positive_radial_error_steers_inward() {
-        // CCW orbit: plane 100 m outside the circle. Guidance should command more right bank
-        // (inner.target_roll more positive than bank_ff alone) to increase centripetal force.
+        // Visual CCW orbit: plane 100 m outside the circle. Guidance should command more right bank
+        // (inner.target_roll more negative than bank_ff alone) to increase centripetal force.
         let extra = 100.0;
         let mut ctrl = make_orbit(0.0, 0.0, R, OrbitDirection::CounterClockwise);
-        // Plane at (0, -(R+extra)): radial = (0, -(R+extra)), CCW tangent = (+1, 0) = heading +X.
-        let state = make_state(Vec3::new(0.0, ALT, -(R + extra)), Vec3::new(V, 0.0, 0.0));
+        // Plane at (0, R+extra): radial = (0, R+extra), visual CCW tangent = (+1, 0) = heading +X.
+        let state = make_state(Vec3::new(0.0, ALT, R + extra), Vec3::new(V, 0.0, 0.0));
         ctrl.update(
             &state,
             &crate::plane::ControllerContext::empty_for(crate::plane::PlaneId::TEST),
@@ -464,8 +477,8 @@ mod tests {
         );
         let bank_ff = -OrbitDirection::CounterClockwise.sign() * (V * V / (G * R)).atan();
         assert!(
-            ctrl.inner.target_roll > bank_ff,
-            "inner.target_roll={} should be > bank_ff={bank_ff} (more right bank = more centripetal)",
+            ctrl.inner.target_roll < bank_ff,
+            "inner.target_roll={} should be < bank_ff={bank_ff} (more right bank = more centripetal)",
             ctrl.inner.target_roll
         );
     }
@@ -473,26 +486,26 @@ mod tests {
     #[test]
     fn direction_sign_reverses_roll() {
         // Both planes on their respective circles with zero heading error.
-        // CCW: plane at (0, -R) → roll positive (right bank); CW: plane at (0, +R) → roll negative.
+        // Visual CCW: plane at (0, +R) → roll negative (right bank);
+        // visual CW: plane at (0, -R) → roll positive (left bank).
         let mut ctrl_ccw = make_orbit(0.0, 0.0, R, OrbitDirection::CounterClockwise);
         let mut ctrl_cw = make_orbit(0.0, 0.0, R, OrbitDirection::Clockwise);
 
-        // CCW: radial=(0,-R), CCW tangent=(+1,0); CW: radial=(0,+R), CW tangent=(+1,0).
-        let state_ccw = make_state(Vec3::new(0.0, ALT, -R), Vec3::new(V, 0.0, 0.0));
-        let state_cw = make_state(Vec3::new(0.0, ALT, R), Vec3::new(V, 0.0, 0.0));
+        let state_ccw = make_state(Vec3::new(0.0, ALT, R), Vec3::new(V, 0.0, 0.0));
+        let state_cw = make_state(Vec3::new(0.0, ALT, -R), Vec3::new(V, 0.0, 0.0));
 
         let ec = crate::plane::ControllerContext::empty_for(crate::plane::PlaneId::TEST);
         ctrl_ccw.update(&state_ccw, &ec, 1.0 / 60.0);
         ctrl_cw.update(&state_cw, &ec, 1.0 / 60.0);
 
         assert!(
-            ctrl_ccw.inner.target_roll > 0.0,
-            "CCW should bank right (positive roll), got {}",
+            ctrl_ccw.inner.target_roll < 0.0,
+            "CCW should bank right (negative roll), got {}",
             ctrl_ccw.inner.target_roll
         );
         assert!(
-            ctrl_cw.inner.target_roll < 0.0,
-            "CW should bank left (negative roll), got {}",
+            ctrl_cw.inner.target_roll > 0.0,
+            "CW should bank left (positive roll), got {}",
             ctrl_cw.inner.target_roll
         );
         assert!(
@@ -505,13 +518,13 @@ mod tests {
 
     #[test]
     fn direction_sign_values_match_bank_convention() {
-        assert_eq!(OrbitDirection::Clockwise.sign(), 1.0);
-        assert_eq!(OrbitDirection::CounterClockwise.sign(), -1.0);
+        assert_eq!(OrbitDirection::Clockwise.sign(), -1.0);
+        assert_eq!(OrbitDirection::CounterClockwise.sign(), 1.0);
     }
 
     #[test]
     fn orbit_observation_geometry_zero_error() {
-        let state = make_state(Vec3::new(0.0, ALT, -R), Vec3::new(V, 0.0, 0.0));
+        let state = make_state(Vec3::new(0.0, ALT, R), Vec3::new(V, 0.0, 0.0));
         let obs = build_orbit_observation(
             &state,
             0.0,
@@ -529,15 +542,15 @@ mod tests {
         assert!(obs[0].abs() < 1e-5, "radial obs={}", obs[0]);
         assert!(obs[1].abs() < 1e-5, "heading obs={}", obs[1]);
         assert!(
-            obs[2] > 0.0,
-            "CCW bank feedforward should be positive (right bank), got {}",
+            obs[2] < 0.0,
+            "CCW bank feedforward should be negative (right bank), got {}",
             obs[2]
         );
     }
 
     #[test]
     fn orbit_observation_appends_vertical_speed() {
-        let state = make_state(Vec3::new(0.0, ALT, -R), Vec3::new(V, 15.0, 0.0));
+        let state = make_state(Vec3::new(0.0, ALT, R), Vec3::new(V, 15.0, 0.0));
         let obs = build_orbit_observation(
             &state,
             0.0,
@@ -557,8 +570,8 @@ mod tests {
 
     #[test]
     fn orbit_observation_direction_reverses_bank_ff() {
-        let state_ccw = make_state(Vec3::new(0.0, ALT, -R), Vec3::new(V, 0.0, 0.0));
-        let state_cw = make_state(Vec3::new(0.0, ALT, R), Vec3::new(V, 0.0, 0.0));
+        let state_ccw = make_state(Vec3::new(0.0, ALT, R), Vec3::new(V, 0.0, 0.0));
+        let state_cw = make_state(Vec3::new(0.0, ALT, -R), Vec3::new(V, 0.0, 0.0));
         let obs_ccw = build_orbit_observation(
             &state_ccw,
             0.0,
@@ -582,20 +595,20 @@ mod tests {
     /// does not penalize the recovery maneuver the PID would command.
     #[test]
     fn guidance_heading_error_zero_when_flying_guidance_direction() {
-        // Geometry: center at origin, CCW, radius R.
+        // Geometry: center at origin, visual CCW, radius R.
         // Place plane 50 m beyond the circle on the +X radial: position = (R+50, ALT, 0).
-        // CCW tangent there is (0, 0, +1) in XZ (i.e. +Z direction in world space).
-        // PID correction: GUIDANCE_KP * 50 = 0.1 rad, rotation_angle = -(-1) * 0.1 = +0.1 rad.
-        // Desired direction = rotate tangent (0, +1) by +0.1 rad CCW in XZ:
-        //   desired_x = cos(0.1)*0 - sin(0.1)*1 = -sin(0.1)
-        //   desired_z = sin(0.1)*0 + cos(0.1)*1 =  cos(0.1)
+        // Visual CCW tangent there is (0, 0, -1) in XZ (i.e. -Z direction in world space).
+        // PID correction: GUIDANCE_KP * 50 = 0.1 rad, rotation_angle = -(+1) * 0.1 = -0.1 rad.
+        // Desired direction = rotate tangent (0, -1) by -0.1 rad in XZ:
+        //   desired_x = cos(-0.1)*0 - sin(-0.1)*(-1) = -sin(0.1)
+        //   desired_z = sin(-0.1)*0 + cos(-0.1)*(-1) = -cos(0.1)
         let radial_overshoot = 50.0;
         let correction = (GUIDANCE_KP * radial_overshoot).clamp(-GUIDANCE_MAX, GUIDANCE_MAX);
-        let rotation_angle = 0.1_f32; // -CCW.sign() * correction = +correction
-        assert!((rotation_angle - correction).abs() < 1e-6);
+        let rotation_angle = -0.1_f32; // -CCW.sign() * correction = -correction
+        assert!((rotation_angle + correction).abs() < 1e-6);
 
         let tang_x = 0.0_f32;
-        let tang_z = 1.0_f32;
+        let tang_z = -1.0_f32;
         let (sin_a, cos_a) = rotation_angle.sin_cos();
         let desired_x = cos_a * tang_x - sin_a * tang_z;
         let desired_z = sin_a * tang_x + cos_a * tang_z;

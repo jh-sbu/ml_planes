@@ -231,7 +231,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut ids: ResMut
     let orbit_speed = 100.0;
     let orbit_direction = OrbitDirection::CounterClockwise;
 
-    let pid_orbit_pos = Vec3::new(0.0, 1200.0, -orbit_radius);
+    let pid_orbit_pos = Vec3::new(0.0, 1200.0, orbit_direction.sign() * orbit_radius);
     let pid_orbit_vel = Vec3::new(orbit_speed, 0.0, 0.0);
     let pid_orbit_attitude = level_attitude_for_heading(pid_orbit_vel.x, pid_orbit_vel.z);
     let mut pid_orbit_state = FlightState {
@@ -287,7 +287,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut ids: ResMut
     {
         let model_path = "models/orbit/ppo_orbit_1";
         if std::path::Path::new(&format!("{model_path}.mpk")).exists() {
-            let rl_orbit_pos = Vec3::new(0.0, 800.0, orbit_radius);
+            let rl_orbit_pos = Vec3::new(0.0, 800.0, -orbit_direction.sign() * orbit_radius);
             let rl_orbit_vel = Vec3::new(-orbit_speed, 0.0, 0.0);
             let rl_orbit_attitude = level_attitude_for_heading(rl_orbit_vel.x, rl_orbit_vel.z);
             let config = RlOrbitConfig {
@@ -330,7 +330,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut ids: ResMut
             env!("CARGO_MANIFEST_DIR"),
             "/models/orbit/ppo_orbit_1.mpk"
         ));
-        let rl_orbit_pos = Vec3::new(0.0, 800.0, orbit_radius);
+        let rl_orbit_pos = Vec3::new(0.0, 800.0, -orbit_direction.sign() * orbit_radius);
         let rl_orbit_vel = Vec3::new(-orbit_speed, 0.0, 0.0);
         let rl_orbit_attitude = level_attitude_for_heading(rl_orbit_vel.x, rl_orbit_vel.z);
         let config = RlOrbitConfig {
@@ -492,7 +492,25 @@ fn configure_origin_orbit(
 
 fn steady_orbit_bank(airspeed: f32, radius: f32, direction: OrbitDirection) -> f32 {
     const G: f32 = 9.81;
-    direction.sign() * (airspeed.powi(2) / (G * radius.max(1.0))).atan()
+    -direction.sign() * (airspeed.powi(2) / (G * radius.max(1.0))).atan()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn steady_orbit_bank_matches_pid_feedforward_chirality() {
+        let ccw = steady_orbit_bank(100.0, 1000.0, OrbitDirection::CounterClockwise);
+        let cw = steady_orbit_bank(100.0, 1000.0, OrbitDirection::Clockwise);
+
+        assert!(ccw < 0.0, "CCW orbit should seed negative bank, got {ccw}");
+        assert!(cw > 0.0, "CW orbit should seed positive bank, got {cw}");
+        assert!(
+            (ccw + cw).abs() < 1e-6,
+            "CW/CCW seed banks should be symmetric: cw={cw}, ccw={ccw}"
+        );
+    }
 }
 
 fn level_attitude_for_heading(head_x: f32, head_z: f32) -> Quat {

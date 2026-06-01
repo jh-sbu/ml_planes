@@ -207,7 +207,7 @@ fn main() {
             ctrl.direction = args.direction;
             ctrl.target_altitude = args.altitude;
             ctrl.target_airspeed = args.airspeed;
-            // Plane spawns at X=0 flying +X. CCW center is in +Z, CW center is in -Z.
+            // Plane spawns at X=0 flying +X. Visual CCW center is in -Z, CW center is in +Z.
             // Recompute auto-center with the actual target radius (from_state uses
             // DEFAULT_RADIUS=1000, which would be wrong when args.radius != 1000).
             let (cx, cz) =
@@ -518,8 +518,8 @@ fn is_orbit_like(name: &str) -> bool {
 }
 
 /// Resolve the orbit center in world coordinates, applying the same defaults
-/// used by the `orbit` arm: plane spawns at X=0 flying +X, so CCW center is +Z
-/// and CW center is -Z, both at the target radius.
+/// used by the `orbit` arm: plane spawns at X=0 flying +X, so visual CCW center
+/// is -Z and CW center is +Z, both at the target radius.
 fn resolve_orbit_center(
     user_x: Option<f32>,
     user_z: Option<f32>,

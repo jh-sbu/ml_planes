@@ -99,7 +99,7 @@ impl FlightController for HeadingHoldController {
         let (tgt_z, tgt_x) = self.target_heading.sin_cos();
 
         // Signed heading error: positive = current heading is LEFT of target.
-        // Positive error → bank right (positive roll) → turn right toward target.
+        // Positive error → bank right (negative roll) → turn right toward target.
         let cross = tgt_x * head_z - tgt_z * head_x;
         let dot = tgt_x * head_x + tgt_z * head_z;
         let heading_error = cross.atan2(dot);

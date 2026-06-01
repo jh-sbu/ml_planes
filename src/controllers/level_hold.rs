@@ -18,7 +18,7 @@ use crate::plane::{ControlInputs, FlightState};
 
 /// Roll (bank) angle from a body→world quaternion.
 ///
-/// Positive = right wing low (right bank).
+/// Positive = right wing high (left bank).
 /// Returns 0 for level, unbanked flight.
 fn roll_angle(attitude: Quat) -> f32 {
     // attitude is body→world.
@@ -212,7 +212,7 @@ impl FlightController for LevelHoldController {
         // Wings level (or bank-to-command): drive roll toward target_roll (default 0 = wings level).
         let roll = roll_angle(state.attitude);
         // Derivative on measurement: use roll rate p directly.
-        // p = angular_velocity.x; positive p = right roll = roll angle increasing.
+        // p = angular_velocity.x; positive p = left roll = roll angle increasing.
         let aileron =
             self.roll_pid
                 .update_dom(self.target_roll - roll, state.angular_velocity.x, dt);

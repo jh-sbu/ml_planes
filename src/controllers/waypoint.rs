@@ -227,8 +227,8 @@ impl WaypointController {
         }
 
         let (tang_x, tang_z) = match self.orbit_direction {
-            OrbitDirection::CounterClockwise => (-rz / current_radius, rx / current_radius),
-            OrbitDirection::Clockwise => (rz / current_radius, -rx / current_radius),
+            OrbitDirection::CounterClockwise => (rz / current_radius, -rx / current_radius),
+            OrbitDirection::Clockwise => (-rz / current_radius, rx / current_radius),
         };
 
         let radial_error = current_radius - self.orbit_radius;
