@@ -1,0 +1,14 @@
+// Direct orbit PPO stability experiment.
+// Baseline trace showed high entropy and noisy returns, so this keeps exploration
+// pressure lower and uses longer, more conservative rollout/update settings.
+(
+    gamma: 0.995,
+    gae_lambda: 0.95,
+    clip_epsilon: 0.15,
+    value_coef: 0.5,
+    entropy_coef: 0.001,
+    lr: 0.0002,
+    rollout_steps: 4096,
+    n_epochs: 6,
+    minibatch: 128,
+)
