@@ -10,10 +10,12 @@ use crate::controllers::{
 };
 use crate::plane::{ControlInputs, FlightState, PlaneId, PlaneIndex, PlaneTuningHandle};
 use crate::ui::file_load::{self, PendingLoads};
+use crate::ui::map::MapState;
 
 #[allow(unused_variables, unused_mut)]
 pub fn draw_flight_hud(
     mode: Res<CameraMode>,
+    map: Res<MapState>,
     mut contexts: EguiContexts,
     mut plane_query: Query<(
         Entity,
@@ -30,6 +32,11 @@ pub fn draw_flight_hud(
     model_lib: Res<ModelLibrary>,
     mut pending: ResMut<PendingLoads>,
 ) {
+    // The full-screen map replaces the 3D view (and this HUD) while open.
+    if map.open {
+        return;
+    }
+
     // Determine which entity to display
     let result = match *mode {
         CameraMode::Follow(entity) => plane_query.get_mut(entity).ok(),

@@ -5,6 +5,7 @@ use std::f32::consts::{FRAC_PI_2, PI};
 use super::mode::CameraMode;
 use crate::environment::PhysicsInterp;
 use crate::plane::{FlightState, PlaneIndex};
+use crate::ui::map::MapState;
 
 #[derive(Component)]
 pub struct FreeLookCamera {
@@ -109,10 +110,14 @@ pub fn cycle_camera_mode(
 
 pub fn update_free_look_camera(
     mode: Res<CameraMode>,
+    map: Res<MapState>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     accumulated: Res<AccumulatedMouseMotion>,
     mut query: Query<(&mut Transform, &mut FreeLookCamera), With<Camera3d>>,
 ) {
+    if map.open {
+        return;
+    }
     if !matches!(*mode, CameraMode::FreeLook) {
         return;
     }
@@ -134,11 +139,15 @@ pub fn update_free_look_camera(
 
 pub fn handle_follow_camera_input(
     mode: Res<CameraMode>,
+    map: Res<MapState>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     accumulated_motion: Res<AccumulatedMouseMotion>,
     accumulated_scroll: Res<AccumulatedMouseScroll>,
     mut query: Query<&mut FollowCamera, With<Camera3d>>,
 ) {
+    if map.open {
+        return;
+    }
     if !matches!(*mode, CameraMode::Follow(_)) {
         return;
     }
