@@ -14,7 +14,6 @@ use crate::plane::{ControlInputs, FlightState};
 use super::heading_hold::HeadingHoldController;
 use super::level_hold::LevelHoldController;
 use super::orbit::OrbitController;
-use super::waypoint::WaypointController;
 use super::FlightController;
 
 // ---------------------------------------------------------------------------
@@ -168,9 +167,6 @@ pub struct PlaneTuning {
     /// Named tuning profiles for [`HeadingHoldController`].
     #[serde(default)]
     pub heading_hold: HashMap<String, HeadingHoldTuning>,
-    /// Named tuning profiles for [`WaypointController`].
-    #[serde(default)]
-    pub waypoint: HashMap<String, WaypointTuning>,
 }
 
 impl PlaneTuning {
@@ -189,76 +185,11 @@ impl PlaneTuning {
         self.heading_hold.get(profile)
     }
 
-    /// Return the named waypoint profile, or `None` if not present.
-    pub fn get_waypoint(&self, profile: &str) -> Option<&WaypointTuning> {
-        self.waypoint.get(profile)
-    }
-
     /// Merge all profiles from `other` into `self`, overwriting on name collision.
     pub fn merge(&mut self, other: PlaneTuning) {
         self.level_hold.extend(other.level_hold);
         self.orbit.extend(other.orbit);
         self.heading_hold.extend(other.heading_hold);
-        self.waypoint.extend(other.waypoint);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// WaypointTuning
-// ---------------------------------------------------------------------------
-
-/// Tunable outer-loop gains for [`WaypointController`].
-#[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
-pub struct WaypointTuning {
-    /// Bearing error [rad] → bank command [rad] proportional gain (approach phase).
-    pub bearing_kp: f32,
-    /// Bearing error [rad] → bank command [rad] derivative gain (approach phase).
-    pub bearing_kd: f32,
-    /// Radial error [m] → heading offset [rad] proportional gain (orbit phase).
-    pub radial_kp: f32,
-    /// Radial error [m] → heading offset [rad] derivative gain (orbit phase).
-    pub radial_kd: f32,
-    /// Heading error [rad] → bank correction [rad] proportional gain (orbit phase).
-    pub heading_kp: f32,
-    /// Heading error [rad] → bank correction [rad] derivative gain (orbit phase).
-    pub heading_kd: f32,
-    /// Inner level-hold gains (altitude, airspeed, roll, beta loops).
-    pub inner: LevelHoldTuning,
-}
-
-impl Default for WaypointTuning {
-    fn default() -> Self {
-        Self {
-            bearing_kp: 0.7,
-            bearing_kd: 0.1,
-            radial_kp: 0.002,
-            radial_kd: 0.01,
-            heading_kp: 0.7,
-            heading_kd: 0.1,
-            inner: LevelHoldTuning::default(),
-        }
-    }
-}
-
-impl ControllerTuning for WaypointTuning {
-    fn build(&self, state: &FlightState, prev_inputs: &ControlInputs) -> Box<dyn FlightController> {
-        // Default target: 1 km ahead of the current heading.
-        let speed_xz = (state.velocity.x.powi(2) + state.velocity.z.powi(2))
-            .sqrt()
-            .max(1.0);
-        let hx = state.velocity.x / speed_xz;
-        let hz = state.velocity.z / speed_xz;
-        let target_x = state.position.x + hx * 1000.0;
-        let target_z = state.position.z + hz * 1000.0;
-        Box::new(WaypointController::with_tuning(
-            state,
-            self,
-            target_x,
-            target_z,
-            state.altitude,
-            state.airspeed,
-            prev_inputs,
-        ))
     }
 }
 

@@ -19,6 +19,10 @@ pub use eval::{evaluate_policy, EvaluationSummary};
 
 #[cfg(any(feature = "inference", feature = "training"))]
 pub(crate) use flight_env::direct_action_to_inputs;
+/// Shared deterministic 6-DOF Euler integrator, re-exported for in-crate
+/// controller convergence tests (the `flight_env` module itself is private).
+#[cfg(test)]
+pub(crate) use flight_env::integrate_state;
 
 /// Optional trait for training environments that support a curriculum.
 ///

@@ -1,0 +1,22 @@
+// Demo patrol flight plan flown by the L1 controller (ControllerKind::FlightPlan).
+//
+// Legs are flown in order. Waypoint legs fly a straight L1 path and capture
+// (fly-by) when within `capture_radius`. Orbit legs loiter for `turns` full
+// revolutions; a final Orbit with `turns: None` holds forever. When the last
+// finite leg completes the controller hands off to a wings-level hold.
+(
+    l1_period: 20.0,
+    l1_damping: 0.75,
+    legs: [
+        // Out-and-back box around the origin at 1.0–1.2 km altitude, 100 m/s.
+        Waypoint( x:  3000.0, z:     0.0, altitude: 1000.0, airspeed: 100.0, capture_radius: 200.0 ),
+        Waypoint( x:  3000.0, z:  3000.0, altitude: 1200.0, airspeed: 100.0, capture_radius: 200.0 ),
+        // Loiter twice around (0, 3000) then continue.
+        Orbit( center_x: 0.0, center_z: 3000.0, radius: 1000.0, altitude: 1200.0,
+               airspeed: 100.0, direction: CounterClockwise, turns: Some(2.0) ),
+        Waypoint( x:     0.0, z:     0.0, altitude: 1000.0, airspeed: 100.0, capture_radius: 200.0 ),
+        // Final station-keeping loiter — holds forever.
+        Orbit( center_x: 0.0, center_z: 0.0, radius: 1000.0, altitude: 1000.0,
+               airspeed: 100.0, direction: CounterClockwise, turns: None ),
+    ],
+)

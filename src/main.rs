@@ -3,7 +3,7 @@ use bevy_rapier3d::prelude::*;
 
 use ml_planes::controllers::{
     ControllerKind, FormationOffset, LevelHoldController, ModelLibrary, OrbitController,
-    OrbitDirection, WaypointController, WingmanController,
+    OrbitDirection, WingmanController,
 };
 #[cfg(any(feature = "inference", feature = "training"))]
 #[allow(unused_imports)]
@@ -13,7 +13,8 @@ use ml_planes::controllers::{
 };
 use ml_planes::environment::{spawn_plane, EnvironmentPlugin};
 use ml_planes::plane::{
-    config::PlaneConfig, ControlInputs, FlightState, NextPlaneId, PlaneIndex, PlanePlugin,
+    config::PlaneConfig, ControlInputs, FlightPlanHandle, FlightState, NextPlaneId, PlaneIndex,
+    PlanePlugin,
 };
 use ml_planes::training::SpawnSpec;
 
@@ -25,8 +26,8 @@ use ml_planes::training::SpawnSpec;
 use ml_planes::controllers::OrbitTuning;
 #[cfg(feature = "visual")]
 use ml_planes::controllers::{
-    ActiveController, ControllerTuning, OrbitParams, PlaneTuning, SelectedTuningProfile,
-    TuningApplied,
+    ActiveController, ControllerTuning, FlightPlan, L1Controller, OrbitParams, PlaneTuning,
+    SelectedTuningProfile, TuningApplied,
 };
 #[cfg(feature = "visual")]
 use ml_planes::plane::PlaneTuningHandle;
@@ -85,7 +86,6 @@ fn main() {
             poll_controller_inputs,
             switch_controller,
             cycle_tune_profile,
-            set_waypoint_from_click,
         ),
     );
     #[cfg(all(
@@ -101,6 +101,7 @@ fn main() {
         (
             apply_initial_tuning,
             apply_controller_switch.after(apply_initial_tuning),
+            apply_flight_plan.after(apply_controller_switch),
         ),
     );
     #[cfg(all(
@@ -432,42 +433,41 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut ids: ResMut
         }
     }
 
-    // --- Waypoint plane: starts 2 km from origin, heading toward it ---
-    let waypoint_pos = Vec3::new(2000.0, 1200.0, 2000.0);
-    let waypoint_vel = Vec3::new(-70.7, 0.0, -70.7); // ~100 m/s toward origin
-    let waypoint_attitude = level_attitude_for_heading(waypoint_vel.x, waypoint_vel.z);
-    let mut waypoint_initial_state = FlightState {
-        position: waypoint_pos,
-        velocity: waypoint_vel,
-        attitude: waypoint_attitude,
+    // --- Flight-plan (L1) plane: follows assets/plans/patrol.plan.ron ---
+    // Spawns 2 km out heading toward the origin. The controller starts as a PID
+    // orbit fallback and is swapped for an `L1Controller` by `apply_flight_plan`
+    // once the `.plan.ron` asset finishes loading.
+    let fp_pos = Vec3::new(2000.0, 1000.0, 2000.0);
+    let fp_vel = Vec3::new(-70.7, 0.0, -70.7); // ~100 m/s toward origin
+    let fp_attitude = level_attitude_for_heading(fp_vel.x, fp_vel.z);
+    let mut fp_state = FlightState {
+        position: fp_pos,
+        velocity: fp_vel,
+        attitude: fp_attitude,
         angular_velocity: Vec3::ZERO,
         ..Default::default()
     };
-    waypoint_initial_state.update_air_data();
+    fp_state.update_air_data();
 
-    let waypoint_controller = WaypointController::from_state(
-        &waypoint_initial_state,
-        0.0,    // target_x
-        0.0,    // target_z
-        1200.0, // target_altitude
-        100.0,  // target_airspeed
-        &ControlInputs::default(),
-    );
-    let waypoint_plane = spawn_plane(
+    let fp_fallback = OrbitController::from_state(&fp_state, &ControlInputs::default());
+    let fp_plane = spawn_plane(
         &mut commands,
         &mut ids,
         &asset_server,
         &SpawnSpec {
-            position: Some(waypoint_pos),
-            velocity: Some(waypoint_vel),
-            attitude: Some(waypoint_attitude),
+            position: Some(fp_pos),
+            velocity: Some(fp_vel),
+            attitude: Some(fp_attitude),
             ..Default::default()
         },
-        Box::new(waypoint_controller),
-        ControllerKind::Waypoint,
+        Box::new(fp_fallback),
+        ControllerKind::FlightPlan,
         &cfg,
     );
-    commands.entity(waypoint_plane.entity).insert(PlaneIndex(6));
+    commands.entity(fp_plane.entity).insert((
+        PlaneIndex(6),
+        FlightPlanHandle(asset_server.load("plans/patrol.plan.ron")),
+    ));
 }
 
 fn configure_origin_orbit(
@@ -588,7 +588,6 @@ fn cycle_tune_profile(
             pt.orbit.keys().map(|s| s.as_str()).collect()
         }
         ControllerKind::HeadingHold => pt.heading_hold.keys().map(|s| s.as_str()).collect(),
-        ControllerKind::Waypoint => pt.waypoint.keys().map(|s| s.as_str()).collect(),
         _ => return,
     };
     names.sort();
@@ -1074,9 +1073,6 @@ fn apply_initial_tuning(
             | ControllerKind::RlLstmOrbit => pt
                 .get_orbit(profile_name)
                 .map(|t| t as &dyn ControllerTuning),
-            ControllerKind::Waypoint => pt
-                .get_waypoint(profile_name)
-                .map(|t| t as &dyn ControllerTuning),
             _ => pt
                 .get_level_hold(profile_name)
                 .map(|t| t as &dyn ControllerTuning),
@@ -1149,9 +1145,6 @@ fn apply_controller_switch(
                 ControllerKind::HeadingHold => pt
                     .get_heading_hold(profile_name)
                     .map(|t| t as &dyn ControllerTuning),
-                ControllerKind::Waypoint => pt
-                    .get_waypoint(profile_name)
-                    .map(|t| t as &dyn ControllerTuning),
                 _ => pt
                     .get_level_hold(profile_name)
                     .map(|t| t as &dyn ControllerTuning),
@@ -1184,59 +1177,42 @@ fn apply_controller_switch(
     }
 }
 
-/// Right-click on the ground sets the waypoint target X/Z for the followed plane.
+/// Swap a `FlightPlan` plane's PID-orbit fallback for an `L1Controller` once its
+/// `.plan.ron` asset finishes loading.
 ///
-/// Casts a ray from the camera through the cursor and intersects with Y = 0.
-/// Resets guidance PIDs so the plane steers to the new target from scratch.
+/// `ControllerKind::build()` cannot construct an `L1Controller` (it lacks the
+/// plan asset), so it returns a PID orbit. This system runs after
+/// `apply_controller_switch`, detects planes whose kind is `FlightPlan` but
+/// whose active controller is not yet an `L1Controller`, and builds the real
+/// controller from the loaded plan — preserving leg progress once installed by
+/// leaving existing `L1Controller`s untouched.
 #[cfg(feature = "visual")]
-fn set_waypoint_from_click(
-    mode: Res<CameraMode>,
-    mouse: Res<ButtonInput<MouseButton>>,
-    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
-    cameras: Query<(&Camera, &GlobalTransform)>,
-    mut plane_query: Query<(&ControllerKind, &mut ActiveController), With<FlightState>>,
+fn apply_flight_plan(
+    mut query: Query<(
+        &FlightState,
+        &mut ActiveController,
+        &ControllerKind,
+        &ControlInputs,
+        &FlightPlanHandle,
+    )>,
+    plans: Res<Assets<FlightPlan>>,
 ) {
-    if !mouse.just_pressed(MouseButton::Right) {
-        return;
-    }
-    let CameraMode::Follow(entity) = *mode else {
-        return;
-    };
-    let Ok((kind, mut controller)) = plane_query.get_mut(entity) else {
-        return;
-    };
-    if *kind != ControllerKind::Waypoint {
-        return;
-    }
-    let Ok(window) = windows.single() else {
-        return;
-    };
-    let Some(cursor_pos) = window.cursor_position() else {
-        return;
-    };
-    // Use the first camera in the scene (there is only one 3-D camera).
-    let Some((camera, cam_transform)) = cameras.iter().next() else {
-        return;
-    };
-    let Ok(ray) = camera.viewport_to_world(cam_transform, cursor_pos) else {
-        return;
-    };
-    let dir = Vec3::from(*ray.direction);
-    if dir.y.abs() < 1e-6 {
-        return; // ray parallel to ground, skip
-    }
-    let t = -ray.origin.y / dir.y;
-    if t <= 0.0 {
-        return; // looking away from ground
-    }
-    let hit = ray.origin + t * dir;
-    if let Some(wpt) = controller
-        .0
-        .as_any_mut()
-        .downcast_mut::<WaypointController>()
-    {
-        wpt.target_x = hit.x;
-        wpt.target_z = hit.z;
-        wpt.reset_guidance();
+    for (state, mut controller, kind, prev_inputs, handle) in query.iter_mut() {
+        if *kind != ControllerKind::FlightPlan {
+            continue;
+        }
+        // Already running the plan — keep it so leg progress is preserved.
+        if controller
+            .0
+            .as_any_mut()
+            .downcast_mut::<L1Controller>()
+            .is_some()
+        {
+            continue;
+        }
+        let Some(plan) = plans.get(&handle.0) else {
+            continue; // asset still loading; the PID orbit fallback keeps flying
+        };
+        controller.0 = Box::new(L1Controller::from_plan(state, plan.clone(), prev_inputs));
     }
 }

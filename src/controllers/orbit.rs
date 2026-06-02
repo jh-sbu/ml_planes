@@ -14,7 +14,9 @@ const GUIDANCE_KP: f32 = 0.002;
 const GUIDANCE_MAX: f32 = 0.5;
 
 /// Orbit direction as seen in the Bevy top-down view (+Y up, +Z down on screen).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(
+    Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize, bevy::reflect::Reflect,
+)]
 pub enum OrbitDirection {
     /// Clockwise turn in the top-down view.
     Clockwise,
@@ -297,62 +299,21 @@ impl FlightController for OrbitController {
         ctx: &crate::plane::ControllerContext,
         dt: f32,
     ) -> ControlInputs {
-        let rx = state.position.x - self.center_x;
-        let rz = state.position.z - self.center_z;
-        let current_radius = (rx * rx + rz * rz).sqrt();
-
-        // Guard: at the orbit center geometry is undefined; hold altitude and pass through.
-        if current_radius < 1.0 {
-            self.inner.target_altitude = self.target_altitude;
-            self.inner.target_airspeed = self.target_airspeed;
-            return self.inner.update(state, ctx, dt);
+        // Radial + heading cascade with centripetal feedforward. At the orbit
+        // center (`None`) geometry is undefined, so hold the previous bank.
+        if let Some(bank) = crate::controllers::guidance::orbit_bank_command(
+            state,
+            self.center_x,
+            self.center_z,
+            self.target_radius,
+            self.direction,
+            &mut self.radial_pid,
+            &mut self.heading_pid,
+            dt,
+        ) {
+            self.inner.target_roll = bank;
         }
 
-        // Tangent direction (unit vector perpendicular to radial, in XZ plane).
-        // Bevy top-down view has +Z downward, so visual chirality is mirrored
-        // from the mathematical atan2(z, x) sense.
-        let (tang_x, tang_z) = match self.direction {
-            OrbitDirection::CounterClockwise => (rz / current_radius, -rx / current_radius),
-            OrbitDirection::Clockwise => (-rz / current_radius, rx / current_radius),
-        };
-
-        // Radial error > 0: too far out; < 0: too close.
-        let radial_error = current_radius - self.target_radius;
-        let correction = self.radial_pid.update(radial_error, dt);
-
-        // Rotate tangent to steer toward the circle.
-        // Positive radial error needs inward steering: rotate tangent inward by
-        // -direction.sign() * correction in the visual top-down convention.
-        let rotation_angle = -self.direction.sign() * correction;
-        let (sin_a, cos_a) = rotation_angle.sin_cos();
-        let desired_x = cos_a * tang_x - sin_a * tang_z;
-        let desired_z = sin_a * tang_x + cos_a * tang_z;
-
-        // Current heading from velocity (fall back to desired if near-zero airspeed).
-        let speed_xz = (state.velocity.x.powi(2) + state.velocity.z.powi(2)).sqrt();
-        let (head_x, head_z) = if speed_xz > 1.0 {
-            (state.velocity.x / speed_xz, state.velocity.z / speed_xz)
-        } else {
-            (desired_x, desired_z)
-        };
-
-        // Signed heading error: positive = head is CCW (left) of desired.
-        let cross = desired_x * head_z - desired_z * head_x;
-        let dot = desired_x * head_x + desired_z * head_z;
-        let heading_error = cross.atan2(dot);
-
-        // Curvature feedforward holds steady orbit bank; PID corrects perturbations.
-        // Positive roll is left bank in this body-axis convention. Visual CCW needs
-        // right bank (negative roll), while visual CW needs left bank (positive roll),
-        // so feedforward is the opposite of direction.sign().
-        let bank_ff =
-            -self.direction.sign() * (state.airspeed.powi(2) / (G * self.target_radius)).atan();
-        let heading_correction = self.heading_pid.update(heading_error, dt);
-        // Subtract heading correction: negative heading_error (head CW of desired) needs
-        // more bank toward center, so the correction term must oppose the error.
-        let target_roll = (bank_ff - heading_correction).clamp(-FRAC_PI_3, FRAC_PI_3);
-
-        self.inner.target_roll = target_roll;
         self.inner.target_altitude = self.target_altitude;
         self.inner.target_airspeed = self.target_airspeed;
         self.inner.update(state, ctx, dt)

@@ -4,6 +4,7 @@ use bevy::prelude::*;
 use bevy_rapier3d::prelude::PhysicsSet;
 
 use super::systems::{apply_aerodynamic_forces, run_flight_controllers, sync_flight_state};
+use crate::controllers::flight_plan::FlightPlan;
 use crate::controllers::tuning::{LevelHoldTuning, OrbitTuning, PlaneTuning};
 use crate::plane::config::PlaneConfig;
 use crate::plane::context::{NextPlaneId, PlaneId};
@@ -24,6 +25,15 @@ pub struct PlaneConfigHandle(pub Handle<PlaneConfig>);
 #[derive(Component, Clone, Debug, Reflect)]
 #[reflect(Component)]
 pub struct PlaneTuningHandle(pub Handle<PlaneTuning>);
+
+// --- FlightPlanHandle component ---
+
+/// Component that stores a handle to a plane's [`FlightPlan`] asset.
+/// Present on planes flying an L1 flight plan; the `apply_flight_plan` system
+/// builds the `L1Controller` once the asset finishes loading.
+#[derive(Component, Clone, Debug, Reflect)]
+#[reflect(Component)]
+pub struct FlightPlanHandle(pub Handle<FlightPlan>);
 
 // --- Error type for the RON loader ---
 
@@ -135,6 +145,60 @@ impl AssetLoader for PlaneConfigLoader {
     }
 }
 
+// --- FlightPlan loader ---
+
+#[derive(Debug)]
+pub enum FlightPlanLoaderError {
+    Io(std::io::Error),
+    Ron(ron::error::SpannedError),
+}
+
+impl std::fmt::Display for FlightPlanLoaderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(e) => write!(f, "FlightPlan I/O error: {e}"),
+            Self::Ron(e) => write!(f, "FlightPlan RON parse error: {e}"),
+        }
+    }
+}
+impl std::error::Error for FlightPlanLoaderError {}
+
+impl From<std::io::Error> for FlightPlanLoaderError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+impl From<ron::error::SpannedError> for FlightPlanLoaderError {
+    fn from(e: ron::error::SpannedError) -> Self {
+        Self::Ron(e)
+    }
+}
+
+/// Loads `.plan.ron` files as [`FlightPlan`] assets.
+#[derive(Default, bevy::reflect::TypePath)]
+pub struct FlightPlanLoader;
+
+impl AssetLoader for FlightPlanLoader {
+    type Asset = FlightPlan;
+    type Settings = ();
+    type Error = FlightPlanLoaderError;
+
+    async fn load(
+        &self,
+        reader: &mut dyn Reader,
+        _settings: &(),
+        _ctx: &mut LoadContext<'_>,
+    ) -> Result<FlightPlan, FlightPlanLoaderError> {
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).await?;
+        Ok(ron::de::from_bytes(&bytes)?)
+    }
+
+    fn extensions(&self) -> &[&str] {
+        &["plan.ron"]
+    }
+}
+
 // --- Plugin ---
 
 pub struct PlanePlugin;
@@ -152,6 +216,11 @@ impl Plugin for PlanePlugin {
         app.register_type::<OrbitTuning>();
         app.register_type::<PlaneTuningHandle>();
         app.init_asset_loader::<PlaneTuningLoader>();
+
+        app.init_asset::<FlightPlan>();
+        app.register_type::<FlightPlan>();
+        app.register_type::<FlightPlanHandle>();
+        app.init_asset_loader::<FlightPlanLoader>();
 
         app.init_resource::<NextPlaneId>();
         app.register_type::<PlaneId>();

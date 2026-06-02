@@ -23,7 +23,8 @@
 src/
   aerodynamics/   # coefficient model, force/torque computation
   plane/          # PlaneConfig asset, FlightState, ControlInputs, physics systems
-  controllers/    # FlightController trait, PID, LevelHold, Ascent, Orbit, Wingman, RL variants, ControllerKind
+  controllers/    # FlightController trait, PID, LevelHold, Ascent, Orbit, HeadingHold, Wingman, L1 flight-plan, RL variants, ControllerKind
+                  #   guidance.rs — shared L1 + orbit bank-command primitives; flight_plan.rs — FlightPlan asset; l1.rs — L1Controller
   environment/    # infinite ground collider + shader, plane spawner
   camera/         # FreeLook and Follow camera modes
   ui/             # egui HUD, extensible info panel
@@ -39,6 +40,7 @@ src/
 | Type | Kind | Description |
 |---|---|---|
 | `PlaneConfig` | RON asset | Geometry, mass/inertia, aero coefficients, engine params, control limits |
+| `FlightPlan` | RON asset | Ordered legs (`Waypoint`/`Orbit`) + L1 period/damping; loaded from `assets/plans/*.plan.ron` via the Bevy asset loader |
 | `FlightState` | ECS component | Position, velocity, attitude (quat), angular velocity, α, β, airspeed, altitude |
 | `ControlInputs` | ECS component | Aileron/elevator/rudder/throttle **or** rate commands (see Action Spaces) |
 | `FlightController` | trait | `fn update(&mut self, state: &FlightState, dt: f32) -> ControlInputs` |
@@ -51,6 +53,7 @@ src/
 | `LevelHoldRewardConfig` / `OrbitRewardConfig` | plain structs | Reward weights, scales, alive bonus, failure penalty, and termination thresholds; loaded from `assets/training/*.reward.ron` at training startup |
 | `WingmanController` | struct | Formation flight; holds a fixed offset in the leader's body frame |
 | `AscentController` | struct | Climbs to target altitude then latches to level hold |
+| `L1Controller` | struct | Follows a preset `FlightPlan` (waypoint sequences + orbit circles) via L1 nonlinear lateral guidance; built from the plan asset by `apply_flight_plan` |
 
 ### Physics Layering
 
@@ -114,6 +117,30 @@ training = ["burn"]
 
 `from_state()` auto-centers the orbit perpendicular to current velocity for bumpless engagement.
 
+The radial+heading+feedforward bank computation is factored into
+`controllers/guidance.rs::orbit_bank_command()` and shared with `L1Controller`'s orbit legs.
+
+### L1 Flight-Plan Controller
+
+`L1Controller` (`controllers/l1.rs`) follows a preset `FlightPlan` — an ordered list of
+`FlightPlanLeg`s — sequencing automatically between legs and delegating stabilization to an
+inner `LevelHoldController` (same cascade pattern as Orbit/Wingman).
+
+- **Waypoint legs** — straight-line **L1 nonlinear lateral guidance**
+  (`guidance.rs::l1_straight_bank`): `L1 = (1/π)·damping·period·V`, lateral accel
+  `2·V²/L1·sin(η)` → `bank = atan(a/g)`. Fly-by capture advances when horizontal distance
+  `< capture_radius`.
+- **Orbit legs** — reuse `orbit_bank_command`; advance after `turns` full revolutions
+  (signed swept-angle accumulator). `turns: None` loiters forever (terminal hold).
+- **End of plan** — a `turns: None` final orbit loiters indefinitely; otherwise the
+  controller enters `L1Phase::Finished` and holds wings-level at the last setpoints.
+
+`ControllerKind::FlightPlan::build()` cannot access the plan asset, so it returns a PID-orbit
+fallback; the visual-mode `apply_flight_plan` system swaps in the real `L1Controller` once the
+`FlightPlanHandle`'s `.plan.ron` asset finishes loading (mirrors the RL-load pattern). It has
+no tuning pool — the inner loop uses `LevelHoldController` defaults; L1 period/damping live in
+the plan asset.
+
 ### Training Physics (Self-Contained)
 
 Training environments (`LevelHoldEnv`, `OrbitEnv`) do **not** use Bevy or Rapier. Instead:
@@ -176,8 +203,9 @@ Both `RlLevelHoldController` and `RlOrbitController` follow the same pattern:
 2. **Ascent** — COMPLETE. Climbs to target altitude then hands off to level hold.
 3. **Formation flight (wingman)** — COMPLETE. Follows leader at fixed body-frame offset (`WingmanController`).
 4. **Circular orbit** — COMPLETE. 3-level cascade PID around world-frame point. RL policy trained (`RlOrbitController`, obs dim=13).
-5. **Aerial refueling** — NEXT. Approach lead plane from the rear to a docking position.
-6. *(extensible — add new `TrainingEnv` impls without changing core architecture)*
+5. **Flight-plan following** — COMPLETE. `L1Controller` follows a preset `FlightPlan` (waypoint sequences + orbit circles) via L1 nonlinear lateral guidance. Replaces the former single-target `WaypointController`.
+6. **Aerial refueling** — NEXT. Approach lead plane from the rear to a docking position.
+7. *(extensible — add new `TrainingEnv` impls without changing core architecture)*
 
 ---
 
