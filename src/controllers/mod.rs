@@ -27,7 +27,7 @@ pub use component::ActiveController;
 pub use flight_plan::{FlightPlan, FlightPlanLeg};
 pub use heading_hold::HeadingHoldController;
 pub use kind::ControllerKind;
-pub use l1::{L1Controller, L1Phase};
+pub use l1::{L1Controller, L1Phase, L1Status};
 pub use level_hold::LevelHoldController;
 pub use manual::ManualController;
 pub use orbit::{

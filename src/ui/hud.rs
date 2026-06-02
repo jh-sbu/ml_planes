@@ -4,9 +4,9 @@ use std::f32::consts::PI;
 
 use crate::camera::CameraMode;
 use crate::controllers::{
-    ActiveController, AscentController, ControllerKind, HeadingHoldController, LevelHoldController,
-    ModelLibrary, OrbitController, OrbitDirection, PlaneTuning, SelectedModel,
-    SelectedTuningProfile, WingmanController,
+    ActiveController, AscentController, ControllerKind, HeadingHoldController, L1Controller,
+    L1Status, LevelHoldController, ModelLibrary, OrbitController, OrbitDirection, PlaneTuning,
+    SelectedModel, SelectedTuningProfile, WingmanController,
 };
 use crate::plane::{ControlInputs, FlightState, PlaneId, PlaneIndex, PlaneTuningHandle};
 use crate::ui::file_load::{self, PendingLoads};
@@ -344,6 +344,62 @@ pub fn draw_flight_hud(
                 }
                 if ui.button("Load tuning…").clicked() {
                     file_load::spawn_tuning_load(current_entity, true, &mut pending);
+                }
+            }
+
+            if *kind == ControllerKind::FlightPlan {
+                ui.separator();
+                if let Some(l1) = controller.0.as_any_mut().downcast_mut::<L1Controller>() {
+                    ui.label(format!("Leg {} / {}", l1.leg_index + 1, l1.plan.legs.len()));
+                    match l1.status {
+                        L1Status::Waypoint {
+                            x,
+                            z,
+                            distance,
+                            capture_radius,
+                            eta,
+                            xtrack,
+                        } => {
+                            ui.label(format!("Seeking: Waypoint ({:.0}, {:.0})", x, z));
+                            ui.label(format!(
+                                "Distance: {:.0} m  (capture {:.0} m)",
+                                distance, capture_radius
+                            ));
+                            ui.label(format!("Eta (η):  {:.1}°", eta.to_degrees()));
+                            ui.label(format!("Cross-track: {:+.0} m", xtrack));
+                        }
+                        L1Status::Orbit {
+                            center_x,
+                            center_z,
+                            radius,
+                            radial_error,
+                            direction,
+                            turns_done,
+                            turns_total,
+                        } => {
+                            let dir = match direction {
+                                OrbitDirection::Clockwise => "CW",
+                                OrbitDirection::CounterClockwise => "CCW",
+                            };
+                            ui.label(format!(
+                                "Seeking: Orbit ({:.0}, {:.0})  r={:.0} m  {}",
+                                center_x, center_z, radius, dir
+                            ));
+                            let turns = match turns_total {
+                                Some(t) => format!("{:.2} / {:.1}", turns_done, t),
+                                None => format!("{:.2} / ∞", turns_done),
+                            };
+                            ui.label(format!("Turns: {}", turns));
+                            ui.label(format!("Radial err: {:+.0} m", radial_error));
+                        }
+                        L1Status::Finished => {
+                            ui.label("Plan complete — holding level");
+                        }
+                    }
+                } else {
+                    // Pre-swap: still the PID-orbit fallback until apply_flight_plan
+                    // installs the real L1Controller once the .plan.ron asset loads.
+                    ui.label("Loading flight plan…");
                 }
             }
 

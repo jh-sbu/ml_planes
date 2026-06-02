@@ -39,6 +39,45 @@ pub enum L1Phase {
     Finished,
 }
 
+/// Per-tick guidance telemetry for the active leg, recorded each `update()` for
+/// display/inspection (e.g. the visual HUD). Describes the primitive currently
+/// being sought plus its tracking error.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum L1Status {
+    /// Seeking a straight-line waypoint via L1 lateral guidance.
+    Waypoint {
+        /// Target world-frame XZ [m].
+        x: f32,
+        z: f32,
+        /// Horizontal distance from the aircraft to the target [m].
+        distance: f32,
+        /// Distance at which the leg is captured [m].
+        capture_radius: f32,
+        /// L1 angle `η` [rad].
+        eta: f32,
+        /// Signed cross-track error from the segment [m].
+        xtrack: f32,
+    },
+    /// Loitering on an orbit circle.
+    Orbit {
+        /// Orbit center world-frame XZ [m].
+        center_x: f32,
+        center_z: f32,
+        /// Target orbit radius [m].
+        radius: f32,
+        /// Current radius minus target radius [m] (positive = outside).
+        radial_error: f32,
+        /// Turn chirality.
+        direction: OrbitDirection,
+        /// Revolutions swept so far (absolute).
+        turns_done: f32,
+        /// Requested revolutions; `None` loiters forever.
+        turns_total: Option<f32>,
+    },
+    /// Plan complete (or empty) — holding wings-level.
+    Finished,
+}
+
 /// Wrap an angle to `(-π, π]`.
 fn wrap_to_pi(a: f32) -> f32 {
     let mut x = (a + PI) % TWO_PI;
@@ -68,6 +107,8 @@ pub struct L1Controller {
     pub heading_pid: PidController,
     /// Inner stabilization (altitude, airspeed, roll, sideslip).
     pub inner: LevelHoldController,
+    /// Telemetry for the active leg, refreshed each `update()`.
+    pub status: L1Status,
 }
 
 impl L1Controller {
@@ -95,6 +136,7 @@ impl L1Controller {
             radial_pid: PidController::new(0.002, 0.0, 0.01, 0.0, -0.5, 0.5),
             heading_pid: PidController::new(0.7, 0.0, 0.1, 0.0, -FRAC_PI_3, FRAC_PI_3),
             inner,
+            status: L1Status::Finished,
         };
 
         // Seed inner targets from the active leg (or hold current state).
@@ -197,6 +239,7 @@ impl FlightController for L1Controller {
         // Finished: hold wings-level at the last setpoints.
         if self.phase == L1Phase::Finished {
             self.inner.target_roll = 0.0;
+            self.status = L1Status::Finished;
             return self.inner.update(state, ctx, dt);
         }
 
@@ -212,18 +255,27 @@ impl FlightController for L1Controller {
                 capture_radius,
                 ..
             } => {
-                let bank = l1_straight_bank(
+                let guidance = l1_straight_bank(
                     state,
                     self.leg_start,
                     Vec2::new(x, z),
                     self.plan.l1_period,
                     self.plan.l1_damping,
                 );
-                self.inner.target_roll = bank;
+                self.inner.target_roll = guidance.bank;
 
                 let dx = x - state.position.x;
                 let dz = z - state.position.z;
-                (dx * dx + dz * dz).sqrt() < capture_radius
+                let distance = (dx * dx + dz * dz).sqrt();
+                self.status = L1Status::Waypoint {
+                    x,
+                    z,
+                    distance,
+                    capture_radius,
+                    eta: guidance.eta,
+                    xtrack: guidance.xtrack,
+                };
+                distance < capture_radius
             }
             FlightPlanLeg::Orbit {
                 center_x,
@@ -245,7 +297,20 @@ impl FlightController for L1Controller {
                 ) {
                     self.inner.target_roll = bank;
                 }
-                self.orbit_turn_complete(state, center_x, center_z, turns)
+                let advance = self.orbit_turn_complete(state, center_x, center_z, turns);
+                let rx = state.position.x - center_x;
+                let rz = state.position.z - center_z;
+                let radial_error = (rx * rx + rz * rz).sqrt() - radius;
+                self.status = L1Status::Orbit {
+                    center_x,
+                    center_z,
+                    radius,
+                    radial_error,
+                    direction,
+                    turns_done: self.orbit_accum.abs() / TWO_PI,
+                    turns_total: turns,
+                };
+                advance
             }
         };
 
@@ -413,6 +478,81 @@ mod tests {
             ctrl.update(&s, &ctx(), 1.0 / 64.0);
         }
         assert_eq!(ctrl.leg_index, 1, "should advance after one full turn");
+    }
+
+    #[test]
+    fn status_reports_waypoint_with_distance_and_eta() {
+        // Waypoint 1 km ahead on +X, aircraft at origin heading +X.
+        let state = make_state(Vec3::new(0.0, 1000.0, 0.0), Vec3::new(100.0, 0.0, 0.0));
+        let mut ctrl = L1Controller::from_plan(
+            &state,
+            plan(vec![wpt(1000.0, 0.0, 200.0), orbit(0.0, 0.0, 1000.0, None)]),
+            &ControlInputs::default(),
+        );
+        ctrl.update(&state, &ctx(), 1.0 / 64.0);
+        match ctrl.status {
+            L1Status::Waypoint {
+                x,
+                z,
+                distance,
+                capture_radius,
+                eta,
+                xtrack,
+            } => {
+                assert_eq!((x, z), (1000.0, 0.0));
+                assert!((distance - 1000.0).abs() < 1e-3, "distance {distance}");
+                assert_eq!(capture_radius, 200.0);
+                assert!(eta.is_finite());
+                // On-path, aligned heading → ~zero cross-track and eta.
+                assert!(xtrack.abs() < 1e-3, "xtrack {xtrack}");
+                assert!(eta.abs() < 1e-3, "eta {eta}");
+            }
+            other => panic!("expected Waypoint status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn status_reports_orbit_with_radial_error() {
+        // Start 200 m outside a 1 km orbit (radius 1200 from center).
+        let center = Vec2::new(0.0, 0.0);
+        let start = orbit_state(center, 1200.0, 0.0, 100.0, 1000.0);
+        let mut ctrl = L1Controller::from_plan(
+            &start,
+            plan(vec![orbit(0.0, 0.0, 1000.0, None)]),
+            &ControlInputs::default(),
+        );
+        ctrl.update(&start, &ctx(), 1.0 / 64.0);
+        match ctrl.status {
+            L1Status::Orbit {
+                radius,
+                radial_error,
+                turns_total,
+                ..
+            } => {
+                assert_eq!(radius, 1000.0);
+                assert!(
+                    (radial_error - 200.0).abs() < 1.0,
+                    "radial_error {radial_error}"
+                );
+                assert_eq!(turns_total, None);
+            }
+            other => panic!("expected Orbit status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn status_finished_after_single_waypoint_capture() {
+        let state = make_state(Vec3::new(0.0, 1000.0, 0.0), Vec3::new(100.0, 0.0, 0.0));
+        let mut ctrl = L1Controller::from_plan(
+            &state,
+            plan(vec![wpt(100.0, 0.0, 200.0)]),
+            &ControlInputs::default(),
+        );
+        ctrl.update(&state, &ctx(), 1.0 / 64.0);
+        assert_eq!(ctrl.phase, L1Phase::Finished);
+        // A subsequent tick records the Finished status.
+        ctrl.update(&state, &ctx(), 1.0 / 64.0);
+        assert_eq!(ctrl.status, L1Status::Finished);
     }
 
     #[test]

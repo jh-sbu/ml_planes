@@ -93,8 +93,22 @@ pub fn orbit_bank_command(
     Some((bank_ff - heading_correction).clamp(-FRAC_PI_3, FRAC_PI_3))
 }
 
-/// L1 nonlinear lateral-guidance target bank [rad] for following the straight
-/// segment `a → b` (world XZ endpoints).
+/// Output of the L1 straight-segment guidance law ([`l1_straight_bank`]).
+///
+/// `eta` and `xtrack` are byproducts of the law, surfaced here so callers (e.g.
+/// the HUD) can display tracking error without re-deriving the geometry.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct L1Guidance {
+    /// Commanded bank angle [rad] (positive = left bank), clamped ±60°.
+    pub bank: f32,
+    /// L1 angle `η = η1 + η2` [rad]: combined path-following + heading error.
+    pub eta: f32,
+    /// Signed cross-track error [m] (positive = aircraft on the `+Z` side).
+    pub xtrack: f32,
+}
+
+/// L1 nonlinear lateral-guidance command for following the straight segment
+/// `a → b` (world XZ endpoints).
 ///
 /// `L1 = (1/π) · damping · period · V` is the lookahead distance. The aircraft
 /// is steered onto the A→B line and along it via the demanded lateral
@@ -102,14 +116,15 @@ pub fn orbit_bank_command(
 /// ±60°. With `+Z` downward in the top-down view, a positive cross-track error
 /// (aircraft on the `+Z` / screen-down side of the path) commands a left bank
 /// (positive roll) that curves it back — verified by the convergence rollout in
-/// this module's tests.
+/// this module's tests. Returns the bank command alongside the `η` and
+/// cross-track diagnostics (see [`L1Guidance`]).
 pub fn l1_straight_bank(
     state: &FlightState,
     a: Vec2,
     b: Vec2,
     l1_period: f32,
     l1_damping: f32,
-) -> f32 {
+) -> L1Guidance {
     let vg = Vec2::new(state.velocity.x, state.velocity.z);
     let speed = vg.length().max(1.0);
     let l1 = ((1.0 / PI) * l1_damping * l1_period * speed).max(1.0);
@@ -132,7 +147,8 @@ pub fn l1_straight_bank(
     let eta = eta1 + eta2;
 
     let lat_accel = 2.0 * speed * speed / l1 * eta.sin();
-    (lat_accel / G).atan().clamp(-FRAC_PI_3, FRAC_PI_3)
+    let bank = (lat_accel / G).atan().clamp(-FRAC_PI_3, FRAC_PI_3);
+    L1Guidance { bank, eta, xtrack }
 }
 
 #[cfg(test)]
@@ -199,19 +215,42 @@ mod tests {
     fn on_path_aligned_heading_produces_zero_bank() {
         // Path along +X, aircraft on the path heading +X.
         let state = make_state(Vec3::new(0.0, 1000.0, 0.0), Vec3::new(100.0, 0.0, 0.0));
-        let bank = l1_straight_bank(&state, Vec2::ZERO, Vec2::new(5000.0, 0.0), 20.0, 0.75);
+        let g = l1_straight_bank(&state, Vec2::ZERO, Vec2::new(5000.0, 0.0), 20.0, 0.75);
         assert!(
-            bank.abs() < 1e-3,
-            "expected ~0 bank on-path/aligned, got {bank}"
+            g.bank.abs() < 1e-3,
+            "expected ~0 bank on-path/aligned, got {}",
+            g.bank
         );
+        // On-path and aligned: both the cross-track error and the L1 angle vanish.
+        assert!(
+            g.xtrack.abs() < 1e-3,
+            "expected ~0 cross-track, got {}",
+            g.xtrack
+        );
+        assert!(g.eta.abs() < 1e-3, "expected ~0 eta, got {}", g.eta);
     }
 
     #[test]
     fn far_off_path_saturates_bank() {
         // 2 km to the +Z side of a +X path, heading +X: should hard-bank.
         let state = make_state(Vec3::new(0.0, 1000.0, 2000.0), Vec3::new(100.0, 0.0, 0.0));
-        let bank = l1_straight_bank(&state, Vec2::ZERO, Vec2::new(5000.0, 0.0), 20.0, 0.75);
-        assert!(bank.abs() > 0.5, "expected near-saturated bank, got {bank}");
+        let g = l1_straight_bank(&state, Vec2::ZERO, Vec2::new(5000.0, 0.0), 20.0, 0.75);
+        assert!(
+            g.bank.abs() > 0.5,
+            "expected near-saturated bank, got {}",
+            g.bank
+        );
+        // Diagnostics reflect the large offset: ~2 km cross-track, large L1 angle.
+        assert!(
+            (g.xtrack.abs() - 2000.0).abs() < 1.0,
+            "expected ~2000 m cross-track, got {}",
+            g.xtrack
+        );
+        assert!(
+            g.eta.abs() > 0.5,
+            "expected large eta off-path, got {}",
+            g.eta
+        );
     }
 
     /// Closed-loop convergence pins the cross-track sign: starting 300 m off a
@@ -233,7 +272,7 @@ mod tests {
         let mut min_xtrack = initial_xtrack;
 
         for _ in 0..3000 {
-            inner.target_roll = l1_straight_bank(&state, a, b, 20.0, 0.75);
+            inner.target_roll = l1_straight_bank(&state, a, b, 20.0, 0.75).bank;
             let inputs = {
                 use crate::controllers::FlightController;
                 inner.update(
