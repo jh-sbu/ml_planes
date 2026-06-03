@@ -17,6 +17,7 @@
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 
+use crate::camera::CameraMode;
 use crate::controllers::{ActiveController, ControllerKind, FlightPlanLeg, L1Controller};
 use crate::plane::{FlightState, PlaneIndex};
 
@@ -144,6 +145,7 @@ fn ground_forward(state: &FlightState) -> Vec2 {
 
 /// Per-plane snapshot collected for rendering.
 struct PlaneRender {
+    entity: Entity,
     pos: Vec2,
     forward: Vec2,
     index: u32,
@@ -158,9 +160,11 @@ struct PlaneRender {
 /// 3D view with an opaque panel and renders plane positions + flight plans.
 pub fn draw_map(
     mut map: ResMut<MapState>,
+    mut camera_mode: ResMut<CameraMode>,
     keys: Res<ButtonInput<KeyCode>>,
     mut contexts: EguiContexts,
     mut planes: Query<(
+        Entity,
         &FlightState,
         &PlaneIndex,
         &ControllerKind,
@@ -181,7 +185,7 @@ pub fn draw_map(
 
     // Snapshot every plane (clone plan legs so the query borrow ends here).
     let mut rends: Vec<PlaneRender> = Vec::new();
-    for (state, index, kind, mut ctrl) in planes.iter_mut() {
+    for (entity, state, index, kind, mut ctrl) in planes.iter_mut() {
         let plan = if *kind == ControllerKind::FlightPlan {
             ctrl.0
                 .as_any_mut()
@@ -191,6 +195,7 @@ pub fn draw_map(
             None
         };
         rends.push(PlaneRender {
+            entity,
             pos: Vec2::new(state.position.x, state.position.z),
             forward: ground_forward(state),
             index: index.0,
@@ -241,6 +246,21 @@ pub fn draw_map(
             egui::pos2(s.x, s.y)
         };
 
+        // --- Click a plane to follow it ---
+        if response.clicked() {
+            if let Some(click) = response.interact_pointer_pos() {
+                if let Some(r) = rends.iter().min_by(|a, b| {
+                    let da = (w2s(a.pos) - click).length();
+                    let db = (w2s(b.pos) - click).length();
+                    da.total_cmp(&db)
+                }) {
+                    if (w2s(r.pos) - click).length() < 14.0 {
+                        *camera_mode = CameraMode::Follow(r.entity);
+                    }
+                }
+            }
+        }
+
         draw_grid(&painter, rect, &map, view_center);
 
         // --- Flight plans (read-only) ---
@@ -252,7 +272,18 @@ pub fn draw_map(
 
         // --- Planes ---
         let hover = response.hover_pos();
+        let followed = match *camera_mode {
+            CameraMode::Follow(e) => Some(e),
+            CameraMode::FreeLook => None,
+        };
         for r in &rends {
+            if followed == Some(r.entity) {
+                painter.circle_stroke(
+                    w2s(r.pos),
+                    14.0,
+                    egui::Stroke::new(2.0, egui::Color32::WHITE),
+                );
+            }
             draw_plane_glyph(&painter, &w2s, r);
         }
 
@@ -282,7 +313,7 @@ pub fn draw_map(
         painter.text(
             egui::pos2(rect.left() + 10.0, rect.bottom() - 10.0),
             egui::Align2::LEFT_BOTTOM,
-            "M: close   drag: pan   scroll: zoom",
+            "M: close   click: follow   drag: pan   scroll: zoom",
             egui::FontId::proportional(13.0),
             egui::Color32::from_gray(140),
         );
