@@ -1,6 +1,8 @@
 use bevy::pbr::{DistanceFog, FogFalloff};
 use bevy::prelude::*;
 
+use crate::camera::CameraMode;
+use crate::controllers::{active_orbit_center, ActiveController};
 use crate::environment::grid_material::{GridMaterial, GroundPlane};
 use crate::plane::FlightState;
 
@@ -76,4 +78,36 @@ pub fn draw_plane_gizmos(
             Color::srgb(0.3, 1.0, 0.3),
         );
     }
+}
+
+/// Vertical "pin" planted in the ground at the active orbit center of the
+/// currently selected (followed) plane. Hidden in FreeLook and for non-orbit
+/// controllers. The orbit center is resolved uniformly across `OrbitController`,
+/// the RL orbit variants, and `L1Controller` orbit legs by
+/// [`active_orbit_center`].
+pub fn draw_orbit_pin_gizmo(
+    camera_mode: Res<CameraMode>,
+    mut planes: Query<&mut ActiveController>,
+    mut gizmos: Gizmos,
+) {
+    /// Pin height above the ground [m].
+    const PIN_HEIGHT: f32 = 300.0;
+    /// Radius of the pin's head sphere [m].
+    const HEAD_RADIUS: f32 = 8.0;
+
+    let CameraMode::Follow(entity) = *camera_mode else {
+        return;
+    };
+    let Ok(mut ctrl) = planes.get_mut(entity) else {
+        return;
+    };
+    let Some(marker) = active_orbit_center(ctrl.0.as_mut()) else {
+        return;
+    };
+
+    let color = Color::srgb(1.0, 0.9, 0.2);
+    let base = Vec3::new(marker.center.x, 0.0, marker.center.y);
+    let top = base + Vec3::Y * PIN_HEIGHT;
+    gizmos.line(base, top, color);
+    gizmos.sphere(Isometry3d::from_translation(top), HEAD_RADIUS, color);
 }

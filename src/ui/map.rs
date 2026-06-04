@@ -18,7 +18,9 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 
 use crate::camera::CameraMode;
-use crate::controllers::{ActiveController, ControllerKind, FlightPlanLeg, L1Controller};
+use crate::controllers::{
+    active_orbit_center, ActiveController, ControllerKind, FlightPlanLeg, L1Controller,
+};
 use crate::plane::{FlightState, PlaneIndex};
 
 /// Lower bound on zoom (most zoomed-in): 5 cm per pixel.
@@ -154,6 +156,8 @@ struct PlaneRender {
     airspeed: f32,
     /// `(legs, active_leg_index)` for a plane flying an L1 flight plan.
     plan: Option<(Vec<FlightPlanLeg>, usize)>,
+    /// Active orbit center (world XZ) if this plane is circling a point.
+    orbit_center: Option<Vec2>,
 }
 
 /// Full-screen top-down map overlay. Toggled with `M`; while open it covers the
@@ -194,6 +198,7 @@ pub fn draw_map(
         } else {
             None
         };
+        let orbit_center = active_orbit_center(ctrl.0.as_mut()).map(|m| m.center);
         rends.push(PlaneRender {
             entity,
             pos: Vec2::new(state.position.x, state.position.z),
@@ -203,6 +208,7 @@ pub fn draw_map(
             altitude: state.altitude,
             airspeed: state.airspeed,
             plan,
+            orbit_center,
         });
     }
     rends.sort_by_key(|r| r.index);
@@ -283,6 +289,9 @@ pub fn draw_map(
                     14.0,
                     egui::Stroke::new(2.0, egui::Color32::WHITE),
                 );
+                if let Some(center) = r.orbit_center {
+                    draw_orbit_pin(&painter, w2s(center));
+                }
             }
             draw_plane_glyph(&painter, &w2s, r);
         }
@@ -431,6 +440,20 @@ fn draw_plane_glyph(painter: &egui::Painter, w2s: &impl Fn(Vec2) -> egui::Pos2, 
         egui::FontId::proportional(12.0),
         col,
     );
+}
+
+/// Draw a map "pin" whose tip sits exactly at `at` (the orbit center): a short
+/// vertical stem topped by a filled head, in a bright colour so it reads as a
+/// dropped pin distinct from flight-plan dots.
+fn draw_orbit_pin(painter: &egui::Painter, at: egui::Pos2) {
+    let col = egui::Color32::from_rgb(255, 230, 50);
+    let stem = 14.0;
+    let head = egui::pos2(at.x, at.y - stem);
+    painter.line_segment([at, head], egui::Stroke::new(2.0, egui::Color32::BLACK));
+    painter.line_segment([at, head], egui::Stroke::new(1.5, col));
+    painter.circle(head, 5.0, col, egui::Stroke::new(1.5, egui::Color32::BLACK));
+    // Mark the exact center point.
+    painter.circle_filled(at, 1.5, egui::Color32::BLACK);
 }
 
 /// A small dark tooltip box anchored at `at` (its left-centre).

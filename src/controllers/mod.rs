@@ -8,6 +8,7 @@ pub mod l1;
 pub mod level_hold;
 pub mod manual;
 pub mod orbit;
+pub mod orbit_marker;
 pub mod pid;
 #[cfg(any(feature = "inference", feature = "training"))]
 pub mod rl_level_hold;
@@ -34,6 +35,7 @@ pub use orbit::{
     build_orbit_observation, orbit_observation_terms, OrbitController, OrbitDirection,
     OrbitObservationTerms, OrbitParams,
 };
+pub use orbit_marker::{active_orbit_center, OrbitMarker};
 pub use pid::PidController;
 #[cfg(any(feature = "inference", feature = "training"))]
 pub use rl_level_hold::RlLevelHoldController;
