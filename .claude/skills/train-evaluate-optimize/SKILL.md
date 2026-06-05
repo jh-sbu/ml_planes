@@ -1,5 +1,5 @@
 ---
-description: Run an adaptive multi-experiment PPO loop for an ml_planes orbit controller — baseline train/eval, then targeted reward/PPO/init-from experiments up to a budget, with improvement and early-stop rules. Release-mode ndarray only.
+description: Run an adaptive multi-experiment PPO loop for an ml_planes learnable controller (level-hold, orbit, residual-orbit, or lstm-orbit) — baseline train/eval, then targeted reward/PPO/init-from experiments up to a budget, with improvement and early-stop rules. Release-mode ndarray only.
 ---
 
 Run an adaptive PPO experiment loop for this repo: baseline train/eval, then
@@ -16,34 +16,48 @@ as `/train-evaluate-optimize <type>`.
 Normalize `<TYPE>` to lowercase and replace hyphens with underscores **before
 doing any expensive work**.
 
-| User type | `train_ppo --task` | `evaluate_policy --task` | Model subdir |
-|---|---|---|---|
-| `orbit`, `rl_orbit` | `orbit` | `orbit` | `orbit` |
-| `residual_orbit`, `rl_orbit_residual` | `residual_orbit` | `residual_orbit` | `orbit_residual` |
+| User type | `--task` | Model subdir | Default reward config | Metric family |
+|---|---|---|---|---|
+| `level_hold`, `rl_level_hold` | `level_hold` | `level_hold` | `assets/training/level_hold.reward.ron` | LevelHold |
+| `orbit`, `rl_orbit` | `orbit` | `orbit` | `assets/training/orbit.reward.ron` | Orbit |
+| `residual_orbit`, `rl_orbit_residual` | `residual_orbit` | `orbit_residual` | `assets/training/orbit.reward.ron` | Orbit |
+| `lstm_orbit`, `rl_lstm_orbit` | `lstm_orbit` | `lstm_orbit` | `assets/training/wu_orbit.reward.ron` | Orbit |
 
-Reject everything else before training. In particular reject `level_hold`,
-`rl_level_hold`, `lstm_orbit`, `rl_lstm_orbit`, `bc_*`, and unknown values —
-the existing `evaluate_policy` binary cannot complete this workflow for them.
-If meaningful results would require code changes, ask the user before changing
-any code.
+Reject `bc_*` and unknown values before training — those are not learnable
+controller types this workflow supports. If meaningful results would require
+code changes, ask the user before changing any code.
 
-Do **not** use `train_bc`, `--bc-steps`, or `--bc-epochs`. Do **not** switch a
-plain `orbit` request to `residual_orbit` — use residual only when the requested
-type itself is residual.
+Do **not** use `train_bc`, `--bc-steps`, or `--bc-epochs` — behavior cloning is
+a warm-start technique, not a controller type. Do **not** switch the requested
+type to a different one (e.g. a plain `orbit` request to `residual_orbit`) —
+resolve and train exactly what was asked.
+
+Per-task caveats:
+
+- **`residual_orbit`** — `residual_scale` lives in `orbit.reward.ron`; modest
+  `residual_scale` experiments are allowed for this task only.
+- **`lstm_orbit`** — the recurrent trainer ignores `--ppo-config`, so the PPO-
+  config experiment vector is unavailable; rely on reward-config or
+  `--init-from`. Its reward schema is `WuOrbitRewardConfig` (`b_radial`,
+  `b_heading_coarse`, `b_heading_fine`, `b_altitude`, `b_speed`, …), not the
+  orbit `*_reward_weight` schema. `evaluate_policy` defaults to
+  `--curriculum-stage full` (keep the default) and echoes `curriculum_stage`.
 
 **Requires exactly one argument.** If `<TYPE>` is missing or rejected, stop
 immediately and print:
 
 ```
 Usage: /train-evaluate-optimize <type>
-  Supported types: orbit | rl_orbit | residual_orbit | rl_orbit_residual
+  Supported types: level_hold | orbit | residual_orbit | lstm_orbit
+    (rl_level_hold | rl_orbit | rl_orbit_residual | rl_lstm_orbit aliases too)
 Examples:
+  /train-evaluate-optimize level_hold
   /train-evaluate-optimize orbit
-  /train-evaluate-optimize residual_orbit
 ```
 
-Otherwise resolve `<TYPE>` through the table above, state the mapped task and
-model subdirectory, and continue to the budget step.
+Otherwise resolve `<TYPE>` through the table above, state the mapped task, model
+subdirectory, default reward config, and metric family, and continue to the
+budget step.
 
 ---
 
@@ -113,11 +127,17 @@ cargo run --release --no-default-features --features training --bin evaluate_pol
 ```
 
 `.mpk` or no extension are both accepted — be consistent. Read the eval output
-and inspect these metrics:
+and inspect the metrics for the resolved metric family. The common core is
+always present; the extras depend on the family:
 
-`success_rate`, `mean_return`, `mean_length_steps`, `mean_abs_radial_m`,
-`mean_abs_heading_rad`, `mean_abs_altitude_m`, `mean_abs_speed_mps`,
-`mean_final_abs_radial_m`, `mean_final_abs_altitude_m`.
+- **Common core (every task):** `success_rate`, `mean_return`,
+  `mean_length_steps`.
+- **Orbit family** (`orbit`, `residual_orbit`, `lstm_orbit`):
+  `mean_abs_radial_m`, `mean_abs_heading_rad`, `mean_abs_altitude_m`,
+  `mean_abs_speed_mps`, `mean_final_abs_radial_m`, `mean_final_abs_altitude_m`.
+- **LevelHold family** (`level_hold`): `mean_abs_altitude_m`,
+  `mean_abs_speed_mps`, `mean_abs_roll_rad`, `mean_abs_beta_rad`,
+  `mean_final_abs_altitude_m` (no radial/heading metrics).
 
 ## Step 4 — Adaptive experiment loop
 
@@ -131,11 +151,14 @@ For each follow-up experiment:
 1. Write a short hypothesis and choose **exactly one** experiment direction.
 2. **Early in the loop**, when no dominant failure is clear, explore distinct
    no-code vectors — small PPO config changes such as `lr`, `rollout_steps`,
-   `n_epochs`, `minibatch`, `entropy_coef`, or `clip_epsilon`.
+   `n_epochs`, `minibatch`, `entropy_coef`, or `clip_epsilon`. **For
+   `lstm_orbit` the recurrent trainer ignores `--ppo-config`**, so this vector
+   is unavailable — explore reward-config and `--init-from` vectors instead.
 3. **Once a signal appears**, dial in on the best vector: continue from the
-   best checkpoint with `--init-from`, or copy and target the reward config
-   when radial, heading, altitude, speed, or stability metrics dominate the
-   failure.
+   best checkpoint with `--init-from`, or copy and target the task's reward
+   config when its family's tracking-error or stability metrics dominate the
+   failure (radial/heading/altitude/speed for the Orbit family;
+   altitude/speed/roll/beta for the LevelHold family).
 4. For `residual_orbit` **only**, allow modest `residual_scale` experiments
    from a copied reward config.
 5. Do **not** repeat a failed vector unless the next variant is narrower and
@@ -175,22 +198,41 @@ cargo test --no-default-features
 
 ## Config guidance
 
-When creating a reward config, copy `assets/training/orbit.reward.ron` into the
-run directory and edit only the fields the hypothesis needs (residual orbit also
-starts from `orbit.reward.ron`). Use the copy for both training and evaluation
-of that experiment.
+When creating a reward config, copy the task's **default reward config** (from
+the resolution table) into the run directory and edit only the fields the
+hypothesis needs. Edit fields that exist in the copied file:
+`LevelHoldRewardConfig` (`alt_error_weight`, `speed_error_weight`,
+`roll_weight`, `beta_weight`, …) for level_hold, the orbit
+`*_reward_weight`/`*_reward_scale` schema (plus `residual_scale` for
+residual_orbit) for orbit/residual_orbit, and the `WuOrbitRewardConfig` `b_*`
+weights for lstm_orbit. Use the copy for both training and evaluation of that
+experiment.
 
 When creating a PPO config, start from `assets/training/default.ppo.ron`. Keep
-the full RON shape and pass it with `--ppo-config <path>`.
+the full RON shape and pass it with `--ppo-config <path>`. **Not available for
+`lstm_orbit`** — the recurrent trainer ignores `--ppo-config`.
 
-Use evaluation metrics to justify changes:
+Use evaluation metrics to justify changes, per metric family.
+
+**Orbit family** (`orbit`, `residual_orbit`, `lstm_orbit`):
 
 | Symptom | Improvement |
 |---|---|
-| High radial error | Prioritize radial reward weight/scale or radius-stabilizing PPO changes |
-| High heading error | Prioritize heading reward weight/scale |
-| High altitude error | Prioritize altitude reward weight/scale |
-| High speed error | Prioritize speed reward weight/scale |
+| High radial error (`mean_abs_radial_m`) | Prioritize radial reward weight/scale or radius-stabilizing PPO changes |
+| High heading error (`mean_abs_heading_rad`) | Prioritize heading reward weight/scale |
+| High altitude error (`mean_abs_altitude_m`) | Prioritize altitude reward weight/scale |
+| High speed error (`mean_abs_speed_mps`) | Prioritize speed reward weight/scale |
+| Short episodes or low success with noisy returns | Lower `lr`, increase `rollout_steps`, or reduce update aggressiveness |
+| Good success but weak return | Continue from the incumbent, or tune reward/penalty mismatch |
+
+**LevelHold family** (`level_hold`):
+
+| Symptom | Improvement |
+|---|---|
+| High altitude error (`mean_abs_altitude_m`) | Prioritize `alt_error_weight`/`alt_error_scale` |
+| High speed error (`mean_abs_speed_mps`) | Prioritize `speed_error_weight`/`speed_error_scale` |
+| High bank (`mean_abs_roll_rad`) | Prioritize `roll_weight`/`roll_scale` |
+| High sideslip (`mean_abs_beta_rad`) | Prioritize `beta_weight`/`beta_scale` |
 | Short episodes or low success with noisy returns | Lower `lr`, increase `rollout_steps`, or reduce update aggressiveness |
 | Good success but weak return | Continue from the incumbent, or tune reward/penalty mismatch |
 
@@ -223,10 +265,12 @@ instead of editing.
 
 Report:
 
-- Exact `<TYPE>` normalization, task, model directory, experiment limit, steps,
-  episodes, reward configs, PPO configs, and checkpoint paths.
-- A **compact leaderboard** of all experiments with success, return, length,
-  radial/heading/altitude/speed errors, and final radial/altitude errors.
+- Exact `<TYPE>` normalization, task, model directory, metric family, experiment
+  limit, steps, episodes, reward configs, PPO configs, and checkpoint paths.
+- A **compact leaderboard** of all experiments with success, return, length, and
+  the task's tracking-error metrics for its metric family (radial/heading/
+  altitude/speed + final radial/altitude for Orbit; altitude/speed/roll/beta +
+  final altitude for LevelHold).
 - The incumbent model and whether performance improved.
 - Each experiment hypothesis and whether the result supported it.
 - Why the loop stopped and the next realistic no-code or code-required step.

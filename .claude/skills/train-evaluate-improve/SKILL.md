@@ -1,5 +1,5 @@
 ---
-description: Run a two-model PPO experiment for an ml_planes orbit controller — train a baseline, evaluate it, apply one targeted reward/PPO/init-from improvement, retrain, and report whether it helped. Release-mode ndarray only.
+description: Run a two-model PPO experiment for an ml_planes learnable controller (level-hold, orbit, residual-orbit, or lstm-orbit) — train a baseline, evaluate it, apply one targeted reward/PPO/init-from improvement, retrain, and report whether it helped. Release-mode ndarray only.
 ---
 
 Run a two-model PPO experiment for this repo: baseline train, baseline
@@ -15,34 +15,47 @@ comparison. Invoke as `/train-evaluate-improve <type>`.
 Normalize `<TYPE>` to lowercase and replace hyphens with underscores **before
 doing any expensive work**.
 
-| User type | `train_ppo --task` | `evaluate_policy --task` | Model subdir |
-|---|---|---|---|
-| `orbit`, `rl_orbit` | `orbit` | `orbit` | `orbit` |
-| `residual_orbit`, `rl_orbit_residual` | `residual_orbit` | `residual_orbit` | `orbit_residual` |
+| User type | `--task` | Model subdir | Default reward config | Metric family |
+|---|---|---|---|---|
+| `level_hold`, `rl_level_hold` | `level_hold` | `level_hold` | `assets/training/level_hold.reward.ron` | LevelHold |
+| `orbit`, `rl_orbit` | `orbit` | `orbit` | `assets/training/orbit.reward.ron` | Orbit |
+| `residual_orbit`, `rl_orbit_residual` | `residual_orbit` | `orbit_residual` | `assets/training/orbit.reward.ron` | Orbit |
+| `lstm_orbit`, `rl_lstm_orbit` | `lstm_orbit` | `lstm_orbit` | `assets/training/wu_orbit.reward.ron` | Orbit |
 
-Reject everything else before training. In particular reject `level_hold`,
-`rl_level_hold`, `lstm_orbit`, `rl_lstm_orbit`, `bc_*`, and unknown values —
-the existing `evaluate_policy` binary cannot complete this workflow for them.
-If meaningful results would require code changes, ask the user before changing
-any code.
+Reject `bc_*` and unknown values before training — those are not learnable
+controller types this workflow supports. If meaningful results would require
+code changes, ask the user before changing any code.
 
-Do **not** use `train_bc`, `--bc-steps`, or `--bc-epochs`. Do **not** switch a
-plain `orbit` request to `residual_orbit` — use residual only when the requested
-type itself is residual.
+Do **not** use `train_bc`, `--bc-steps`, or `--bc-epochs` — behavior cloning is
+a warm-start technique, not a controller type. Do **not** switch the requested
+type to a different one (e.g. a plain `orbit` request to `residual_orbit`) —
+resolve and train exactly what was asked.
+
+Per-task caveats:
+
+- **`residual_orbit`** — `residual_scale` lives in `orbit.reward.ron`; modest
+  `residual_scale` experiments are allowed for this task only.
+- **`lstm_orbit`** — the recurrent trainer ignores `--ppo-config`, so the PPO-
+  config improvement vector is unavailable; rely on reward-config or
+  `--init-from`. Its reward schema is `WuOrbitRewardConfig` (`b_radial`,
+  `b_heading_coarse`, `b_heading_fine`, `b_altitude`, `b_speed`, …), not the
+  orbit `*_reward_weight` schema. `evaluate_policy` defaults to
+  `--curriculum-stage full` (keep the default) and echoes `curriculum_stage`.
 
 **Requires exactly one argument.** If `<TYPE>` is missing or rejected, stop
 immediately and print:
 
 ```
 Usage: /train-evaluate-improve <type>
-  Supported types: orbit | rl_orbit | residual_orbit | rl_orbit_residual
+  Supported types: level_hold | orbit | residual_orbit | lstm_orbit
+    (rl_level_hold | rl_orbit | rl_orbit_residual | rl_lstm_orbit aliases too)
 Examples:
+  /train-evaluate-improve level_hold
   /train-evaluate-improve orbit
-  /train-evaluate-improve residual_orbit
 ```
 
-Otherwise resolve `<TYPE>` through the table above, state the mapped task and
-model subdirectory, and continue to Step 1.
+Otherwise resolve `<TYPE>` through the table above, state the mapped task, model
+subdirectory, default reward config, and metric family, and continue to Step 1.
 
 ---
 
@@ -99,11 +112,17 @@ cargo run --release --no-default-features --features training --bin evaluate_pol
 ```
 
 `.mpk` or no extension are both accepted — be consistent. Read the eval output
-and inspect these metrics:
+and inspect the metrics for the resolved metric family. The common core is
+always present; the extras depend on the family:
 
-`success_rate`, `mean_return`, `mean_length_steps`, `mean_abs_radial_m`,
-`mean_abs_heading_rad`, `mean_abs_altitude_m`, `mean_abs_speed_mps`,
-`mean_final_abs_radial_m`, `mean_final_abs_altitude_m`.
+- **Common core (every task):** `success_rate`, `mean_return`,
+  `mean_length_steps`.
+- **Orbit family** (`orbit`, `residual_orbit`, `lstm_orbit`):
+  `mean_abs_radial_m`, `mean_abs_heading_rad`, `mean_abs_altitude_m`,
+  `mean_abs_speed_mps`, `mean_final_abs_radial_m`, `mean_final_abs_altitude_m`.
+- **LevelHold family** (`level_hold`): `mean_abs_altitude_m`,
+  `mean_abs_speed_mps`, `mean_abs_roll_rad`, `mean_abs_beta_rad`,
+  `mean_final_abs_altitude_m` (no radial/heading metrics).
 
 ## Step 5 — Choose exactly one improvement
 
@@ -111,22 +130,42 @@ Pick the **smallest credible change** for the second model:
 
 - **`--init-from <baseline>`** — continue from the baseline if the training log
   (`baseline_train.csv`) is still improving near the end.
-- **Reward config** — if evaluation shows a dominant task error, copy
-  `assets/training/orbit.reward.ron` into the run directory and edit only the
-  field(s) the hypothesis needs (residual orbit also starts from
-  `orbit.reward.ron`). Pass with `--reward-config <path>`.
+- **Reward config** — if evaluation shows a dominant task error, copy the
+  task's **default reward config** (from the resolution table) into the run
+  directory and edit only the field(s) the hypothesis needs. Edit fields that
+  exist in the copied file: `LevelHoldRewardConfig` (`alt_error_weight`,
+  `speed_error_weight`, `roll_weight`, `beta_weight`, …) for level_hold, the
+  orbit `*_reward_weight`/`*_reward_scale` schema (plus `residual_scale` for
+  residual_orbit) for orbit/residual_orbit, and the `WuOrbitRewardConfig`
+  `b_*` weights for lstm_orbit. Pass with `--reward-config <path>`.
 - **PPO config** — if optimization looks unstable or undertrained, copy
   `assets/training/default.ppo.ron` into the run directory and make small
   changes (lower `lr`, higher `n_epochs`, larger `rollout_steps`, adjusted
   `entropy_coef`). Keep the full RON shape. Pass with `--ppo-config <path>`.
+  **Not available for `lstm_orbit`** — the recurrent trainer ignores
+  `--ppo-config`; use a reward-config or `--init-from` improvement instead.
 
-Use the metrics to justify the change:
+Use the metrics to justify the change, per metric family:
+
+**Orbit family** (`orbit`, `residual_orbit`, `lstm_orbit`):
 
 | Symptom | Improvement |
 |---|---|
-| High radial error | Prioritize radial reward weight or scale |
-| High heading error | Prioritize heading reward weight or scale |
-| High altitude error | Prioritize altitude reward weight or scale |
+| High radial error (`mean_abs_radial_m`) | Prioritize radial reward weight or scale |
+| High heading error (`mean_abs_heading_rad`) | Prioritize heading reward weight or scale |
+| High altitude error (`mean_abs_altitude_m`) | Prioritize altitude reward weight or scale |
+| High speed error (`mean_abs_speed_mps`) | Prioritize speed reward weight or scale |
+| Low success rate, short episodes | Inspect failure metric; gentler `lr` or more rollout steps |
+| Good success but weak return | Continue from baseline, or reduce instability/penalty mismatch |
+
+**LevelHold family** (`level_hold`):
+
+| Symptom | Improvement |
+|---|---|
+| High altitude error (`mean_abs_altitude_m`) | Prioritize `alt_error_weight`/`alt_error_scale` |
+| High speed error (`mean_abs_speed_mps`) | Prioritize `speed_error_weight`/`speed_error_scale` |
+| High bank (`mean_abs_roll_rad`) | Prioritize `roll_weight`/`roll_scale` |
+| High sideslip (`mean_abs_beta_rad`) | Prioritize `beta_weight`/`beta_scale` |
 | Low success rate, short episodes | Inspect failure metric; gentler `lr` or more rollout steps |
 | Good success but weak return | Continue from baseline, or reduce instability/penalty mismatch |
 
@@ -172,9 +211,10 @@ cargo test --no-default-features
 
 Report:
 
-- Exact `<TYPE>` normalization, task, model paths, steps, episodes, reward
-  config, and PPO config.
-- Baseline metrics and improved metrics **side by side**.
+- Exact `<TYPE>` normalization, task, model subdir, metric family, model paths,
+  steps, episodes, reward config, and PPO config.
+- Baseline metrics and improved metrics **side by side** (the task's
+  tracking-error metrics for its metric family).
 - Whether performance improved. Prefer higher `success_rate`, higher
   `mean_return`, longer `mean_length_steps`, and lower absolute-error metrics.
 - The improvement hypothesis and whether the result supported it.
