@@ -499,4 +499,32 @@ mod tests {
             "reward={reward} expected={expected}"
         );
     }
+
+    #[test]
+    fn honors_externally_overridden_max_steps() {
+        // Contract relied on by `evaluate_policy`, which sets `max_episode_steps`
+        // to the resolved `--max-steps`: the env must then time out at exactly
+        // that step rather than its config default or an earlier failure. Level
+        // trim at 1000 m / 100 m/s with ~0 radial error stays clear of every
+        // failure threshold across a handful of neutral steps, so the first
+        // `done` must be the timeout at step N.
+        let n = 5u32;
+        let mut env = OrbitEnv::new(1000.0, 100.0, 1000.0, jet_cfg());
+        env.state = state_at(1000.0, Vec3::X);
+        env.max_episode_steps = n;
+
+        let mut done_step = None;
+        for _ in 0..(n + 10) {
+            let (_obs, _reward, done, info) = env.step(&[0.0, 0.0, 0.0, 0.0]);
+            if done {
+                done_step = Some(info.episode_step);
+                break;
+            }
+        }
+        assert_eq!(
+            done_step,
+            Some(n),
+            "episode should time out at the overridden cap, not earlier or its default"
+        );
+    }
 }

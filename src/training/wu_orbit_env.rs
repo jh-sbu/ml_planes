@@ -154,6 +154,23 @@ impl WuOrbitEnv {
         };
     }
 
+    /// Advance the curriculum up to `target` via the [`advance_curriculum`]
+    /// ladder. No-op if already at or beyond `target` (the ladder is monotonic
+    /// and bounded by `Full`). Used by the evaluator to score a checkpoint under
+    /// a chosen stage rather than the `Coarse` default.
+    ///
+    /// [`advance_curriculum`]: Self::advance_curriculum
+    pub fn advance_to_stage(&mut self, target: CurriculumStage) {
+        // Bounded by the 3-stage ladder; the cap guards against any future
+        // non-termination if the ladder changes.
+        for _ in 0..3 {
+            if self.curriculum_stage == target {
+                break;
+            }
+            self.advance_curriculum();
+        }
+    }
+
     fn current_terms(&self) -> OrbitObservationTerms {
         orbit_observation_terms(
             &self.state,
@@ -556,6 +573,27 @@ mod tests {
 
         // Idempotent at Full.
         env.advance_curriculum();
+        assert_eq!(env.curriculum_stage, CurriculumStage::Full);
+    }
+
+    #[test]
+    fn advance_to_stage_reaches_each_target_from_coarse() {
+        // Coarse target: no-op, heading band unchanged.
+        let mut env = WuOrbitEnv::new(1000.0, 100.0, 1000.0, jet_cfg());
+        let b_coarse = env.b_heading_active;
+        env.advance_to_stage(CurriculumStage::Coarse);
+        assert_eq!(env.curriculum_stage, CurriculumStage::Coarse);
+        assert_eq!(env.b_heading_active, b_coarse);
+
+        // HeadingFine target: one step; heading band narrows.
+        let mut env = WuOrbitEnv::new(1000.0, 100.0, 1000.0, jet_cfg());
+        env.advance_to_stage(CurriculumStage::HeadingFine);
+        assert_eq!(env.curriculum_stage, CurriculumStage::HeadingFine);
+        assert!(env.b_heading_active < b_coarse);
+
+        // Full target: two steps.
+        let mut env = WuOrbitEnv::new(1000.0, 100.0, 1000.0, jet_cfg());
+        env.advance_to_stage(CurriculumStage::Full);
         assert_eq!(env.curriculum_stage, CurriculumStage::Full);
     }
 

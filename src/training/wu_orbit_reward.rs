@@ -31,6 +31,20 @@ impl CurriculumStage {
             CurriculumStage::Full => "Full",
         }
     }
+
+    /// Parse a CLI stage selector (case-insensitive, `-` treated as `_`).
+    /// Accepts `coarse`, `heading_fine`/`headingfine`, `full`. Returns the
+    /// canonical accepted-values message on an unknown input.
+    pub fn from_cli_arg(s: &str) -> Result<CurriculumStage, String> {
+        match s.to_lowercase().replace('-', "_").as_str() {
+            "coarse" => Ok(CurriculumStage::Coarse),
+            "heading_fine" | "headingfine" => Ok(CurriculumStage::HeadingFine),
+            "full" => Ok(CurriculumStage::Full),
+            other => Err(format!(
+                "--curriculum-stage '{other}' is invalid. Use coarse | heading_fine | full."
+            )),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -288,6 +302,52 @@ mod tests {
         assert!(
             coarse > fine,
             "coarse band should score higher for small errors: coarse={coarse} fine={fine}"
+        );
+    }
+
+    #[test]
+    fn from_cli_arg_accepts_each_stage() {
+        assert_eq!(
+            CurriculumStage::from_cli_arg("coarse"),
+            Ok(CurriculumStage::Coarse)
+        );
+        assert_eq!(
+            CurriculumStage::from_cli_arg("heading_fine"),
+            Ok(CurriculumStage::HeadingFine)
+        );
+        assert_eq!(
+            CurriculumStage::from_cli_arg("full"),
+            Ok(CurriculumStage::Full)
+        );
+    }
+
+    #[test]
+    fn from_cli_arg_is_case_and_separator_insensitive() {
+        assert_eq!(
+            CurriculumStage::from_cli_arg("Full"),
+            Ok(CurriculumStage::Full)
+        );
+        // hyphen alias and the no-separator spelling both map to HeadingFine.
+        assert_eq!(
+            CurriculumStage::from_cli_arg("Heading-Fine"),
+            Ok(CurriculumStage::HeadingFine)
+        );
+        assert_eq!(
+            CurriculumStage::from_cli_arg("headingfine"),
+            Ok(CurriculumStage::HeadingFine)
+        );
+    }
+
+    #[test]
+    fn from_cli_arg_rejects_unknown() {
+        let err = CurriculumStage::from_cli_arg("bogus").unwrap_err();
+        assert!(
+            err.contains("bogus"),
+            "message should echo the bad value: {err}"
+        );
+        assert!(
+            err.contains("coarse | heading_fine | full"),
+            "message should list accepted values: {err}"
         );
     }
 }

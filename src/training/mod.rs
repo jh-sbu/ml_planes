@@ -1,6 +1,7 @@
 pub mod bc;
 pub mod env;
 pub mod eval;
+pub mod eval_metrics;
 mod flight_env;
 pub mod level_hold_env;
 pub mod orbit_env;
@@ -16,6 +17,7 @@ pub mod wu_orbit_reward;
 pub use bc::{collect_demonstrations, BcDataset, DemonstrationEnv};
 pub use env::{Observation, SpawnSpec, StepInfo, TrainingEnv};
 pub use eval::{evaluate_policy, EvaluationSummary};
+pub use eval_metrics::{MetricFamily, TaskMetrics};
 
 #[cfg(any(feature = "inference", feature = "training"))]
 pub(crate) use flight_env::direct_action_to_inputs;
