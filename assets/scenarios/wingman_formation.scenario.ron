@@ -1,0 +1,41 @@
+// Two-plane formation: a level-hold leader and a wingman holding a fixed slot
+// in the leader's body frame.
+//
+// Run: cargo run --example observe_state --no-default-features -- \
+//        --scenario assets/scenarios/wingman_formation.scenario.ron --steps 1920 --interval 64
+//
+// The wingman references the leader by `name`; resolution maps that to the
+// leader's PlaneId. `offset` is the formation slot in the leader's body frame
+// (+X forward, +Y right, +Z up): (-20, 15, 0) = 20 m behind, 15 m right, level.
+//
+// With the level base attitude `from_rotation_x(-pi/2)` mapping body (x,y,z) →
+// world (x, z, -y), the body offset (-20, 15, 0) becomes world (-20, 0, -15), so
+// the wingman's desired world slot for a leader flying +X is leader_pos +
+// (-20, 0, -15) = (-20, 1000, -15).
+// The wingman spawns ON that slot, so this is a steady-state formation-HOLD
+// check (the slot error should stay near zero), consistent with the level-hold
+// "spawn at target" convention. WingmanController's guidance is a pure
+// lateral-position→bank loop with no heading damping, so it holds an on-slot
+// equilibrium but does not recover from a large initial offset.
+(
+    steps: 1920,
+    interval: 64,
+    planes: [
+        (
+            name: "leader",
+            position: (0.0, 1000.0, 0.0),
+            controller: LevelHold(
+                altitude: 1000.0,
+                airspeed: 100.0,
+            ),
+        ),
+        (
+            name: "wingman",
+            position: (-20.0, 1000.0, -15.0),
+            controller: Wingman(
+                leader: "leader",
+                offset: (-20.0, 15.0, 0.0),
+            ),
+        ),
+    ],
+)

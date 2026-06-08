@@ -9,7 +9,7 @@
 - Rendering: `bevy` + `bevy_egui` HUD (feature-flagged off for training)
 - Aerodynamics: custom coefficient-based model (coefficient tables in `.plane.ron` assets)
 - ML: `burn` (pure Rust; no Python, no IPC)
-- Asset format: RON (Rusty Object Notation); aerodynamic configs use Bevy's asset loader; reward/termination configs (`*.reward.ron` in `assets/training/`) are loaded directly via `ron::de::from_reader` — no Bevy asset server required
+- Asset format: RON (Rusty Object Notation); aerodynamic configs use Bevy's asset loader; reward/termination configs (`*.reward.ron` in `assets/training/`) and multi-plane scenarios (`*.scenario.ron` in `assets/scenarios/`) are loaded directly via `ron::de` (`implicit_some` enabled for scenarios) — no Bevy asset server required
 
 **Development philosophy:** Test-Driven Development (TDD) is mandatory. Write a failing test before writing any implementation code. The Red-Green-Refactor cycle governs all new features: red (failing test), green (minimal implementation to pass), refactor (clean up). The environment, aerodynamic model, and test suite must be solid before any controller or ML work begins.
 
@@ -28,6 +28,7 @@ src/
   environment/    # infinite ground collider + shader, plane spawner
   camera/         # FreeLook and Follow camera modes
   ui/             # egui HUD, extensible info panel
+  scenario.rs     # multi-plane .scenario.ron model + controller factory (drives examples/observe_state.rs)
   training/
     ppo/            # PPO trainer, rollout buffer, ActorCritic model
     flight_env.rs   # shared 6-DOF Euler physics integration (integrate_state)
@@ -54,6 +55,7 @@ src/
 | `WingmanController` | struct | Formation flight; holds a fixed offset in the leader's body frame |
 | `AscentController` | struct | Climbs to target altitude then latches to level hold |
 | `L1Controller` | struct | Follows a preset `FlightPlan` (waypoint sequences + orbit circles) via L1 nonlinear lateral guidance; built from the plan asset by `apply_flight_plan` |
+| `Scenario` / `ResolvedScenario` | RON model (`src/scenario.rs`) | Multi-plane `.scenario.ron`: per-plane initial state, `.plane.ron` config, and a `ControllerSpec` (incl. `Wingman` peer references by name, optional inline tuning, cfg-gated RL specs). `resolve()` assigns `PlaneId`s and computes initial states; `build_controller()` builds the boxed controller. Drives `examples/observe_state.rs` via `--scenario`. |
 
 ### Physics Layering
 
@@ -336,6 +338,7 @@ app.add_plugins(EguiPlugin { enable_multipass_for_primary_context: false });
 - `spawn_reset.rs` — `TrainingEnv::reset()` produces correct initial `FlightState`
 - `level_hold.rs` — level-hold cascade convergence to target altitude
 - `wingman.rs` — formation flight relative-position tracking
+- `scenario.rs` — `.scenario.ron` parse/resolve/build + CSV header pinning (`ml_planes::scenario::CSV_HEADER`)
 - `ppo_training.rs` — RL trainer instantiation (training-gated; run with `--features training`)
 
 ### Rules

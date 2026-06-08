@@ -18,6 +18,123 @@ name as `CONTROLLER` (default `level_hold` if omitted).
 
 ---
 
+## How candidates are run (scenario-driven)
+
+`observe_state` is driven by a `.scenario.ron` file — there is no gain-flag
+interface. For each candidate gain set, **write a temporary scenario** to
+`target/tune.scenario.ron` (gitignored) with the gains inline under the
+controller's `tuning` field, then run:
+
+```bash
+cargo run --example observe_state --no-default-features -- --scenario target/tune.scenario.ron
+```
+
+Set `steps` per phase (1800 = coarse grid, 3840 = full 60 s validation) and
+`interval: 64` (one row per second). The loader enables `implicit_some`, so write
+bare values (`tuning: (...)`), not `Some(...)`.
+
+**Level-hold template** (`STEPS`, `TARGET_ALT`, `TARGET_AIRSPEED`, and the 7 gains):
+
+```ron
+(
+    steps: STEPS,
+    interval: 64,
+    planes: [(
+        name: "p",
+        config: "PLANE",
+        position: (0.0, TARGET_ALT, 0.0),
+        // Spawn AT target airspeed (+X). Required — omitting velocity defaults to
+        // 100 m/s and corrupts every non-100 envelope point with a speed transient.
+        velocity: (TARGET_AIRSPEED, 0.0, 0.0),
+        controller: LevelHold(
+            altitude: TARGET_ALT,
+            airspeed: TARGET_AIRSPEED,
+            tuning: (
+                alt_kp: F, alt_ki: F, alt_kd: F,
+                pitch_kp: F, pitch_kd: F,
+                spd_kp: F, spd_ki: F,
+                throttle_ff_gain: 0.7,
+            ),
+        ),
+    )],
+)
+```
+
+**Orbit template** (adds `RADIUS`; 4 outer + 7 inner gains):
+
+```ron
+(
+    steps: STEPS,
+    interval: 64,
+    planes: [(
+        name: "p",
+        config: "PLANE",
+        position: (0.0, TARGET_ALT, 0.0),
+        velocity: (TARGET_AIRSPEED, 0.0, 0.0),   // spawn at target airspeed (+X)
+        controller: Orbit(
+            radius: RADIUS,
+            direction: CounterClockwise,
+            altitude: TARGET_ALT,
+            airspeed: TARGET_AIRSPEED,
+            tuning: (
+                radial_kp: F, radial_kd: F, heading_kp: F, heading_kd: F,
+                inner: (
+                    alt_kp: F, alt_ki: F, alt_kd: F,
+                    pitch_kp: F, pitch_kd: F,
+                    spd_kp: F, spd_ki: F,
+                    throttle_ff_gain: 0.7,
+                ),
+            ),
+        ),
+    )],
+)
+```
+
+**Heading-hold template** (spawn level facing +X = heading 0; `TARGET_HEADING_DEG`
+is the commanded heading; 2 outer + 7 inner gains):
+
+```ron
+(
+    steps: STEPS,
+    interval: 64,
+    planes: [(
+        name: "p",
+        config: "PLANE",
+        position: (0.0, TARGET_ALT, 0.0),
+        velocity: (TARGET_AIRSPEED, 0.0, 0.0),   // spawn at target airspeed, heading 0 (+X)
+        controller: HeadingHold(
+            heading_deg: TARGET_HEADING_DEG,
+            altitude: TARGET_ALT,
+            airspeed: TARGET_AIRSPEED,
+            tuning: (
+                heading_kp: F, heading_kd: F,
+                inner: (
+                    alt_kp: F, alt_ki: F, alt_kd: F,
+                    pitch_kp: F, pitch_kd: F,
+                    spd_kp: F, spd_ki: F,
+                    throttle_ff_gain: 0.7,
+                ),
+            ),
+        ),
+    )],
+)
+```
+
+**Output columns** (single plane → one row per step):
+
+```
+step, time_s, plane, pos_x, altitude_m, pos_z, airspeed_ms, alpha_deg, beta_deg,
+roll_deg, pitch_deg, yaw_deg, pitch_rate, roll_rate, yaw_rate,
+elevator, throttle, aileron, rudder, radial_error_m, heading_error_rad, bank_ff_rad
+```
+
+Level-hold tuning uses `altitude_m`, `airspeed_ms`, `elevator`, `pitch_rate`.
+Orbit tuning also uses `radial_error_m` and `heading_error_rad` (blank for
+level-hold runs). Step 0 often shows all-zero state — ignore it; evaluate the
+final window only.
+
+---
+
 ## Controller routing
 
 **If `CONTROLLER` is `level_hold`:** proceed with the phases below.
@@ -134,33 +251,22 @@ Traverse order: center point (×1.0 all) first, then single-axis perturbations (
 varied, rest ×1.0), then two-axis, etc. This places the most likely candidates first and
 maximises early-exit probability.
 
-### Run command (per grid point)
+### Run (per grid point)
 
-```bash
-cargo run --example observe_state --no-default-features -- \
-  --plane PLANE \
-  --steps 1800 \
-  --interval 64 \
-  --controller level_hold \
-  --altitude 500 \
-  --airspeed 100 \
-  --alt-kp ALT_KP --alt-ki ALT_KI --alt-kd ALT_KD \
-  --pitch-kp PITCH_KP --pitch-kd PITCH_KD \
-  --spd-kp SPD_KP --spd-ki SPD_KI
-```
-
-Each run produces 30 rows. Evaluate all 30 as the final window
-(same pass criteria: `|ΔAlt| ≤ 10 m`, `|ΔSpd| ≤ 2 m/s`).
+Write the **level-hold template** to `target/tune.scenario.ron` with `STEPS = 1800`,
+`TARGET_ALT = 500`, `TARGET_AIRSPEED = 100`, and the grid point's gains, then run it.
+Each run produces 29 sampled rows (1800 / 64). Evaluate all of them as the final
+window (same pass criteria: `|ΔAlt| ≤ 10 m`, `|ΔSpd| ≤ 2 m/s`).
 
 ### Selection
 
 Score each grid point:
 
 ```
-score = worst |altitude_m − 500| + worst |airspeed_ms − 100|   (over all 30 rows)
+score = worst |altitude_m − 500| + worst |airspeed_ms − 100|   (over all sampled rows)
 ```
 
-**Early stopping:** if a grid point passes cleanly (both criteria on all 30 rows), stop
+**Early stopping:** if a grid point passes cleanly (both criteria on all sampled rows), stop
 and use it as the winner immediately. Otherwise evaluate all 243 and pick the lowest score.
 
 ### Output
@@ -174,9 +280,9 @@ Top 3 candidates:
   3     F       F       F       F       F       F      YES/NO
 
 Winner outer-loop gains (pitch loop unchanged from Phase 1):
-  --alt-kp F --alt-ki F --alt-kd F
-  --pitch-kp F --pitch-kd F   [unchanged]
-  --spd-kp F --spd-ki F
+  alt_kp F  alt_ki F  alt_kd F
+  pitch_kp F  pitch_kd F   [unchanged]
+  spd_kp F  spd_ki F
 ```
 
 Replace the physics-based outer-loop gains with the winner's values. Phase 2 runs these
@@ -190,22 +296,9 @@ as Round 0 across all 5 scenarios.
 > physics-based `pitch_kp`/`pitch_kd`. Otherwise they are the raw Phase 1 physics estimates.
 > The procedure and pass criteria are identical either way.
 
-Run all 5 scenarios with the Round 0 gains computed above (60 s, 3840 steps at 64 Hz):
-
-```bash
-cargo run --example observe_state --no-default-features -- \
-  --plane PLANE \
-  --steps 3840 \
-  --interval 64 \
-  --controller level_hold \
-  --altitude TARGET_ALT \
-  --airspeed TARGET_AIRSPEED \
-  --alt-kp ALT_KP --alt-ki ALT_KI --alt-kd ALT_KD \
-  --pitch-kp PITCH_KP --pitch-kd PITCH_KD \
-  --spd-kp SPD_KP --spd-ki SPD_KI
-```
-
-**Output columns:** `step, time_s, altitude_m, airspeed_ms, alpha_deg, beta_deg, pitch_rate, roll_rate, yaw_rate, elevator, throttle, aileron, rudder`
+Run all 5 scenarios with the Round 0 gains computed above. For each scenario write the
+**level-hold template** with `STEPS = 3840` (60 s), the scenario's `TARGET_ALT` /
+`TARGET_AIRSPEED`, and the Round 0 gains, then run it.
 
 **Pass criteria** (evaluate the last 30 rows of each 60-row run):
 
@@ -259,20 +352,9 @@ Repeat the following for rounds 1, 2, and 3 (stop early if all scenarios pass):
 1. Apply the fix(es) identified in the previous round's diagnosis to produce new candidate gains.
    Show the updated gain table before running.
 
-2. Run **only the scenarios that are still failing** (not all 5 — saves time):
-
-   ```bash
-   cargo run --example observe_state --no-default-features -- \
-     --plane PLANE \
-     --steps 3840 \
-     --interval 64 \
-     --controller level_hold \
-     --altitude TARGET_ALT \
-     --airspeed TARGET_AIRSPEED \
-     --alt-kp ALT_KP --alt-ki ALT_KI --alt-kd ALT_KD \
-     --pitch-kp PITCH_KP --pitch-kd PITCH_KD \
-     --spd-kp SPD_KP --spd-ki SPD_KI
-   ```
+2. Run **only the scenarios that are still failing** (not all 5 — saves time): write the
+   level-hold template (`STEPS = 3840`) with the new gains and that scenario's operating
+   point, then run it.
 
 3. Print a compact result row for each re-run scenario.
 
@@ -296,20 +378,7 @@ Repeat the following for rounds 1, 2, and 3 (stop early if all scenarios pass):
 
 ## Phase 5 — Full validation run
 
-Run all 5 scenarios with the **best-candidate gains** (60 s, 3840 steps):
-
-```bash
-cargo run --example observe_state --no-default-features -- \
-  --plane PLANE \
-  --steps 3840 \
-  --interval 64 \
-  --controller level_hold \
-  --altitude TARGET_ALT \
-  --airspeed TARGET_AIRSPEED \
-  --alt-kp ALT_KP --alt-ki ALT_KI --alt-kd ALT_KD \
-  --pitch-kp PITCH_KP --pitch-kd PITCH_KD \
-  --spd-kp SPD_KP --spd-ki SPD_KI
-```
+Run all 5 scenarios with the **best-candidate gains** (level-hold template, `STEPS = 3840`).
 
 Print the full summary table:
 
@@ -329,20 +398,17 @@ E         300     70          …              …
 ✓ All scenarios converged (N tuning rounds).
 
 Best gains:
-  --alt-kp F --alt-ki F --alt-kd F
-  --pitch-kp F --pitch-kd F
-  --spd-kp F --spd-ki F
+  alt_kp F  alt_ki F  alt_kd F
+  pitch_kp F  pitch_kd F
+  spd_kp F  spd_ki F
 
-Exact reproduction command (scenario B as reference):
-  cargo run --example observe_state --no-default-features -- \
-    --plane PLANE --steps 3840 --interval 64 \
-    --altitude 500 --airspeed 100 \
-    [gains above]
+Reproduction (scenario B): generated target/tune.scenario.ron with
+  LevelHold(altitude: 500, airspeed: 100, tuning: (…best gains…)); ran
+  cargo run --example observe_state --no-default-features -- --scenario target/tune.scenario.ron
 
-Once written to the tuning file, the equivalent command will be:
-  cargo run --example observe_state --no-default-features -- \
-    --plane PLANE --tuning-file TUNING_FILE --profile PROFILE \
-    --steps 3840 --interval 64 --altitude 500 --airspeed 100
+Once written to the tuning file, you can verify with a scenario that sets
+  config: "PLANE" and a LevelHold controller whose tuning matches the
+  level_hold."PROFILE" entry.
 
 Write these gains to the tuning file? If yes, also provide a profile name (default: "normal").
 ```
@@ -359,12 +425,6 @@ Remaining issues:
 
 Suggested next steps:
   [specific gain direction for each remaining failure]
-
-You can continue tuning manually:
-  cargo run --example observe_state --no-default-features -- \
-    --plane PLANE --steps 3840 --interval 64 \
-    --altitude TARGET_ALT --airspeed TARGET_AIRSPEED \
-    [best gains found]
 ```
 
 Do not offer write-back if any scenario fails.
@@ -473,7 +533,8 @@ Use **Edit** to insert `level_hold: { … }` before the final `)` of the `PlaneT
 
 > These phases run when `CONTROLLER` is `orbit`. They replace Phases 1–6 above entirely.
 > The orbit controller is a cascade: all 7 level-hold gains apply to the inner loop;
-> `radial_kp`, `radial_kd`, `heading_kp`, `heading_kd` are the outer loop.
+> `radial_kp`, `radial_kd`, `heading_kp`, `heading_kd` are the outer loop. Use the
+> **Orbit template** from the top of this file for every run.
 
 ---
 
@@ -534,9 +595,10 @@ Apply the same trigger criteria as level-hold Phase 1b. When triggered, sweep th
 | `heading_kp` | Phase 1 | ×0.5, ×1.0, ×2.0 |
 | `heading_kd` | Phase 1 | ×0.5, ×1.0, ×2.0 |
 
-3^4 = 81 grid points evaluated on **scenario B only** (R=1000 m, 500 m / 100 m/s).
+3^4 = 81 grid points evaluated on **scenario B only** (R=1000 m, 500 m / 100 m/s),
+using the Orbit template with `STEPS = 1800`.
 
-Score per grid point (over all 30 rows of a 1800-step run):
+Score per grid point (over all sampled rows — 29 at 1800 / 64):
 
 ```
 score = worst |radial_error_m| + worst |heading_error_rad| * 100
@@ -544,32 +606,14 @@ score = worst |radial_error_m| + worst |heading_error_rad| * 100
 
 (The ×100 factor normalises heading radians to roughly the same scale as radial metres.)
 
-Early-stop on a clean pass (all 30 rows within both criteria in Orbit Phase 2).
+Early-stop on a clean pass (all sampled rows within both criteria in Orbit Phase 2).
 
 ---
 
 ## Orbit Phase 2 — Baseline run (Round 0)
 
-Run all 5 scenarios (3840 steps, 60-row output at interval=60):
-
-```bash
-cargo run --example observe_state --no-default-features -- \
-  --plane PLANE \
-  --steps 3840 \
-  --interval 64 \
-  --controller orbit \
-  --altitude TARGET_ALT \
-  --airspeed TARGET_AIRSPEED \
-  --radius RADIUS \
-  --radial-kp RADIAL_KP --radial-kd RADIAL_KD \
-  --heading-kp HEADING_KP --heading-kd HEADING_KD \
-  --alt-kp ALT_KP --alt-ki ALT_KI --alt-kd ALT_KD \
-  --pitch-kp PITCH_KP --pitch-kd PITCH_KD \
-  --spd-kp SPD_KP --spd-ki SPD_KI
-```
-
-**Output columns:** `step,time_s,altitude_m,airspeed_ms,alpha_deg,beta_deg,pitch_rate,
-roll_rate,yaw_rate,elevator,throttle,aileron,rudder,radial_error_m,heading_error_rad,bank_ff_rad`
+Run all 5 scenarios with the Orbit template (`STEPS = 3840`, `interval: 64`), using each
+scenario's altitude / airspeed / radius and the Round 0 gains.
 
 **Pass criteria** (evaluate the last 30 rows of each 60-row run):
 
@@ -621,7 +665,7 @@ For each failing scenario, identify the **dominant failure mode**:
 Same procedure as level-hold Phase 4:
 
 1. Apply fixes from previous diagnosis; show updated gain table.
-2. Re-run only the still-failing scenarios with the orbit run command above.
+2. Re-run only the still-failing scenarios with the Orbit template (`STEPS = 3840`).
 3. Print result rows; accept/reject per loop.
 4. Track best candidate (lowest sum of all 4 worst-case errors across scenarios).
 5. Re-diagnose; if same fix tried twice without improvement, try the opposite direction.
@@ -632,7 +676,7 @@ Same procedure as level-hold Phase 4:
 
 ## Orbit Phase 5 — Full validation run
 
-Run all 5 scenarios with best-candidate gains using the orbit run command.
+Run all 5 scenarios with best-candidate gains using the Orbit template.
 
 Print the full summary table:
 
@@ -649,22 +693,16 @@ A         500  100  500     …          …           …            …       
 ✓ All orbit scenarios converged (N tuning rounds).
 
 Best gains:
-  --radial-kp F --radial-kd F
-  --heading-kp F --heading-kd F
-  --alt-kp F --alt-ki F --alt-kd F
-  --pitch-kp F --pitch-kd F
-  --spd-kp F --spd-ki F
+  radial_kp F  radial_kd F
+  heading_kp F  heading_kd F
+  alt_kp F  alt_ki F  alt_kd F
+  pitch_kp F  pitch_kd F
+  spd_kp F  spd_ki F
 
-Exact reproduction command (scenario B as reference):
-  cargo run --example observe_state --no-default-features -- \
-    --plane PLANE --steps 3840 --interval 64 \
-    --controller orbit --altitude 500 --airspeed 100 --radius 1000 \
-    [gains above]
-
-Once written to the tuning file, the equivalent command will be:
-  cargo run --example observe_state --no-default-features -- \
-    --plane PLANE --tuning-file TUNING_FILE --profile PROFILE \
-    --controller orbit --steps 3840 --interval 64 --altitude 500 --airspeed 100 --radius 1000
+Reproduction (scenario B): generated target/tune.scenario.ron with
+  Orbit(radius: 1000, direction: CounterClockwise, altitude: 500, airspeed: 100,
+        tuning: (…best gains…)); ran
+  cargo run --example observe_state --no-default-features -- --scenario target/tune.scenario.ron
 
 Write these gains to the tuning file? If yes, also provide a profile name (default: "normal").
 ```
@@ -787,7 +825,8 @@ Use **Edit** to insert `orbit: { … }` before the final `)` of the `PlaneTuning
 > These phases run when `CONTROLLER` is `heading_hold`. They replace Phases 1–6 above entirely.
 > The heading-hold controller wraps `LevelHoldController` (inner, 7 gains) plus a 2-gain outer
 > heading PID (`heading_kp`, `heading_kd`). Tune the inner loop first with `/tune PLANE level_hold`,
-> then use these phases to tune only the 2 outer gains.
+> then use these phases to tune only the 2 outer gains. Use the **Heading-hold template** from
+> the top of this file for every run.
 
 ---
 
@@ -816,19 +855,22 @@ Otherwise use `LevelHoldTuning::default()` (see `src/controllers/tuning.rs`).
 
 ## H2 — Scenario matrix
 
-Use 5 heading-offset scenarios, all at 1000 m altitude, 80 m/s:
+Use 5 heading-step scenarios, all at 1000 m altitude, 80 m/s. The plane spawns level
+facing +X (heading 0); `TARGET_HEADING_DEG` is the commanded heading:
 
-| # | Initial heading | Target heading | Offset | Rationale |
-|---|---|---|---|---|
-| A | 0° | 0° | 0° | Disturbance hold |
-| B | 0° | +10° | 10° small step | Small correction |
-| C | 0° | +30° | 30° medium step | Typical maneuver |
-| D | 0° | +60° | 60° large step | Max bank excursion |
-| E | 0° | −30° | 30° opposite | Symmetry check |
+| # | Target heading (`TARGET_HEADING_DEG`) | Step | Rationale |
+|---|---|---|---|
+| A | 0   | 0° | Disturbance hold |
+| B | 10  | 10° small step | Small correction |
+| C | 30  | 30° medium step | Typical maneuver |
+| D | 60  | 60° large step | Max bank excursion |
+| E | -30 | 30° opposite | Symmetry check |
 
-For each scenario, use `observe-state` or manual simulation. Run 20 s. Measure:
-- **Peak heading error** (deg) — max absolute deviation from target
-- **Settle time** (s) — time to reach and stay within ±5°
+For each scenario write the Heading-hold template (`TARGET_ALT = 1000`,
+`TARGET_AIRSPEED = 80`, `STEPS = 1280` ≈ 20 s) and run it. Measure from the
+`yaw_deg` column:
+- **Peak heading error** (deg) — max |yaw_deg − TARGET_HEADING_DEG|
+- **Settle time** (s) — `time_s` to reach and stay within ±5°
 - **Overshoot** (deg) — exceedance past target before settling
 
 Pass criteria: peak error < 10°, settle time < 15 s, no divergence.
@@ -876,5 +918,4 @@ Use the same write-back logic as Orbit Phase O6 (a/b/c/d), but for `HeadingHoldT
 
 If the `heading_hold` map already exists, insert a new profile or replace the existing one.
 If it does not exist, add `heading_hold: { … },` before the closing `)` of `PlaneTuning(`.
-
 Add a comment above the heading_hold block with the date and brief result summary.
