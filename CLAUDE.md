@@ -149,6 +149,9 @@ Training environments (`LevelHoldEnv`, `OrbitEnv`) do **not** use Bevy or Rapier
 - Aerodynamics: shared `compute_aero_forces()` from `aerodynamics/`
 - Result: deterministic rollouts, fast vectorized training, no ECS overhead
 - `VecEnv` wraps any `TrainingEnv` to run N parallel episodes (seeds offset via `offset_rng_seed()`)
+- Integration step is **60 Hz** (`dt = 1/60 s`) by design — this is the self-contained Euler
+  integrator and is intentionally distinct from the 64 Hz Rapier fixed schedule used by the
+  live sim (`main.rs`), the `observe_state` example, and the Bevy/Rapier tests.
 
 ### RL Inference Pattern
 
@@ -351,7 +354,7 @@ app.add_plugins(EguiPlugin { enable_multipass_for_primary_context: false });
 - Every plane is a full 6-DOF Rapier `RigidBody` — no simplified kinematics.
 - `FlightController` is always `Box<dyn FlightController>` per entity — never hard-wired to a concrete type.
 - `PlaneConfig` is loaded at runtime via Bevy's asset server — no compile-time plane data.
-- All physics runs at Rapier's fixed timestep; rendering interpolates between steps.
+- All physics runs at Rapier's fixed timestep (64 Hz, `dt = 1/64 s`, set via `TimestepMode::Fixed` + `RapierPhysicsPlugin::in_fixed_schedule()` in `main.rs`); rendering interpolates between steps. The headless `observe_state` example and `tests/common/mod.rs` mirror this exact 64 Hz fixed-schedule setup.
 - The ground is a flat infinite collider acting as a death plane — no terrain, no landing.
 
 ---

@@ -12,7 +12,7 @@
 //!   --plane PATH         Path to a .plane.ron config file (default: built-in generic_jet)
 //!   --tuning-file PATH   Path to a .tuning.ron file; loads gains for --profile
 //!   --profile NAME       Named tuning profile to use (default: "normal")
-//!   --steps N            Total simulation steps at 60 Hz (default: 600 = 10 s)
+//!   --steps N            Total simulation steps at 64 Hz (default: 640 = 10 s)
 //!   --controller NAME    Controller to use:
 //!                          level_hold (default) | orbit | manual
 //!                          rl_level_hold | rl_orbit | rl_orbit_residual | rl_lstm_orbit
@@ -86,11 +86,17 @@ fn main() {
     app.add_plugins(MinimalPlugins)
         .add_plugins(bevy::transform::TransformPlugin)
         .add_plugins(bevy::asset::AssetPlugin::default())
-        .add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
+        .insert_resource(TimestepMode::Fixed {
+            dt: 1.0 / 64.0,
+            substeps: 1,
+        })
+        .add_plugins(RapierPhysicsPlugin::<NoUserData>::default().in_fixed_schedule())
         .add_plugins(PlanePlugin);
 
+    // 1/64 s per update = exactly one fixed tick per update (no accumulator overflow),
+    // matching the production sim (main.rs) and the test harness (tests/common/mod.rs).
     app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(
-        1.0 / 60.0,
+        1.0 / 64.0,
     )));
 
     // finish() initialises plugin resources; required before manual app.update() driving.
@@ -382,7 +388,7 @@ fn main() {
                     println!(
                         "{},{:.3},{:.2},{:.2},{:.3},{:.3},{:.4},{:.4},{:.4},{:.3},{:.3},{:.3},{:.3},{:.3},{:.4},{:.4}",
                         step,
-                        step as f32 / 60.0,
+                        step as f32 / 64.0,
                         altitude,
                         airspeed,
                         alpha_deg,
@@ -402,7 +408,7 @@ fn main() {
                     println!(
                         "{},{:.3},{:.2},{:.2},{:.3},{:.3},{:.4},{:.4},{:.4},{:.3},{:.3},{:.3},{:.3}",
                         step,
-                        step as f32 / 60.0,
+                        step as f32 / 64.0,
                         altitude,
                         airspeed,
                         alpha_deg,
@@ -467,7 +473,7 @@ fn parse_args() -> Args {
         profile: get_arg(&args, "--profile").unwrap_or_else(|| "normal".to_string()),
         steps: get_arg(&args, "--steps")
             .and_then(|v| v.parse().ok())
-            .unwrap_or(600),
+            .unwrap_or(640),
         controller: get_arg(&args, "--controller").unwrap_or_else(|| "level_hold".to_string()),
         model: get_arg(&args, "--model"),
         interval: get_arg(&args, "--interval")

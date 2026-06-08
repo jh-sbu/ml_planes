@@ -69,15 +69,15 @@ For the RL branch, additionally reject any scenario that sits well outside the t
 
 ## Step 3 — Run each scenario
 
-For each (alt, airspeed) pair, run the binary for **3600 steps (60 s at 60 Hz)**.
+For each (alt, airspeed) pair, run the binary for **3840 steps (60 s at 64 Hz)**.
 
 ### Step 3A — PID invocation
 
 ```bash
 cargo run --example observe_state --no-default-features -- \
   --plane PLANE \
-  --steps 3600 \
-  --interval 60 \
+  --steps 3840 \
+  --interval 64 \
   --controller level_hold \
   --altitude TARGET_ALT \
   --airspeed TARGET_AIRSPEED \
@@ -92,15 +92,15 @@ cargo run --example observe_state --no-default-features -- \
 cargo run --example observe_state --no-default-features --features inference -- \
   --controller rl_level_hold \
   --model MODEL \
-  --steps 3600 \
-  --interval 60 \
+  --steps 3840 \
+  --interval 64 \
   --altitude TARGET_ALT \
   --airspeed TARGET_AIRSPEED
 ```
 
 The `.mpk` extension on `MODEL` is optional. No `--plane` is passed — the default `generic_jet` matches the typical training plane. No gain overrides apply to the RL branch.
 
-In both modes the plane spawns **at the target altitude and airspeed** (steady-state test, not a recovery test). `--interval 60` prints one row per second, giving 60 rows per run.
+In both modes the plane spawns **at the target altitude and airspeed** (steady-state test, not a recovery test). `--interval 64` prints one row per second, giving 60 rows per run.
 
 ---
 
@@ -157,7 +157,7 @@ All 5 scenarios converged over 60 s.
 
 Exact reproduction command (scenario B as reference):
   cargo run --example observe_state --no-default-features -- \
-    --plane PLANE --steps 3600 --interval 60 \
+    --plane PLANE --steps 3840 --interval 64 \
     --altitude 500 --airspeed 100 \
     [gains used]
 
@@ -174,7 +174,7 @@ Model MODEL converged across all 5 envelope scenarios over 60 s.
 Exact reproduction command (scenario B as reference):
   cargo run --example observe_state --no-default-features --features inference -- \
     --controller rl_level_hold --model MODEL \
-    --steps 3600 --interval 60 \
+    --steps 3840 --interval 64 \
     --altitude 500 --airspeed 100
 ```
 

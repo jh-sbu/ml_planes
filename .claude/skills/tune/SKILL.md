@@ -140,7 +140,7 @@ maximises early-exit probability.
 cargo run --example observe_state --no-default-features -- \
   --plane PLANE \
   --steps 1800 \
-  --interval 60 \
+  --interval 64 \
   --controller level_hold \
   --altitude 500 \
   --airspeed 100 \
@@ -190,13 +190,13 @@ as Round 0 across all 5 scenarios.
 > physics-based `pitch_kp`/`pitch_kd`. Otherwise they are the raw Phase 1 physics estimates.
 > The procedure and pass criteria are identical either way.
 
-Run all 5 scenarios with the Round 0 gains computed above (60 s, 3600 steps at 60 Hz):
+Run all 5 scenarios with the Round 0 gains computed above (60 s, 3840 steps at 64 Hz):
 
 ```bash
 cargo run --example observe_state --no-default-features -- \
   --plane PLANE \
-  --steps 3600 \
-  --interval 60 \
+  --steps 3840 \
+  --interval 64 \
   --controller level_hold \
   --altitude TARGET_ALT \
   --airspeed TARGET_AIRSPEED \
@@ -264,8 +264,8 @@ Repeat the following for rounds 1, 2, and 3 (stop early if all scenarios pass):
    ```bash
    cargo run --example observe_state --no-default-features -- \
      --plane PLANE \
-     --steps 3600 \
-     --interval 60 \
+     --steps 3840 \
+     --interval 64 \
      --controller level_hold \
      --altitude TARGET_ALT \
      --airspeed TARGET_AIRSPEED \
@@ -296,13 +296,13 @@ Repeat the following for rounds 1, 2, and 3 (stop early if all scenarios pass):
 
 ## Phase 5 — Full validation run
 
-Run all 5 scenarios with the **best-candidate gains** (60 s, 3600 steps):
+Run all 5 scenarios with the **best-candidate gains** (60 s, 3840 steps):
 
 ```bash
 cargo run --example observe_state --no-default-features -- \
   --plane PLANE \
-  --steps 3600 \
-  --interval 60 \
+  --steps 3840 \
+  --interval 64 \
   --controller level_hold \
   --altitude TARGET_ALT \
   --airspeed TARGET_AIRSPEED \
@@ -335,14 +335,14 @@ Best gains:
 
 Exact reproduction command (scenario B as reference):
   cargo run --example observe_state --no-default-features -- \
-    --plane PLANE --steps 3600 --interval 60 \
+    --plane PLANE --steps 3840 --interval 64 \
     --altitude 500 --airspeed 100 \
     [gains above]
 
 Once written to the tuning file, the equivalent command will be:
   cargo run --example observe_state --no-default-features -- \
     --plane PLANE --tuning-file TUNING_FILE --profile PROFILE \
-    --steps 3600 --interval 60 --altitude 500 --airspeed 100
+    --steps 3840 --interval 64 --altitude 500 --airspeed 100
 
 Write these gains to the tuning file? If yes, also provide a profile name (default: "normal").
 ```
@@ -362,7 +362,7 @@ Suggested next steps:
 
 You can continue tuning manually:
   cargo run --example observe_state --no-default-features -- \
-    --plane PLANE --steps 3600 --interval 60 \
+    --plane PLANE --steps 3840 --interval 64 \
     --altitude TARGET_ALT --airspeed TARGET_AIRSPEED \
     [best gains found]
 ```
@@ -550,13 +550,13 @@ Early-stop on a clean pass (all 30 rows within both criteria in Orbit Phase 2).
 
 ## Orbit Phase 2 — Baseline run (Round 0)
 
-Run all 5 scenarios (3600 steps, 60-row output at interval=60):
+Run all 5 scenarios (3840 steps, 60-row output at interval=60):
 
 ```bash
 cargo run --example observe_state --no-default-features -- \
   --plane PLANE \
-  --steps 3600 \
-  --interval 60 \
+  --steps 3840 \
+  --interval 64 \
   --controller orbit \
   --altitude TARGET_ALT \
   --airspeed TARGET_AIRSPEED \
@@ -657,14 +657,14 @@ Best gains:
 
 Exact reproduction command (scenario B as reference):
   cargo run --example observe_state --no-default-features -- \
-    --plane PLANE --steps 3600 --interval 60 \
+    --plane PLANE --steps 3840 --interval 64 \
     --controller orbit --altitude 500 --airspeed 100 --radius 1000 \
     [gains above]
 
 Once written to the tuning file, the equivalent command will be:
   cargo run --example observe_state --no-default-features -- \
     --plane PLANE --tuning-file TUNING_FILE --profile PROFILE \
-    --controller orbit --steps 3600 --interval 60 --altitude 500 --airspeed 100 --radius 1000
+    --controller orbit --steps 3840 --interval 64 --altitude 500 --airspeed 100 --radius 1000
 
 Write these gains to the tuning file? If yes, also provide a profile name (default: "normal").
 ```
