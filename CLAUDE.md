@@ -342,7 +342,7 @@ app.add_plugins(EguiPlugin { enable_multipass_for_primary_context: false });
 - All tests must pass with `cargo test --no-default-features`
 - No rendering, no Bevy `App` window, no GPU resources in tests
 - Tests are deterministic (fixed seed where randomness is needed)
-- Run `cargo fmt` at the end of every editing session before committing
+- Run `cargo fmt` at the end of every editing session before committing — always run it, even if you believe the code is already correctly formatted. Never skip it based on visual inspection.
 - Tests are written **before** the implementation they cover — never after
 - A PR that adds implementation without a prior failing test is not accepted
 - `cargo test --no-default-features` must be the first and last step of every change cycle
