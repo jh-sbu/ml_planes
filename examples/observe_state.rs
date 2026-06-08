@@ -599,34 +599,9 @@ fn load_plane_config(path: &str) -> PlaneConfig {
         .unwrap_or_else(|e| panic!("Cannot parse plane config '{path}': {e}"))
 }
 
-/// Fallback config matching `assets/planes/generic_jet.plane.ron` exactly.
+/// Fallback config — embeds `assets/planes/generic_jet.plane.ron` at compile time so the
+/// default can never drift from the asset.
 fn generic_jet_config() -> PlaneConfig {
-    PlaneConfig {
-        wing_area: 20.0,
-        mean_chord: 2.0,
-        wing_span: 10.0,
-        mass: 5000.0,
-        inertia: Vec3::new(10000.0, 40000.0, 45000.0),
-        cl0: 0.1,
-        cl_alpha: 4.5,
-        cl_delta_e: 0.4,
-        cl_max: 1.4,
-        cd0: 0.02,
-        cd_induced: 0.05,
-        cm0: -0.02,
-        cm_alpha: 0.6,
-        cm_q: -8.0,
-        cm_delta_e: -1.2,
-        cl_beta: -0.08,
-        cl_p: -0.45,
-        cl_r: 0.12,
-        cl_delta_a: 0.18,
-        cn_beta: 0.10,
-        cn_r: -0.12,
-        cn_delta_r: -0.10,
-        thrust_max: 60000.0,
-        aileron_limit: 0.4363,
-        elevator_limit: 0.3491,
-        rudder_limit: 0.2618,
-    }
+    const SRC: &str = include_str!("../assets/planes/generic_jet.plane.ron");
+    ron::de::from_str(SRC).expect("embedded generic_jet config is valid RON")
 }
