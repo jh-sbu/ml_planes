@@ -24,7 +24,7 @@ fn cross2(u: Vec2, v: Vec2) -> f32 {
 /// Horizontal ground-track unit vector from velocity, falling back to body
 /// forward (then `+X`) below ~1 m/s. Mirrors the convention in the orbit and
 /// level-hold controllers.
-fn ground_heading(state: &FlightState) -> Vec2 {
+pub(crate) fn ground_heading(state: &FlightState) -> Vec2 {
     let speed_xz = (state.velocity.x.powi(2) + state.velocity.z.powi(2)).sqrt();
     if speed_xz > 1.0 {
         Vec2::new(state.velocity.x / speed_xz, state.velocity.z / speed_xz)

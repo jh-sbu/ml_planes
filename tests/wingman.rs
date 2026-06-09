@@ -142,6 +142,97 @@ fn wingman_and_leader_stay_airborne() {
     }
 }
 
+/// Multi-minute formation hold: spawned on-slot, the wingman must STAY on-slot
+/// for ~180 simulated seconds without the bank loop running away into a spiral.
+/// This pins the heading/yaw-damping fix — the pre-fix pure position→bank loop
+/// holds for ~60 s then diverges into a permanent circling turn.
+#[test]
+fn wingman_holds_slot_over_three_minutes() {
+    const TARGET_ALT: f32 = 1000.0;
+    const TARGET_SPD: f32 = 100.0;
+
+    let mut app = common::build_headless_app();
+
+    let attitude = Quat::from_rotation_x(-FRAC_PI_2);
+    let leader_pos = Vec3::new(0.0, TARGET_ALT, 0.0);
+    let leader_vel = Vec3::new(TARGET_SPD, 0.0, 0.0);
+
+    let leader_initial = FlightState {
+        position: leader_pos,
+        velocity: leader_vel,
+        attitude,
+        airspeed: TARGET_SPD,
+        altitude: TARGET_ALT,
+        ..Default::default()
+    };
+
+    spawn_plane_entity(
+        &mut app,
+        PlaneId(1),
+        leader_pos,
+        leader_vel,
+        LevelHoldController::new(TARGET_ALT, TARGET_SPD),
+    );
+
+    let offset = FormationOffset::default();
+    let wingman_pos = leader_pos + attitude * offset.offset_body;
+    let own_initial = FlightState {
+        position: wingman_pos,
+        velocity: leader_vel,
+        attitude,
+        airspeed: TARGET_SPD,
+        altitude: wingman_pos.y,
+        ..Default::default()
+    };
+
+    spawn_plane_entity(
+        &mut app,
+        PlaneId(2),
+        wingman_pos,
+        leader_vel,
+        WingmanController::new(PlaneId(1), &leader_initial, &own_initial, offset.clone()),
+    );
+
+    // 180 simulated seconds (11520 updates × 1/64 s).
+    for _ in 0..11520 {
+        app.update();
+    }
+
+    // Pull leader + wingman states by PlaneId so the slot error is unambiguous.
+    let mut q = app
+        .world_mut()
+        .query::<(&PlaneId, &FlightState, &Transform)>();
+    let mut leader_state = None;
+    let mut wingman_state = None;
+    for (id, fs, tf) in q.iter(app.world()) {
+        match id.0 {
+            1 => leader_state = Some((fs.clone(), *tf)),
+            2 => wingman_state = Some((fs.clone(), *tf)),
+            _ => {}
+        }
+    }
+    let (leader, leader_tf) = leader_state.expect("leader not found");
+    let (wingman, _) = wingman_state.expect("wingman not found");
+
+    // Desired world slot from the leader's actual attitude (Transform rotation).
+    let slot = leader.position + leader_tf.rotation * offset.offset_body;
+    let err = wingman.position - slot;
+
+    assert!(
+        wingman.altitude.is_finite() && wingman.airspeed.is_finite(),
+        "wingman state non-finite: alt={}, spd={}",
+        wingman.altitude,
+        wingman.airspeed
+    );
+    assert!(
+        err.length() < 15.0,
+        "wingman drifted out of slot after 180 s: error={:.1} m (slot={:?}, pos={:?})",
+        err.length(),
+        slot,
+        wingman.position
+    );
+}
+
 /// Wingman tracks the leader's altitude over time: after the leader climbs,
 /// the wingman's altitude should also increase.
 #[test]

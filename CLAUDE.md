@@ -52,7 +52,7 @@ src/
 | `OrbitController` | struct | 3-level cascade PID orbit around a fixed world-frame point |
 | `RlOrbitController` | struct | Burn ActorCritic policy for orbit (obs dim=13); training-gated |
 | `LevelHoldRewardConfig` / `OrbitRewardConfig` | plain structs | Reward weights, scales, alive bonus, failure penalty, and termination thresholds; loaded from `assets/training/*.reward.ron` at training startup |
-| `WingmanController` | struct | Formation flight; holds a fixed offset in the leader's body frame |
+| `WingmanController` | struct | Formation flight; holds a fixed offset in the leader's body frame via a heading-damped lateral cascade (cross-track → heading → bank) |
 | `AscentController` | struct | Climbs to target altitude then latches to level hold |
 | `L1Controller` | struct | Follows a preset `FlightPlan` (waypoint sequences + orbit circles) via L1 nonlinear lateral guidance; built from the plan asset by `apply_flight_plan` |
 | `Scenario` / `ResolvedScenario` | RON model (`src/scenario.rs`) | Multi-plane `.scenario.ron`: per-plane initial state, `.plane.ron` config, and a `ControllerSpec` (incl. `Wingman` peer references by name, optional inline tuning, cfg-gated RL specs). `resolve()` assigns `PlaneId`s and computes initial states; `build_controller()` builds the boxed controller. Drives `examples/observe_state.rs` via `--scenario`. |
@@ -142,6 +142,35 @@ fallback; the visual-mode `apply_flight_plan` system swaps in the real `L1Contro
 `FlightPlanHandle`'s `.plan.ron` asset finishes loading (mirrors the RL-load pattern). It has
 no tuning pool — the inner loop uses `LevelHoldController` defaults; L1 period/damping live in
 the plan asset.
+
+### Wingman Controller Architecture
+
+`WingmanController` (`controllers/wingman.rs`) holds a fixed formation slot in the
+leader's body frame, reading the leader's live state from `ControllerContext` each
+tick. Three channels feed an inner `LevelHoldController` (same cascade pattern as
+Orbit/L1):
+
+1. **Altitude** — inner `target_altitude` ← world Y of the desired slot.
+2. **Range** (fore-aft along leader heading) — `range_pid` → Δairspeed → inner `target_airspeed`.
+3. **Lateral** (cross-track along the leader's right-wing axis) — a **heading-damped
+   two-stage cascade** mirroring the orbit/L1 lateral guidance:
+   - Stage 1: cross-track error → `lateral_pid` → demanded heading offset (crab angle).
+     Gains match the orbit `radial_pid` (`kp=0.002, kd=0.01`, ±0.5 rad).
+   - Stage 2: heading error (demanded heading vs. own ground track, same
+     `cross.atan2(dot)` math as `guidance::orbit_bank_command`, reusing
+     `ground_heading`) → `heading_pid` → bank, with `target_roll = -heading_pid(...)`
+     (same sign convention as orbit). `heading_pid` mirrors orbit (`kp=0.7, kd=0.1`,
+     ±π/3); its `kd` supplies the **heading-rate damping**.
+
+Driving bank from heading error (rather than mapping cross-track straight to bank)
+makes the on-slot equilibrium stable over multi-minute holds and lets the wingman
+re-capture the slot from an offset. The earlier direct position→bank loop lacked
+heading damping and **also used the divergent feedback sign**, so it spiraled away;
+both are guarded by `tests/wingman.rs::wingman_holds_slot_over_three_minutes` (180 s
+on-slot hold) and the `lateral_error_commands_restoring_bank_direction` /
+`heading_misalignment_commands_corrective_bank` unit tests. A too-aggressive
+`lateral_pid.kp` (≫0.002) re-introduces a sustained lateral oscillation, since the
+inner heading/roll loop is comparatively slow.
 
 ### Training Physics (Self-Contained)
 

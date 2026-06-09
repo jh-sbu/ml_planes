@@ -245,10 +245,13 @@ The scenario **passes** if, over that steady-state window:
 - fore-aft, lateral, and vertical slot errors each stay `≤ 5 m`
 - `yaw_deg` of the wingman stays bounded (does not grow monotonically)
 
-`WingmanController` is a pure lateral-position→bank loop with no heading
-damping: it HOLDS an on-slot equilibrium but spirals away from a large initial
-offset. Treat a monotonically growing `yaw_deg` / `pos_z` as **divergence** and
-FAIL, noting the wingman was likely spawned off-slot.
+`WingmanController`'s lateral guidance is a heading-damped cascade (cross-track
+error → demanded heading offset → heading error → bank). The on-slot equilibrium
+is stable over multi-minute holds, and the wingman also re-captures the slot from
+an initial offset (well-damped, small overshoot). Treat a monotonically growing
+`yaw_deg` / `pos_z`, or sustained large-amplitude lateral oscillation, as
+**divergence** and FAIL — that would indicate a regression in the lateral cascade
+(wrong sign or too-aggressive `lateral_pid` gain).
 
 ---
 
@@ -286,7 +289,8 @@ PASS/FAIL. No write-back.
 
 **Any fail →** print which scenario failed, the worst errors, and a brief
 diagnosis (trim offset / saturation / oscillation for PID; out-of-distribution
-operating point or bad policy for RL; off-slot spawn / spiral for formation).
+operating point or bad policy for RL; lateral-cascade regression — spiral or
+sustained oscillation — for formation).
 Do not offer write-back. For PID, suggest which gain to adjust and re-run.
 
 ---

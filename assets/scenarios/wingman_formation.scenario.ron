@@ -14,9 +14,10 @@
 // (-20, 0, -15) = (-20, 1000, -15).
 // The wingman spawns ON that slot, so this is a steady-state formation-HOLD
 // check (the slot error should stay near zero), consistent with the level-hold
-// "spawn at target" convention. WingmanController's guidance is a pure
-// lateral-position→bank loop with no heading damping, so it holds an on-slot
-// equilibrium but does not recover from a large initial offset.
+// "spawn at target" convention. WingmanController's lateral guidance is a
+// heading-damped cascade (cross-track error → demanded heading offset →
+// heading error → bank), so the on-slot equilibrium is stable over multi-minute
+// holds and the wingman also re-captures the slot from an initial offset.
 (
     steps: 1920,
     interval: 64,
