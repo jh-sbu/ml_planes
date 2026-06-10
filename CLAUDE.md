@@ -8,8 +8,8 @@
 - Physics: `bevy_rapier3d` (Rapier rigid-body dynamics)
 - Rendering: `bevy` + `bevy_egui` HUD (feature-flagged off for training)
 - Aerodynamics: custom coefficient-based model (coefficient tables in `.plane.ron` assets)
-- ML: `burn` (pure Rust; no Python, no IPC)
-- Asset format: RON (Rusty Object Notation); aerodynamic configs use Bevy's asset loader; reward/termination configs (`*.reward.ron` in `assets/training/`) and multi-plane scenarios (`*.scenario.ron` in `assets/scenarios/`) are loaded directly via `ron::de` (`implicit_some` enabled for scenarios) — no Bevy asset server required
+- ML: `burn` (pure Rust; no Python, no IPC). CPU `ndarray` backend at inference (the `inference` feature); GPU `wgpu` + `autodiff` for training (the `training` feature)
+- Asset format: RON (Rusty Object Notation). `.plane.ron` (aero config) and `.plan.ron` (flight plan) use Bevy's asset loader; `.tuning.ron` (PID gain pools), `*.reward.ron` (reward/termination, in `assets/training/`), `*.ppo.ron` (PPO hyperparameters, in `assets/training/`), and multi-plane `*.scenario.ron` (in `assets/scenarios/`) are loaded directly via `ron::de` (`implicit_some` enabled for scenarios) — no Bevy asset server required
 
 **Development philosophy:** Test-Driven Development (TDD) is mandatory. Write a failing test before writing any implementation code. The Red-Green-Refactor cycle governs all new features: red (failing test), green (minimal implementation to pass), refactor (clean up). The environment, aerodynamic model, and test suite must be solid before any controller or ML work begins.
 
@@ -21,20 +21,34 @@
 
 ```
 src/
-  aerodynamics/   # coefficient model, force/torque computation
+  aerodynamics/   # coefficient model (model.rs), force/torque computation
                   #   atmosphere.rs — ISA air_density(altitude)/density_ratio + standard constants
   plane/          # PlaneConfig asset, FlightState, ControlInputs, physics systems
-  controllers/    # FlightController trait, PID, LevelHold, Ascent, Orbit, HeadingHold, Wingman, L1 flight-plan, RL variants, ControllerKind
-                  #   guidance.rs — shared L1 + orbit bank-command primitives; flight_plan.rs — FlightPlan asset; l1.rs — L1Controller
+                  #   context.rs — ControllerContext (shared leader state for Wingman)
+  controllers/    # FlightController trait + ControllerKind factory. Controllers:
+                  #   manual.rs, level_hold.rs, heading_hold.rs, ascent.rs, orbit.rs,
+                  #   wingman.rs, l1.rs (L1 flight-plan), + 4 RL variants
+                  #   (rl_level_hold, rl_orbit, rl_orbit_residual, rl_lstm_orbit)
+                  #   pid.rs — PidController<T> utility struct (NOT a FlightController)
+                  #   guidance.rs — shared L1 + orbit bank-command primitives
+                  #   flight_plan.rs — FlightPlan asset; tuning.rs — per-plane gain pools
+                  #   selected_model.rs — model hot-swap; orbit_marker.rs; component.rs
   environment/    # infinite ground collider + shader, plane spawner
   camera/         # FreeLook and Follow camera modes
-  ui/             # egui HUD, extensible info panel
+  ui/             # egui HUD, map panel, time-acceleration control, file-load dialog
   scenario.rs     # multi-plane .scenario.ron model + controller factory (drives examples/observe_state.rs)
   training/
-    ppo/            # PPO trainer, rollout buffer, ActorCritic model
-    flight_env.rs   # shared 6-DOF Euler physics integration (integrate_state)
-    level_hold_env.rs
-    orbit_env.rs
+    env.rs          # TrainingEnv + CurriculumEnv traits, Observation/SpawnSpec/StepInfo
+    flight_env.rs   # shared 6-DOF Euler integrator (integrate_state); pub(crate)-private
+    level_hold_env.rs, orbit_env.rs, orbit_residual_env.rs, wu_orbit_env.rs
+    vec_env.rs      # VecEnv<E> — N parallel episodes
+    reward_config.rs, wu_orbit_reward.rs, ppo_config.rs   # RON-backed configs
+    bc.rs           # behavior cloning (DemonstrationEnv, collect_demonstrations, BcDataset)
+    eval.rs, eval_metrics.rs   # evaluate_policy, EvaluationSummary, TaskMetrics
+    ppo/            # MLP track: model.rs/trainer.rs/buffer.rs (ActorCritic, PpoTrainer)
+                    # LSTM track: lstm_model.rs/lstm_trainer.rs/lstm_buffer.rs
+                    # csv_log.rs — training-metric CSV logging
+  bin/              # train_ppo, train_bc, evaluate_policy (all required-features = training)
 ```
 
 ### Key Types
@@ -49,13 +63,23 @@ src/
 | `PidController<T>` | generic struct | PID with integral wind-up clamp and output limits |
 | `TrainingEnv` | trait | `reset()`, `step(action) -> (obs, reward, done, info)` |
 | `PlaneConfigHandle` | ECS component | Newtype wrapping `Handle<PlaneConfig>` — required because `Handle<T>` is not a `Component` in Bevy 0.18 |
-| `ControllerKind` | enum | Factory selector for all controller types; `build()` does bumpless integral seeding |
+| `ControllerKind` | enum | Factory selector for all controller types; `build()` does bumpless integral seeding. `ALL` cycle list is feature-gated (RL variants only under `inference`/`training`) |
+| `ManualController` | struct | Passthrough — applies raw keyboard/stick inputs, no autopilot |
 | `OrbitController` | struct | 3-level cascade PID orbit around a fixed world-frame point |
-| `RlOrbitController` | struct | Burn ActorCritic policy for orbit (obs dim=13); training-gated |
+| `HeadingHoldController` | struct | Holds a configurable heading via an inner level-hold cascade |
+| `RlLevelHoldController` | struct | Burn `ActorCritic` policy for level hold (obs dim=10); `inference`/`training`-gated |
+| `RlOrbitController` | struct | Burn `ActorCritic` policy for orbit (obs dim=13); `inference`/`training`-gated |
+| `RlOrbitResidualController` | struct | Burn `ActorCritic` policy emitting residual deltas added to the PID orbit baseline (obs dim=13); paired with `ResidualOrbitEnv` |
+| `RlLstmOrbitController` | struct | Recurrent `LstmActorCritic` orbit policy (Wu et al. FC-LSTM-FC); carries `LstmHiddenState` across steps; paired with `WuOrbitEnv` |
 | `LevelHoldRewardConfig` / `OrbitRewardConfig` | plain structs | Reward weights, scales, alive bonus, failure penalty, and termination thresholds; loaded from `assets/training/*.reward.ron` at training startup |
+| `WuOrbitRewardConfig` / `CurriculumStage` | plain structs/enum | Wu et al. multiplicative-Gaussian orbit reward (`R^TT × R^PS × R^RS`) + 3-stage curriculum; from `wu_orbit.reward.ron` |
+| `PpoHyperparams` | plain struct | PPO training-loop config (gamma, gae_lambda, clip, lr, …); from `assets/training/*.ppo.ron` |
 | `WingmanController` | struct | Formation flight; holds a fixed offset in the leader's body frame via a heading-damped lateral cascade (cross-track → heading → bank) |
 | `AscentController` | struct | Climbs to target altitude then latches to level hold |
 | `L1Controller` | struct | Follows a preset `FlightPlan` (waypoint sequences + orbit circles) via L1 nonlinear lateral guidance; built from the plan asset by `apply_flight_plan` |
+| `VecEnv<E>` | struct | Wraps any `TrainingEnv` to run N parallel episodes (seeds offset per env) |
+| `DemonstrationEnv` / `BcDataset` | trait / struct | Behavior cloning: `collect_demonstrations()` rolls out a PID expert into a supervised dataset for `train_bc` pretraining |
+| `EvaluationSummary` / `TaskMetrics` | structs | Policy-evaluation output from `evaluate_policy` (success rate + per-metric families) |
 | `Scenario` / `ResolvedScenario` | RON model (`src/scenario.rs`) | Multi-plane `.scenario.ron`: per-plane initial state, `.plane.ron` config, and a `ControllerSpec` (incl. `Wingman` peer references by name, optional inline tuning, cfg-gated RL specs). `resolve()` assigns `PlaneId`s and computes initial states; `build_controller()` builds the boxed controller. Drives `examples/observe_state.rs` via `--scenario`. |
 
 ### Physics Layering
@@ -102,20 +126,31 @@ Each `FlightController` declares which action space it uses (configurable per co
 |---|---|---|
 | Control surfaces | `[aileron, elevator, rudder, throttle]` | `[-1, 1]` |
 | Angular rate commands | `[roll_rate_cmd, pitch_rate_cmd, yaw_rate_cmd, thrust]` | `[-1, 1]` |
+| Residual (RL) | `[Δelevator, Δthrottle, Δaileron, Δrudder]` | `[-1, 1]` |
 
-The aerodynamic model maps whichever representation to net force and torque before applying to Rapier.
+The aerodynamic model maps whichever representation to net force and torque before
+applying to Rapier. The **residual** space (`RlOrbitResidualController` / `ResidualOrbitEnv`)
+adds each clamped delta on top of the PID orbit controller's output, so the policy only
+learns corrections to a working baseline. Training environments emit direct actions in
+`[elevator, throttle, aileron, rudder]` order (`direct_action_to_inputs`).
 
 ### Feature Flags
 
 ```toml
 [features]
 default = ["visual"]
-visual = ["bevy/default", "bevy_egui", "bevy_rapier3d/debug-render-3d"]
-training = ["burn"]
+visual = ["bevy/default", "bevy_egui", "rfd"]
+wasm = ["visual", "inference"]
+inference = ["burn/std", "burn/ndarray"]
+training = ["inference", "burn/wgpu", "burn/autodiff", "burn/train", "burn/tui"]
 ```
 
-- `visual` (default): full Bevy rendering pipeline + egui HUD + Rapier debug renderer
-- `training`: pulls in `burn`; no rendering, max-speed simulation (no `visual`)
+- `visual` (default): full Bevy rendering pipeline + egui HUD + `rfd` native file dialogs
+- `inference`: `burn` CPU (`ndarray`) backend only — loads/runs trained RL policies
+  headlessly, no training stack. Layered into both `visual` (via `wasm`) and `training`.
+- `training`: builds on `inference`, adds `burn` GPU (`wgpu`), `autodiff`, `train`, and
+  `tui`; no rendering, max-speed simulation
+- `wasm`: `visual` + `inference` — browser build (CPU inference in the renderer)
 - All tests run with `--no-default-features` (headless); no rendering in CI
 
 ### Orbit Controller Architecture
@@ -184,7 +219,8 @@ inner heading/roll loop is comparatively slow.
 
 ### Training Physics (Self-Contained)
 
-Training environments (`LevelHoldEnv`, `OrbitEnv`) do **not** use Bevy or Rapier. Instead:
+Training environments (`LevelHoldEnv`, `OrbitEnv`, `ResidualOrbitEnv`, `WuOrbitEnv`) do
+**not** use Bevy or Rapier. Instead:
 
 - `training/flight_env.rs::integrate_state()` provides 6-DOF Euler integration
 - Aerodynamics: shared `compute_aero_forces()` from `aerodynamics/`
@@ -196,12 +232,53 @@ Training environments (`LevelHoldEnv`, `OrbitEnv`) do **not** use Bevy or Rapier
 
 ### RL Inference Pattern
 
-Both `RlLevelHoldController` and `RlOrbitController` follow the same pattern:
+All four RL controllers (`RlLevelHoldController`, `RlOrbitController`,
+`RlOrbitResidualController`, `RlLstmOrbitController`) follow the same pattern:
 
-- Backend: `burn`'s `ActorCritic<NdArray>` (CPU; no GPU required at inference time)
+- Backend: `burn`'s `ActorCritic<NdArray>` (CPU; no GPU required at inference time).
+  `RlLstmOrbitController` uses the recurrent `LstmActorCritic` instead.
 - `Param` is not `Sync` → wrap model in `std::sync::Mutex`
 - Deterministic inference: `model.mean_action()` (no sampling noise, reproducible)
 - Action mapping: `throttle = (action[1] + 1.0) / 2.0` converts `[-1, 1]` network output to `[0, 1]`
+- `RlLstmOrbit` additionally threads `LstmHiddenState` from one step into the next, so the
+  policy must be stepped sequentially within an episode.
+- All are gated behind `inference` (loaded in the renderer) or `training`; the non-ML build
+  excludes them from `ControllerKind::ALL` entirely.
+
+### LSTM Recurrent RL
+
+A second PPO track trains recurrent policies for partially-observed orbit control:
+
+- `LstmActorCritic` (`ppo/lstm_model.rs`) — FC → LSTM → FC (Wu et al. 2025 architecture).
+- `LstmPpoTrainer` (`ppo/lstm_trainer.rs`) — trains over `LstmSequence`s held in
+  `LstmRolloutBuffer`; requires a `CurriculumEnv` so it can auto-advance the curriculum.
+- Driven by the `lstm_orbit` task in `train_ppo`; inference via `RlLstmOrbitController`.
+
+### Curriculum Training
+
+`WuOrbitEnv` (`training/wu_orbit_env.rs`) implements the optional `CurriculumEnv` trait
+(`advance_curriculum`, `curriculum_stage_name`, `next_stage_threshold`). `LstmPpoTrainer`
+advances stages automatically once the mean episode return crosses the stage threshold.
+Stages and the multiplicative-Gaussian reward (`R^TT × R^PS × R^RS`, `wu_orbit_reward.rs`)
+are configured in `assets/training/wu_orbit.reward.ron`. The env shares `OrbitEnv`'s
+spawn/termination logic and 13-dim observation (see the module header for documented
+deviations from the paper).
+
+### Behavior Cloning (Supervised Pretraining)
+
+`train_bc` pretrains a policy by imitating a PID expert before any PPO:
+
+- `DemonstrationEnv` + `collect_demonstrations()` roll out the expert into a `BcDataset`
+  (`training/bc.rs`).
+- The supervised model is saved under `models/<task>/<stem>.mpk`, then handed to
+  `train_ppo --init-from <path>` as a warm start. Supported for `level_hold` / `orbit`.
+
+### Policy Evaluation
+
+`evaluate_policy` (`src/bin/evaluate_policy.rs`, ndarray/CPU only) rolls a checkpoint
+out over N episodes and reports an `EvaluationSummary` (success rate + `TaskMetrics`
+families). Supports `--task {level_hold|orbit|residual_orbit|lstm_orbit}` and, for
+`lstm_orbit`, `--curriculum-stage {coarse|heading_fine|full}`.
 
 ### Adding a New `ControllerKind` (Checklist)
 
@@ -219,7 +296,7 @@ Both `RlLevelHoldController` and `RlOrbitController` follow the same pattern:
 **RL controller — all of the above, plus:**
 
 7. `kind.rs` — `model_dir()`: return the `models/` subdirectory name (e.g. `"orbit_residual"`)
-8. `main.rs` — `#[cfg(feature = "training")]` import block: import `XxxController` and `XxxConfig`
+8. `main.rs` — `#[cfg(any(feature = "inference", feature = "training"))]` import block: import `XxxController` and `XxxConfig`
 9. `main.rs` — `apply_rl_controller_switch` guard: add variant to the `matches!()` pattern
 10. `main.rs` — `apply_rl_controller_switch` match arm: call `::load()` with error fallback
 11. `main.rs` — `apply_model_switch` match arm: same `::load()` call for HUD model cycling
@@ -236,7 +313,7 @@ Both `RlLevelHoldController` and `RlOrbitController` follow the same pattern:
 | Compressibility | Ignored. Low-Mach assumption throughout. |
 | Structural limits | Not modeled. |
 | ML runtime | Pure Rust (`burn`). No Python, no IPC, no C extensions. |
-| Reward/termination tuning | Constants live in `assets/training/*.reward.ron`, loaded by `train_ppo` at startup. Edit the RON to retune without recompiling. `Default` impls mirror the file values so tests never need file I/O. Each task loads its baseline profile (`level_hold`/`orbit`/`wu_orbit`) by default; pass `--reward-config <path>` to `train_ppo`, `train_bc`, or `evaluate_policy` to load an alternate profile (a missing file falls back to the compiled defaults with a warning). |
+| Reward/termination tuning | Constants live in `assets/training/*.reward.ron`, loaded by `train_ppo` at startup. Edit the RON to retune without recompiling. `Default` impls mirror the file values so tests never need file I/O. Each task loads its baseline profile (`level_hold`/`orbit`/`wu_orbit`) by default; pass `--reward-config <path>` to `train_ppo`, `train_bc`, or `evaluate_policy` to load an alternate profile (a missing file falls back to the compiled defaults with a warning). PPO loop hyperparameters are similarly overridable via `--ppo-config <path>` (`assets/training/*.ppo.ron`). |
 | Multi-agent | Architecture must support one `Box<dyn FlightController>` per plane entity. Exact multi-agent training strategy deferred. |
 
 ---
@@ -246,7 +323,7 @@ Both `RlLevelHoldController` and `RlOrbitController` follow the same pattern:
 1. **Level flight hold** — COMPLETE. Cascade PID: altitude outer → pitch inner, airspeed, roll, yaw. RL policy trained (`RlLevelHoldController`, obs dim=10).
 2. **Ascent** — COMPLETE. Climbs to target altitude then hands off to level hold.
 3. **Formation flight (wingman)** — COMPLETE. Follows leader at fixed body-frame offset (`WingmanController`).
-4. **Circular orbit** — COMPLETE. 3-level cascade PID around world-frame point. RL policy trained (`RlOrbitController`, obs dim=13).
+4. **Circular orbit** — COMPLETE. 3-level cascade PID around world-frame point. Three RL variants: `RlOrbitController` (direct, obs dim=13), `RlOrbitResidualController` (residual over PID), and `RlLstmOrbitController` (recurrent, Wu-curriculum). Policies also reachable via behavior-cloning warm start.
 5. **Flight-plan following** — COMPLETE. `L1Controller` follows a preset `FlightPlan` (waypoint sequences + orbit circles) via L1 nonlinear lateral guidance. Replaces the former single-target `WaypointController`.
 6. **Aerial refueling** — NEXT. Approach lead plane from the rear to a docking position.
 7. *(extensible — add new `TrainingEnv` impls without changing core architecture)*
@@ -256,34 +333,38 @@ Both `RlLevelHoldController` and `RlOrbitController` follow the same pattern:
 ## 5. Key Dependencies
 
 ```toml
+[features]
+default = ["visual"]
+visual = ["bevy/default", "bevy_egui", "rfd"]
+wasm = ["visual", "inference"]
+inference = ["burn/std", "burn/ndarray"]
+training = ["inference", "burn/wgpu", "burn/autodiff", "burn/train", "burn/tui"]
+
 [dependencies]
 bevy = { version = "0.18", default-features = false, features = ["bevy_asset"] }
 bevy_rapier3d = { version = "0.33", default-features = false, features = ["dim3"] }
 ron = "0.8"
 serde = { version = "1", features = ["derive"] }
+bevy_egui = { version = "0.39", optional = true }
+rfd = { version = "0.15", optional = true }
+burn = { version = "0.20", optional = true, default-features = false }
 naga = { version = "26", features = ["termcolor"] }
 
-[dependencies.bevy_egui]
-version = "0.39"
-optional = true
-
-[dependencies.burn]
-version = "0.20"
-optional = true
-features = ["wgpu", "ndarray", "autodiff", "train", "tui"]
-
-[features]
-default = ["visual"]
-visual = ["bevy/default", "bevy_egui", "bevy_rapier3d/debug-render-3d"]
-training = ["burn"]
-
 [[bin]]
-name = "train_ppo"
+name = "train_ppo"        # required-features = ["training"]
 path = "src/bin/train_ppo.rs"
-required-features = ["training"]
+[[bin]]
+name = "train_bc"         # required-features = ["training"] — BC pretraining
+path = "src/bin/train_bc.rs"
+[[bin]]
+name = "evaluate_policy"  # required-features = ["training"] — policy rollout/metrics
+path = "src/bin/evaluate_policy.rs"
 ```
 
-> `burn` features: `ndarray` = CPU backend for inference (no GPU required in production); `wgpu` = GPU backend for training; `tui` = training progress display.
+> `burn` features are selected per crate-feature (`default-features = false`): `ndarray` =
+> CPU backend (enabled by `inference`, used in production and WASM); `wgpu` = GPU backend +
+> `autodiff`/`train` for training; `tui` = training progress display. `train_ppo` tasks:
+> `level_hold`, `orbit`, `residual_orbit`, `lstm_orbit`.
 
 > **Bevy feature flag note:** `default-features = false` disables all optional
 > subsystems. `bevy_asset` **is** an optional feature of the `bevy` meta-crate
@@ -376,8 +457,12 @@ app.add_plugins(EguiPlugin { enable_multipass_for_primary_context: false });
 - `pid_convergence.rs` — pure PID closed-loop step response
 - `spawn_reset.rs` — `TrainingEnv::reset()` produces correct initial `FlightState`
 - `level_hold.rs` — level-hold cascade convergence to target altitude
+- `heading_hold.rs` — heading-hold convergence to a commanded heading
 - `wingman.rs` — formation flight relative-position tracking
+- `flight_plan.rs` — L1 flight-plan leg sequencing / waypoint capture
+- `orbit_tune_sync.rs` — orbit tuning-pool / gain-sync invariants
 - `scenario.rs` — `.scenario.ron` parse/resolve/build + CSV header pinning (`ml_planes::scenario::CSV_HEADER`)
+- `rl_inference.rs` — RL controller load + deterministic inference (`inference`/`training`-gated)
 - `ppo_training.rs` — RL trainer instantiation (training-gated; run with `--features training`)
 
 ### Rules
