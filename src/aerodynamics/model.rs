@@ -1,7 +1,6 @@
+use crate::aerodynamics::atmosphere::{air_density, density_ratio};
 use crate::plane::{ControlInputs, FlightState, PlaneConfig};
 use bevy::math::Vec3;
-
-const AIR_DENSITY: f32 = 1.225; // kg/m³ at sea level
 
 /// Aerodynamic and thrust forces/torques in the body frame.
 #[derive(Debug, Clone, Default)]
@@ -25,8 +24,9 @@ pub fn compute_aero_forces(
         return AeroForces::default();
     }
 
-    // Dynamic pressure
-    let q_bar = 0.5 * AIR_DENSITY * v * v;
+    // Dynamic pressure (air density varies with altitude per the ISA model)
+    let rho = air_density(state.altitude);
+    let q_bar = 0.5 * rho * v * v;
 
     // Control surface deflections [rad]
     let delta_a = inputs.aileron * cfg.aileron_limit;
@@ -53,7 +53,8 @@ pub fn compute_aero_forces(
     // --- Forces ---
     let lift = q_bar * cfg.wing_area * cl;
     let drag = q_bar * cfg.wing_area * cd;
-    let thrust = inputs.throttle * cfg.thrust_max;
+    // Air-breathing thrust falls off with air density at altitude.
+    let thrust = inputs.throttle * cfg.thrust_max * density_ratio(state.altitude);
 
     // Rotate from wind axes (aligned with velocity) to body axes using alpha.
     // For small alpha this is approximately (thrust-drag, 0, lift), but at large
@@ -235,7 +236,7 @@ mod tests {
         state.alpha = 1.0;
 
         let forces = compute_aero_forces(&state, &zero_inputs(), &cfg);
-        let q_bar = 0.5 * AIR_DENSITY * 50.0f32 * 50.0;
+        let q_bar = 0.5 * air_density(state.altitude) * 50.0f32 * 50.0;
         let lift_clamped = q_bar * cfg.wing_area * cfg.cl_max; // CL = 1.4
         let lift_raw = q_bar * cfg.wing_area * (cfg.cl0 + cfg.cl_alpha * 1.0); // CL = 4.6
                                                                                // After the wind-to-body rotation the z-component scales with cos(alpha),
@@ -274,6 +275,88 @@ mod tests {
             forces.torque_body.y < 0.0,
             "pitch damping torque={:.1} should be negative for positive pitch rate",
             forces.torque_body.y
+        );
+    }
+
+    #[test]
+    fn lift_decreases_with_altitude() {
+        // Same airspeed/alpha at sea level vs 10 km: thinner air → less lift,
+        // tracking the ISA density ratio (q̄ ∝ ρ).
+        let cfg = jet_config();
+        let mut sea = zero_state();
+        sea.airspeed = 100.0;
+        sea.alpha = 0.0667;
+        let mut high = sea.clone();
+        high.altitude = 10_000.0;
+
+        let lift_sea = compute_aero_forces(&sea, &zero_inputs(), &cfg).force_body.z;
+        let lift_high = compute_aero_forces(&high, &zero_inputs(), &cfg)
+            .force_body
+            .z;
+
+        assert!(
+            lift_high < lift_sea,
+            "lift_high={lift_high:.1} should be < lift_sea={lift_sea:.1}"
+        );
+        let expected = lift_sea * density_ratio(10_000.0);
+        assert!(
+            (lift_high - expected).abs() < 1.0,
+            "lift_high={lift_high:.1} expected ≈{expected:.1} (sea×density_ratio)"
+        );
+    }
+
+    #[test]
+    fn drag_decreases_with_altitude() {
+        // Zero alpha, no throttle → body +X force is pure -drag; thinner air at
+        // altitude makes drag smaller in magnitude.
+        let cfg = jet_config();
+        let mut sea = zero_state();
+        sea.airspeed = 100.0;
+        let mut high = sea.clone();
+        high.altitude = 10_000.0;
+
+        let drag_sea = -compute_aero_forces(&sea, &zero_inputs(), &cfg).force_body.x;
+        let drag_high = -compute_aero_forces(&high, &zero_inputs(), &cfg)
+            .force_body
+            .x;
+
+        assert!(drag_sea > 0.0 && drag_high > 0.0);
+        assert!(
+            drag_high < drag_sea,
+            "drag_high={drag_high:.1} should be < drag_sea={drag_sea:.1}"
+        );
+        let expected = drag_sea * density_ratio(10_000.0);
+        assert!((drag_high - expected).abs() < 1.0);
+    }
+
+    #[test]
+    fn thrust_decreases_with_altitude() {
+        // Full throttle, zero alpha: body +X = thrust - drag. Thrust scales with
+        // the density ratio, so the net forward force drops at altitude.
+        let cfg = jet_config();
+        let mut inputs = zero_inputs();
+        inputs.throttle = 1.0;
+        let mut sea = zero_state();
+        sea.airspeed = 100.0;
+        let mut high = sea.clone();
+        high.altitude = 10_000.0;
+
+        // Isolate thrust: net_fx + drag = thrust, both at sea level and altitude.
+        let drag_only_sea = -compute_aero_forces(&sea, &zero_inputs(), &cfg).force_body.x;
+        let drag_only_high = -compute_aero_forces(&high, &zero_inputs(), &cfg)
+            .force_body
+            .x;
+        let thrust_sea = compute_aero_forces(&sea, &inputs, &cfg).force_body.x + drag_only_sea;
+        let thrust_high = compute_aero_forces(&high, &inputs, &cfg).force_body.x + drag_only_high;
+
+        assert!(
+            thrust_high < thrust_sea,
+            "thrust_high={thrust_high:.1} should be < thrust_sea={thrust_sea:.1}"
+        );
+        let expected = cfg.thrust_max * density_ratio(10_000.0);
+        assert!(
+            (thrust_high - expected).abs() < 1.0,
+            "thrust_high={thrust_high:.1} expected ≈{expected:.1}"
         );
     }
 }

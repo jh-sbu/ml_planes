@@ -22,6 +22,7 @@
 ```
 src/
   aerodynamics/   # coefficient model, force/torque computation
+                  #   atmosphere.rs — ISA air_density(altitude)/density_ratio + standard constants
   plane/          # PlaneConfig asset, FlightState, ControlInputs, physics systems
   controllers/    # FlightController trait, PID, LevelHold, Ascent, Orbit, HeadingHold, Wingman, L1 flight-plan, RL variants, ControllerKind
                   #   guidance.rs — shared L1 + orbit bank-command primitives; flight_plan.rs — FlightPlan asset; l1.rs — L1Controller
@@ -73,7 +74,16 @@ src/
 
 ### Aerodynamic Model (Linear Stability, Body Frame)
 
-Dynamic pressure: `q̄ = ½·ρ·V²`
+Dynamic pressure: `q̄ = ½·ρ(h)·V²`
+
+Air density `ρ` varies with altitude via the **International Standard Atmosphere**
+(`aerodynamics/atmosphere.rs::air_density`): troposphere (0–11 km) barometric power
+law over a −6.5 K/km lapse, then isothermal stratosphere (11–20 km). `air_density`
+reads `FlightState.altitude`, so every `q̄`-derived force (lift, drag, moments) thins
+with altitude automatically — no call-site changes. Air-breathing **thrust** also
+scales by the density ratio `ρ(h)/ρ₀` (`density_ratio`), so engines lose thrust at
+altitude. This single `compute_aero_forces` path is shared by the live Rapier sim and
+the self-contained training integrator, so both see the same altitude physics.
 
 | Force/Moment | Equation |
 |---|---|
