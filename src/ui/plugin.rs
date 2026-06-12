@@ -3,6 +3,7 @@ use bevy_egui::EguiPrimaryContextPass;
 
 use super::file_load::{poll_pending_loads, PendingLoads};
 use super::hud::draw_flight_hud;
+use super::lifecycle_panel::{draw_plane_panel, plane_lifecycle_hotkeys, PlanePanelState};
 use super::map::{draw_map, MapState};
 use super::time_control::{draw_time_control, SimSpeed};
 
@@ -13,10 +14,17 @@ impl Plugin for UiPlugin {
         app.init_resource::<PendingLoads>()
             .init_resource::<MapState>()
             .init_resource::<SimSpeed>()
+            .init_resource::<PlanePanelState>()
             .add_systems(
                 EguiPrimaryContextPass,
-                (draw_flight_hud, draw_map, draw_time_control),
+                (
+                    draw_flight_hud,
+                    draw_map,
+                    draw_time_control,
+                    draw_plane_panel,
+                ),
             )
+            .add_systems(Update, plane_lifecycle_hotkeys)
             .add_systems(PostUpdate, poll_pending_loads);
     }
 }

@@ -39,6 +39,7 @@ fn spawn_then_sync_flight_state() {
                     &mut commands,
                     &mut ids,
                     &asset_server,
+                    "planes/generic_jet.plane.ron",
                     &spec,
                     Box::new(ManualController::new()),
                     ControllerKind::Manual,

@@ -16,6 +16,13 @@ use ml_planes::plane::{PlaneConfig, PlanePlugin};
 /// resources in their `finish()` impl are properly set up (required when
 /// driving the app manually via `app.update()` instead of `app.run()`).
 pub fn build_headless_app() -> App {
+    build_headless_app_with(|_| {})
+}
+
+/// Like [`build_headless_app`], but runs `configure` to add extra plugins or
+/// systems *before* `app.finish()` (plugins cannot be added after finish).
+#[allow(dead_code)]
+pub fn build_headless_app_with(configure: impl FnOnce(&mut App)) -> App {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins)
         .add_plugins(bevy::transform::TransformPlugin)
@@ -32,6 +39,8 @@ pub fn build_headless_app() -> App {
     app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(
         1.0 / 64.0,
     )));
+
+    configure(&mut app);
 
     // Finalize plugin setup — equivalent to what app.run() does internally.
     // Required when driving the app manually via app.update().

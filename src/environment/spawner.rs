@@ -3,7 +3,8 @@ use bevy_rapier3d::prelude::*;
 
 use crate::controllers::{ActiveController, ControllerKind, FlightController};
 use crate::plane::{
-    ControlInputs, FlightState, NextPlaneId, PlaneConfig, PlaneConfigHandle, PlaneId, SpawnedPlane,
+    ControlInputs, FlightState, NextPlaneId, PlaneConfig, PlaneConfigHandle, PlaneId, PlaneIndex,
+    SpawnedPlane,
 };
 use crate::training::SpawnSpec;
 
@@ -15,23 +16,47 @@ use super::visual::PhysicsInterp;
 #[derive(Event, Debug, Clone)]
 pub struct PlaneGroundContactEvent(pub Entity);
 
-/// Spawn a physics-ready plane entity and assign it a stable `PlaneId`.
-///
-/// `ids` allocates the next available id (auto-incremented).
-/// `cfg` is used immediately for Rapier `AdditionalMassProperties`; the async-
-/// loaded `PlaneConfigHandle` stored on the entity drives aerodynamic forces at
-/// runtime once the asset is ready.
-pub fn spawn_plane(
-    commands: &mut Commands,
-    ids: &mut NextPlaneId,
-    asset_server: &AssetServer,
-    spec: &SpawnSpec,
-    controller: Box<dyn FlightController>,
-    kind: ControllerKind,
-    cfg: &PlaneConfig,
-) -> SpawnedPlane {
-    let plane_id = PlaneId(ids.0);
-    ids.0 += 1;
+/// Mass/inertia (and control limits) for the generic-jet airframe, used to seed
+/// Rapier `AdditionalMassProperties` at spawn time. Aerodynamic coefficients are
+/// left at zero — the async-loaded `.plane.ron` handle drives aero forces once
+/// the asset is ready. Shared by `main.rs`'s startup spawns and the runtime
+/// `SpawnPlaneCommand` so both seed identical body mass.
+pub fn generic_jet_spawn_config() -> PlaneConfig {
+    PlaneConfig {
+        wing_area: 20.0,
+        mean_chord: 2.0,
+        wing_span: 10.0,
+        mass: 5000.0,
+        inertia: Vec3::new(10000.0, 40000.0, 45000.0),
+        cl0: 0.0,
+        cl_alpha: 0.0,
+        cl_delta_e: 0.0,
+        cl_max: 1.4,
+        cd0: 0.0,
+        cd_induced: 0.0,
+        cm0: 0.0,
+        cm_alpha: 0.0,
+        cm_q: 0.0,
+        cm_delta_e: 0.0,
+        cl_beta: 0.0,
+        cl_p: 0.0,
+        cl_r: 0.0,
+        cl_delta_a: 0.0,
+        cn_beta: 0.0,
+        cn_r: 0.0,
+        cn_delta_r: 0.0,
+        thrust_max: 0.0,
+        aileron_limit: 0.4363,
+        elevator_limit: 0.3491,
+        rudder_limit: 0.2618,
+    }
+}
+
+/// Resolve a `SpawnSpec` into the concrete initial `FlightState` a spawned plane
+/// starts with, applying the same defaults `spawn_plane` uses. Shared so callers
+/// that need to construct a controller *before* spawning (e.g. the lifecycle
+/// spawn command) build it from the exact state the plane will hold.
+pub fn initial_state_from_spec(spec: &SpawnSpec) -> FlightState {
     let position = spec.position.unwrap_or(Vec3::new(0.0, 500.0, 0.0));
     // -π/2 around X maps body +Z (cockpit up) → world +Y (up).
     let attitude = spec
@@ -39,10 +64,45 @@ pub fn spawn_plane(
         .unwrap_or(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2));
     let linvel = spec.velocity.unwrap_or(Vec3::new(100.0, 0.0, 0.0));
     let angvel_body = spec.angular_velocity.unwrap_or(Vec3::ZERO);
-    // Body-frame angular velocity → world frame for Rapier.
-    let angvel_world = attitude.mul_vec3(angvel_body);
 
-    let handle: Handle<PlaneConfig> = asset_server.load("planes/generic_jet.plane.ron");
+    let mut s = FlightState {
+        position,
+        velocity: linvel,
+        attitude,
+        angular_velocity: angvel_body,
+        ..Default::default()
+    };
+    s.update_air_data();
+    s
+}
+
+/// Spawn a physics-ready plane entity and assign it a stable `PlaneId`.
+///
+/// `ids` allocates the next available id (auto-incremented).
+/// `config_path` is the `.plane.ron` asset loaded asynchronously to drive
+/// aerodynamic forces once ready; `cfg` is used immediately for Rapier
+/// `AdditionalMassProperties` (mass/inertia) at spawn time. Pass a `cfg` whose
+/// mass/inertia match `config_path` — they describe the same airframe.
+pub fn spawn_plane(
+    commands: &mut Commands,
+    ids: &mut NextPlaneId,
+    asset_server: &AssetServer,
+    config_path: &str,
+    spec: &SpawnSpec,
+    controller: Box<dyn FlightController>,
+    kind: ControllerKind,
+    cfg: &PlaneConfig,
+) -> SpawnedPlane {
+    let plane_id = PlaneId(ids.0);
+    ids.0 += 1;
+    let state = initial_state_from_spec(spec);
+    let position = state.position;
+    let attitude = state.attitude;
+    let linvel = state.velocity;
+    // Body-frame angular velocity → world frame for Rapier.
+    let angvel_world = attitude.mul_vec3(state.angular_velocity);
+
+    let handle: Handle<PlaneConfig> = asset_server.load(config_path.to_string());
 
     let entity = commands
         .spawn((
@@ -59,21 +119,15 @@ pub fn spawn_plane(
                 principal_inertia: cfg.inertia,
                 principal_inertia_local_frame: Quat::IDENTITY,
             }),
-            {
-                let mut s = FlightState {
-                    position: position,
-                    velocity: linvel,
-                    attitude,
-                    angular_velocity: angvel_body,
-                    ..Default::default()
-                };
-                s.update_air_data();
-                s
-            },
+            state,
             ControlInputs::default(),
             ActiveController(controller),
             kind,
-            plane_id,
+            // `PlaneIndex` is the display/cycle ordinal used by the camera, map,
+            // and HUD. Deriving it from the already-unique, monotonic `PlaneId`
+            // guarantees every spawned plane is indexed automatically — callers
+            // never have to insert it by hand.
+            (plane_id, PlaneIndex(plane_id.0)),
             PlaneConfigHandle(handle),
             Transform::from_translation(position).with_rotation(attitude),
         ))

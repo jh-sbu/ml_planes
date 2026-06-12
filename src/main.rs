@@ -11,11 +11,10 @@ use ml_planes::controllers::{
     RlLevelHoldController, RlLstmOrbitConfig, RlLstmOrbitController, RlOrbitConfig,
     RlOrbitController, RlOrbitResidualConfig, RlOrbitResidualController, SelectedModel,
 };
-use ml_planes::environment::{spawn_plane, EnvironmentPlugin};
-use ml_planes::plane::{
-    config::PlaneConfig, ControlInputs, FlightPlanHandle, FlightState, NextPlaneId, PlaneIndex,
-    PlanePlugin,
+use ml_planes::environment::{
+    generic_jet_spawn_config, spawn_plane, EnvironmentPlugin, LifecyclePlugin,
 };
+use ml_planes::plane::{ControlInputs, FlightPlanHandle, FlightState, NextPlaneId, PlanePlugin};
 use ml_planes::training::SpawnSpec;
 
 #[cfg(all(
@@ -66,6 +65,7 @@ fn main() {
     app.add_plugins(RapierPhysicsPlugin::<NoUserData>::default().in_fixed_schedule());
     app.add_plugins(PlanePlugin);
     app.add_plugins(EnvironmentPlugin);
+    app.add_plugins(LifecyclePlugin);
 
     #[cfg(feature = "visual")]
     {
@@ -121,37 +121,9 @@ fn main() {
 }
 
 fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut ids: ResMut<NextPlaneId>) {
-    // Mass/inertia values match assets/planes/generic_jet.plane.ron.
-    // Only used for AdditionalMassProperties at spawn time.
-    // Aerodynamic coefficients are ignored here; the async-loaded handle drives aero.
-    let cfg = PlaneConfig {
-        wing_area: 20.0,
-        mean_chord: 2.0,
-        wing_span: 10.0,
-        mass: 5000.0,
-        inertia: Vec3::new(10000.0, 40000.0, 45000.0),
-        cl0: 0.0,
-        cl_alpha: 0.0,
-        cl_delta_e: 0.0,
-        cl_max: 1.4,
-        cd0: 0.0,
-        cd_induced: 0.0,
-        cm0: 0.0,
-        cm_alpha: 0.0,
-        cm_q: 0.0,
-        cm_delta_e: 0.0,
-        cl_beta: 0.0,
-        cl_p: 0.0,
-        cl_r: 0.0,
-        cl_delta_a: 0.0,
-        cn_beta: 0.0,
-        cn_r: 0.0,
-        cn_delta_r: 0.0,
-        thrust_max: 0.0,
-        aileron_limit: 0.4363,
-        elevator_limit: 0.3491,
-        rudder_limit: 0.2618,
-    };
+    // Mass/inertia for the Rapier body at spawn time; the async-loaded
+    // `.plane.ron` handle drives aerodynamics once ready.
+    let cfg = generic_jet_spawn_config();
 
     // --- Leader plane: LevelHold at 1000 m / 100 m/s ---
     let leader_pos = Vec3::new(0.0, 1000.0, 0.0);
@@ -171,6 +143,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut ids: ResMut
         &mut commands,
         &mut ids,
         &asset_server,
+        "planes/generic_jet.plane.ron",
         &SpawnSpec {
             position: Some(leader_pos),
             velocity: Some(leader_vel),
@@ -180,8 +153,6 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut ids: ResMut
         ControllerKind::LevelHold,
         &cfg,
     );
-    commands.entity(leader.entity).insert(PlaneIndex(1));
-
     #[cfg(feature = "visual")]
     {
         let tuning_handle: Handle<PlaneTuning> = asset_server.load("planes/generic_jet.tuning.ron");
@@ -208,6 +179,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut ids: ResMut
         &mut commands,
         &mut ids,
         &asset_server,
+        "planes/generic_jet.plane.ron",
         &SpawnSpec {
             position: Some(wingman_pos),
             velocity: Some(leader_vel),
@@ -223,9 +195,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut ids: ResMut
         &cfg,
     );
 
-    commands
-        .entity(wingman.entity)
-        .insert((offset, PlaneIndex(2)));
+    commands.entity(wingman.entity).insert(offset);
 
     // --- PID orbit plane: 3000 m radius around origin at 1200 m / 100 m/s ---
     let orbit_radius = 3000.0;
@@ -254,10 +224,14 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut ids: ResMut
         orbit_direction,
     );
 
+    // Only referenced by the visual tuning block below; `spawn_plane` already
+    // indexed it, so the entity handle is unused in headless builds.
+    #[cfg_attr(not(feature = "visual"), allow(unused_variables))]
     let pid_orbit = spawn_plane(
         &mut commands,
         &mut ids,
         &asset_server,
+        "planes/generic_jet.plane.ron",
         &SpawnSpec {
             position: Some(pid_orbit_pos),
             velocity: Some(pid_orbit_vel),
@@ -268,8 +242,6 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut ids: ResMut
         ControllerKind::Orbit,
         &cfg,
     );
-    commands.entity(pid_orbit.entity).insert(PlaneIndex(3));
-
     #[cfg(feature = "visual")]
     {
         let tuning_handle: Handle<PlaneTuning> = asset_server.load("planes/generic_jet.tuning.ron");
@@ -306,6 +278,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut ids: ResMut
                         &mut commands,
                         &mut ids,
                         &asset_server,
+                        "planes/generic_jet.plane.ron",
                         &SpawnSpec {
                             position: Some(rl_orbit_pos),
                             velocity: Some(rl_orbit_vel),
@@ -318,7 +291,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut ids: ResMut
                     );
                     commands
                         .entity(rl_orbit.entity)
-                        .insert((PlaneIndex(4), SelectedModel(model_path.to_string())));
+                        .insert(SelectedModel(model_path.to_string()));
                 }
                 Err(e) => eprintln!("Failed to load RL orbit model from {model_path}.mpk: {e}"),
             }
@@ -348,6 +321,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut ids: ResMut
                     &mut commands,
                     &mut ids,
                     &asset_server,
+                    "planes/generic_jet.plane.ron",
                     &SpawnSpec {
                         position: Some(rl_orbit_pos),
                         velocity: Some(rl_orbit_vel),
@@ -358,10 +332,9 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut ids: ResMut
                     ControllerKind::RlOrbit,
                     &cfg,
                 );
-                commands.entity(rl_orbit.entity).insert((
-                    PlaneIndex(4),
-                    SelectedModel("models/orbit/ppo_orbit_1".to_string()),
-                ));
+                commands
+                    .entity(rl_orbit.entity)
+                    .insert(SelectedModel("models/orbit/ppo_orbit_1".to_string()));
             }
             Err(e) => eprintln!("Failed to load embedded RL orbit model: {e}"),
         }
@@ -384,6 +357,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut ids: ResMut
                         &mut commands,
                         &mut ids,
                         &asset_server,
+                        "planes/generic_jet.plane.ron",
                         &SpawnSpec {
                             position: Some(rl_pos),
                             velocity: Some(leader_vel),
@@ -395,7 +369,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut ids: ResMut
                     );
                     commands
                         .entity(rl_plane.entity)
-                        .insert((PlaneIndex(5), SelectedModel(model_path.to_string())));
+                        .insert(SelectedModel(model_path.to_string()));
                 }
                 Err(e) => eprintln!("Failed to load RL model from {model_path}.mpk: {e}"),
             }
@@ -415,6 +389,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut ids: ResMut
                     &mut commands,
                     &mut ids,
                     &asset_server,
+                    "planes/generic_jet.plane.ron",
                     &SpawnSpec {
                         position: Some(rl_pos),
                         velocity: Some(leader_vel),
@@ -424,9 +399,8 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut ids: ResMut
                     ControllerKind::RlLevelHold,
                     &cfg,
                 );
-                commands.entity(rl_plane.entity).insert((
-                    PlaneIndex(5),
-                    SelectedModel("models/level_hold/ppo_level_hold".to_string()),
+                commands.entity(rl_plane.entity).insert(SelectedModel(
+                    "models/level_hold/ppo_level_hold".to_string(),
                 ));
             }
             Err(e) => eprintln!("Failed to load embedded RL level-hold model: {e}"),
@@ -454,6 +428,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut ids: ResMut
         &mut commands,
         &mut ids,
         &asset_server,
+        "planes/generic_jet.plane.ron",
         &SpawnSpec {
             position: Some(fp_pos),
             velocity: Some(fp_vel),
@@ -464,10 +439,9 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut ids: ResMut
         ControllerKind::FlightPlan,
         &cfg,
     );
-    commands.entity(fp_plane.entity).insert((
-        PlaneIndex(6),
-        FlightPlanHandle(asset_server.load("plans/patrol.plan.ron")),
-    ));
+    commands
+        .entity(fp_plane.entity)
+        .insert(FlightPlanHandle(asset_server.load("plans/patrol.plan.ron")));
 }
 
 fn configure_origin_orbit(

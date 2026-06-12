@@ -34,8 +34,13 @@ src/
                   #   flight_plan.rs — FlightPlan asset; tuning.rs — per-plane gain pools
                   #   selected_model.rs — model hot-swap; orbit_marker.rs; component.rs
   environment/    # infinite ground collider + shader, plane spawner
+                  #   spawner.rs — spawn_plane (auto-assigns PlaneId + PlaneIndex)
+                  #   lifecycle.rs — LifecyclePlugin: Spawn/RemovePlaneCommand observers
+                  #     + cleanup_orphaned_wingmen (headless-safe; no rendering deps)
   camera/         # FreeLook and Follow camera modes
+                  #   recover_camera_on_target_loss — Follow(dead) → FreeLook
   ui/             # egui HUD, map panel, time-acceleration control, file-load dialog
+                  #   lifecycle_panel.rs — "Planes" roster/spawn panel + N/Delete hotkeys
   scenario.rs     # multi-plane .scenario.ron model + controller factory (drives examples/observe_state.rs)
   training/
     env.rs          # TrainingEnv + CurriculumEnv traits, Observation/SpawnSpec/StepInfo
@@ -216,6 +221,30 @@ on-slot hold) and the `lateral_error_commands_restoring_bank_direction` /
 `heading_misalignment_commands_corrective_bank` unit tests. A too-aggressive
 `lateral_pid.kp` (≫0.002) re-introduces a sustained lateral oscillation, since the
 inner heading/roll loop is comparatively slow.
+
+### Runtime Plane Lifecycle
+
+Planes can be added/removed at runtime via observer commands (`environment/lifecycle.rs`,
+`LifecyclePlugin`, registered headless + visual since it has no rendering deps):
+
+- `SpawnPlaneCommand { spec, kind, config_path }` / `RemovePlaneCommand(Entity)` — fired
+  with `commands.trigger(..)` (Bevy 0.18 observer events). The spawn observer builds the
+  controller from the spawn-state via `ControllerKind::build()` (valid PID fallback for
+  Wingman/FlightPlan/RL) and calls `spawn_plane`; the remove observer despawns (tolerant of
+  stale entities). Ground-contact auto-removal is **out of scope** — `PlaneGroundContactEvent`
+  still fires but nothing observes it.
+- **Automatic indexing:** `spawn_plane` now takes a `config_path: &str` (per-plane
+  `.plane.ron`, no longer hardcoded) and inserts `PlaneIndex(plane_id.0)` itself — every
+  spawned plane is automatically visible to camera cycling, the map, and the HUD. Callers no
+  longer hand-insert `PlaneIndex`. `generic_jet_spawn_config()` supplies the shared spawn-time
+  mass/inertia.
+- **Removal cleanup:** `cleanup_orphaned_wingmen` (Update, headless-safe) flips a wingman whose
+  `leader_id` is no longer live to `ControllerKind::LevelHold`; `recover_camera_on_target_loss`
+  (visual) drops the camera from `Follow(dead)` back to `FreeLook` so it/the HUD don't freeze.
+- **UI (visual):** the bottom-left **Planes** panel (`ui/lifecycle_panel.rs`) lists live planes
+  with Remove buttons and a spawn form (kind dropdown + config path), plus hotkeys **`N`**
+  (spawn ahead of camera) and **`Delete`** (remove followed); both suppressed while egui has
+  keyboard focus.
 
 ### Training Physics (Self-Contained)
 
@@ -462,6 +491,7 @@ app.add_plugins(EguiPlugin { enable_multipass_for_primary_context: false });
 - `flight_plan.rs` — L1 flight-plan leg sequencing / waypoint capture
 - `orbit_tune_sync.rs` — orbit tuning-pool / gain-sync invariants
 - `scenario.rs` — `.scenario.ron` parse/resolve/build + CSV header pinning (`ml_planes::scenario::CSV_HEADER`)
+- `lifecycle.rs` — runtime spawn/remove commands, auto-indexing, orphaned-wingman + camera cleanup (camera case is `visual`-gated)
 - `rl_inference.rs` — RL controller load + deterministic inference (`inference`/`training`-gated)
 - `ppo_training.rs` — RL trainer instantiation (training-gated; run with `--features training`)
 

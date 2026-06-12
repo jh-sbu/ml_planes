@@ -2,8 +2,8 @@ use bevy::prelude::*;
 
 use super::mode::CameraMode;
 use super::systems::{
-    cycle_camera_mode, handle_follow_camera_input, spawn_camera, update_follow_camera,
-    update_free_look_camera,
+    cycle_camera_mode, handle_follow_camera_input, recover_camera_on_target_loss, spawn_camera,
+    update_follow_camera, update_free_look_camera,
 };
 
 pub struct CameraPlugin;
@@ -16,6 +16,7 @@ impl Plugin for CameraPlugin {
         app.add_systems(
             Update,
             (
+                recover_camera_on_target_loss,
                 cycle_camera_mode,
                 handle_follow_camera_input,
                 update_follow_camera,

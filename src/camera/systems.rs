@@ -108,6 +108,22 @@ pub fn cycle_camera_mode(
     };
 }
 
+/// Fall back to free-look if the followed plane was removed. Without this the
+/// camera (and the HUD that keys off the followed entity) freezes on a dead
+/// entity — `update_follow_camera` silently early-returns when its target query
+/// fails. Runs before the follow systems so the corrected mode takes effect the
+/// same frame the target disappears.
+pub fn recover_camera_on_target_loss(
+    mut mode: ResMut<CameraMode>,
+    planes: Query<Entity, With<FlightState>>,
+) {
+    if let CameraMode::Follow(target) = *mode {
+        if planes.get(target).is_err() {
+            *mode = CameraMode::FreeLook;
+        }
+    }
+}
+
 pub fn update_free_look_camera(
     mode: Res<CameraMode>,
     map: Res<MapState>,
