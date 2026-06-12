@@ -67,11 +67,7 @@ pub fn draw_flight_hud(
     let camera_label = match *mode {
         CameraMode::FreeLook => "Camera: Free Look".to_string(),
         CameraMode::Follow(entity) => {
-            let n = pairs
-                .iter()
-                .position(|&(e, _, _)| e == entity)
-                .map(|i| i + 1)
-                .unwrap_or(0);
+            let n = camera_follow_index(&pairs, entity);
             format!("Camera: Follow Plane {}", n)
         }
     };
@@ -618,6 +614,19 @@ pub fn draw_flight_hud(
         });
 }
 
+/// Display number for the followed plane: its stable `PlaneIndex` (the `u32` in
+/// each `pairs` tuple), **not** its position in the sorted list. Using the index
+/// keeps the top-HUD camera label consistent with the bottom Planes panel, the
+/// map, and the leader combo when indices are non-contiguous (e.g. after a
+/// lower-indexed plane is removed). Returns `0` if `entity` is not live.
+fn camera_follow_index(pairs: &[(Entity, PlaneId, u32)], entity: Entity) -> u32 {
+    pairs
+        .iter()
+        .find(|&&(e, _, _)| e == entity)
+        .map(|&(_, _, idx)| idx)
+        .unwrap_or(0)
+}
+
 /// Returns the filename stem from a path like `"models/level_hold/ppo_level_hold"`.
 #[cfg(any(feature = "inference", feature = "training"))]
 fn path_stem(path: &str) -> &str {
@@ -712,4 +721,31 @@ fn add_surface_bar(
         let mut v = value;
         ui.add(egui::Slider::new(&mut v, range).show_value(true));
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entity(i: u32) -> Entity {
+        Entity::from_raw_u32(i).expect("valid test entity index")
+    }
+
+    #[test]
+    fn camera_follow_index_uses_plane_index_not_list_position() {
+        // State after plane #1 was removed: live indices are non-contiguous [2, 3].
+        let e2 = entity(20);
+        let e3 = entity(30);
+        let pairs = vec![(e2, PlaneId(2), 2u32), (e3, PlaneId(3), 3u32)];
+
+        // e2 is first in the (sorted) list but its stable index is 2, not 1.
+        assert_eq!(camera_follow_index(&pairs, e2), 2);
+        assert_eq!(camera_follow_index(&pairs, e3), 3);
+    }
+
+    #[test]
+    fn camera_follow_index_missing_entity_returns_zero() {
+        let pairs = vec![(entity(20), PlaneId(2), 2u32)];
+        assert_eq!(camera_follow_index(&pairs, entity(99)), 0);
+    }
 }
