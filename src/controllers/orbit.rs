@@ -51,7 +51,7 @@ pub struct OrbitParams {
     pub direction: OrbitDirection,
 }
 
-pub const ORBIT_OBS_DIM: usize = 13;
+pub const ORBIT_OBS_DIM: usize = 14;
 
 #[derive(Clone, Copy, Debug)]
 pub struct OrbitObservationTerms {
@@ -157,6 +157,8 @@ pub fn build_orbit_observation_from_terms(
         state.beta / 0.5,
         r / 1.0,
         state.velocity.y / 30.0,
+        // Remaining fuel/charge fraction in [0, 1] (last element; matches level-hold).
+        state.fuel_fraction_obs(),
     ]
 }
 
@@ -349,6 +351,8 @@ mod tests {
             beta: 0.0,
             airspeed,
             altitude: position.y,
+
+            consumable_remaining: f32::INFINITY,
         }
     }
 
@@ -522,9 +526,32 @@ mod tests {
             OrbitDirection::CounterClockwise,
         );
         assert_eq!(obs.len(), ORBIT_OBS_DIM);
+        // Vertical speed is now the second-to-last element (fuel fraction is last).
+        assert!(
+            (obs[ORBIT_OBS_DIM - 2] - 0.5).abs() < 1e-5,
+            "vertical speed obs={}",
+            obs[ORBIT_OBS_DIM - 2]
+        );
+    }
+
+    #[test]
+    fn orbit_observation_appends_fuel_fraction() {
+        let mut state = make_state(Vec3::new(0.0, ALT, R), Vec3::new(V, 0.0, 0.0));
+        // Half a (2000-scale) tank → fuel obs = 0.5 as the final element.
+        state.consumable_remaining = 1000.0;
+        let obs = build_orbit_observation(
+            &state,
+            0.0,
+            0.0,
+            R,
+            ALT,
+            state.airspeed,
+            OrbitDirection::CounterClockwise,
+        );
+        assert_eq!(obs.len(), ORBIT_OBS_DIM);
         assert!(
             (obs[ORBIT_OBS_DIM - 1] - 0.5).abs() < 1e-5,
-            "vertical speed obs={}",
+            "fuel fraction obs={}",
             obs[ORBIT_OBS_DIM - 1]
         );
     }

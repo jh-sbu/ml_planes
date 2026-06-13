@@ -9,6 +9,18 @@ pub struct AeroForces {
     pub torque_body: Vec3, // [N·m] body frame
 }
 
+/// Engine thrust [N] for the current throttle, scaled by air density at altitude
+/// (air-breathing thrust falls off with altitude). Returns 0 when the plane is out of
+/// consumable (flameout / dead battery). Shared by [`compute_aero_forces`] and the
+/// per-tick fuel-burn accounting so the live sim and training integrator agree.
+pub fn engine_thrust(state: &FlightState, inputs: &ControlInputs, cfg: &PlaneConfig) -> f32 {
+    if state.consumable_remaining <= 0.0 {
+        // Out of fuel / charge → flameout.
+        return 0.0;
+    }
+    inputs.throttle * cfg.thrust_max * density_ratio(state.altitude)
+}
+
 /// Compute aerodynamic forces and torques given the current flight state,
 /// control inputs, and plane configuration.
 ///
@@ -53,8 +65,9 @@ pub fn compute_aero_forces(
     // --- Forces ---
     let lift = q_bar * cfg.wing_area * cl;
     let drag = q_bar * cfg.wing_area * cd;
-    // Air-breathing thrust falls off with air density at altitude.
-    let thrust = inputs.throttle * cfg.thrust_max * density_ratio(state.altitude);
+    // Air-breathing thrust falls off with air density at altitude; zero when out of
+    // consumable (flameout). Shared with the per-tick fuel-burn accounting.
+    let thrust = engine_thrust(state, inputs, cfg);
 
     // Rotate from wind axes (aligned with velocity) to body axes using alpha.
     // For small alpha this is approximately (thrust-drag, 0, lift), but at large
@@ -125,6 +138,7 @@ mod tests {
             cn_r: -0.12,
             cn_delta_r: -0.10,
             thrust_max: 60000.0,
+            powerplant: Default::default(),
             aileron_limit: 0.4363,
             elevator_limit: 0.3491,
             rudder_limit: 0.2618,
@@ -137,6 +151,27 @@ mod tests {
 
     fn zero_inputs() -> ControlInputs {
         ControlInputs::default()
+    }
+
+    #[test]
+    fn engine_thrust_flames_out_when_empty() {
+        let cfg = jet_config();
+        let mut inputs = zero_inputs();
+        inputs.throttle = 1.0;
+        let mut state = zero_state();
+        state.altitude = 0.0;
+
+        // Fuel remaining → normal (positive) thrust.
+        state.consumable_remaining = 100.0;
+        let thrust_full = engine_thrust(&state, &inputs, &cfg);
+        assert!(
+            thrust_full > 0.0,
+            "expected positive thrust, got {thrust_full}"
+        );
+
+        // Empty tank → flameout (zero thrust).
+        state.consumable_remaining = 0.0;
+        assert_eq!(engine_thrust(&state, &inputs, &cfg), 0.0);
     }
 
     #[test]

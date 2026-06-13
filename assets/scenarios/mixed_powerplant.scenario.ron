@@ -1,0 +1,32 @@
+// Mixed powerplant demo: a jet-fuel plane and a battery-electric plane flying
+// level side by side. Exercises both Powerplant kinds end to end.
+//
+// Run: cargo run --example observe_state --no-default-features -- \
+//        --scenario assets/scenarios/mixed_powerplant.scenario.ron --steps 1920 --interval 64
+//
+// The jet (embedded generic_jet config) burns fuel and lightens as it flies; the
+// electric plane (electric_trainer config) draws charge at constant mass. In the
+// visual app the HUD labels them "Fuel … kg" vs "Charge … kWh" respectively.
+(
+    steps: 1920,
+    interval: 64,
+    planes: [
+        (
+            name: "jet",
+            position: (0.0, 500.0, 0.0),
+            controller: LevelHold(
+                altitude: 500.0,
+                airspeed: 100.0,
+            ),
+        ),
+        (
+            name: "electric",
+            config: "assets/planes/electric_trainer.plane.ron",
+            position: (0.0, 500.0, 60.0),
+            controller: LevelHold(
+                altitude: 500.0,
+                airspeed: 70.0,
+            ),
+        ),
+    ],
+)

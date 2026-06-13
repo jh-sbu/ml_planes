@@ -229,6 +229,8 @@ mod tests {
             beta: 0.0,
             airspeed,
             altitude: position.y,
+
+            consumable_remaining: f32::INFINITY,
         }
     }
 

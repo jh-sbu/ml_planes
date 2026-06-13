@@ -436,6 +436,7 @@ fn generic_jet_config() -> ml_planes::plane::config::PlaneConfig {
         cn_r: -0.12,
         cn_delta_r: -0.10,
         thrust_max: 60000.0,
+        powerplant: Default::default(),
         aileron_limit: 0.4363,
         elevator_limit: 0.3491,
         rudder_limit: 0.2618,

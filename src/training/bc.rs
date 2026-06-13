@@ -118,6 +118,7 @@ mod tests {
             cn_r: -0.12,
             cn_delta_r: -0.10,
             thrust_max: 60000.0,
+            powerplant: Default::default(),
             aileron_limit: 0.4363,
             elevator_limit: 0.3491,
             rudder_limit: 0.2618,
@@ -160,10 +161,10 @@ mod tests {
                     "action out of range: {v}"
                 );
             }
-            assert_eq!(env.observation_dim(), 10);
+            assert_eq!(env.observation_dim(), 11);
         }
         for o in &data.obs {
-            assert_eq!(o.len(), 10);
+            assert_eq!(o.len(), 11);
         }
     }
 

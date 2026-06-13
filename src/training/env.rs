@@ -7,6 +7,10 @@ pub struct SpawnSpec {
     pub velocity: Option<Vec3>,
     pub attitude: Option<Quat>,
     pub angular_velocity: Option<Vec3>,
+    /// Fraction of the powerplant's capacity the plane spawns with, in [0, 1].
+    /// `None` ⇒ full tanks. Lets ML resets / refueling scenarios spawn partially
+    /// fuelled planes.
+    pub fuel_fraction: Option<f32>,
 }
 
 pub type Observation = Vec<f32>;

@@ -8,7 +8,10 @@ use crate::controllers::{
     L1Status, LevelHoldController, ModelLibrary, OrbitController, OrbitDirection, PlaneTuning,
     SelectedModel, SelectedTuningProfile, WingmanController,
 };
-use crate::plane::{ControlInputs, FlightState, PlaneId, PlaneIndex, PlaneTuningHandle};
+use crate::plane::{
+    ControlInputs, FlightState, PlaneConfig, PlaneConfigHandle, PlaneId, PlaneIndex,
+    PlaneTuningHandle, Powerplant,
+};
 use crate::ui::file_load::{self, PendingLoads};
 use crate::ui::map::MapState;
 
@@ -26,8 +29,10 @@ pub fn draw_flight_hud(
         Option<&mut SelectedTuningProfile>,
         Option<&PlaneTuningHandle>,
         Option<&mut SelectedModel>,
+        &PlaneConfigHandle,
     )>,
     all_planes: Query<(Entity, &PlaneId, &PlaneIndex), With<FlightState>>,
+    plane_configs: Res<Assets<PlaneConfig>>,
     tuning_assets: Res<Assets<PlaneTuning>>,
     model_lib: Res<ModelLibrary>,
     mut pending: ResMut<PendingLoads>,
@@ -52,6 +57,7 @@ pub fn draw_flight_hud(
         mut profile,
         tuning_handle,
         mut selected_model,
+        config_handle,
     )) = result
     else {
         return;
@@ -102,6 +108,35 @@ pub fn draw_flight_hud(
                 "p/q/r:     {:.1} / {:.1} / {:.1} °/s",
                 p_deg, q_deg, r_deg
             ));
+
+            // Fuel / charge — label and units depend on the plane's powerplant.
+            if let Some(cfg) = plane_configs.get(&config_handle.0) {
+                let cap = cfg.powerplant.capacity();
+                let rem = state.consumable_remaining;
+                if rem.is_finite() && cap > 0.0 {
+                    let frac = (rem / cap).clamp(0.0, 1.0);
+                    let pct = frac * 100.0;
+                    ui.separator();
+                    match cfg.powerplant {
+                        Powerplant::JetFuel { fuel_type, .. } => {
+                            ui.label(format!(
+                                "Fuel:      {:.0} / {:.0} kg ({:.0}%)  [{}]",
+                                rem,
+                                cap,
+                                pct,
+                                fuel_type.label()
+                            ));
+                        }
+                        Powerplant::Electric { .. } => {
+                            ui.label(format!(
+                                "Charge:    {:.1} / {:.1} kWh ({:.0}%)",
+                                rem, cap, pct
+                            ));
+                        }
+                    }
+                    add_surface_bar(ui, "Level", frac, 0.0..=1.0);
+                }
+            }
 
             ui.separator();
 

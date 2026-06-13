@@ -75,6 +75,8 @@ fn zero_error_gives_near_zero_aileron() {
         beta: 0.0,
         airspeed: 80.0,
         altitude: 1000.0,
+
+        consumable_remaining: f32::INFINITY,
     };
     // Target heading = 0 rad (same as current velocity direction along +X).
     let mut ctrl = HeadingHoldController::from_state(&state, &ControlInputs::default());
@@ -105,6 +107,8 @@ fn heading_left_gives_right_bank() {
         beta: 0.0,
         airspeed: speed,
         altitude: 1000.0,
+
+        consumable_remaining: f32::INFINITY,
     };
     // Target heading = 0 rad (along +X). Current heading has drifted 15° toward +Z.
     let mut ctrl = HeadingHoldController::new(
@@ -139,6 +143,8 @@ fn heading_right_gives_left_bank() {
         beta: 0.0,
         airspeed: speed,
         altitude: 1000.0,
+
+        consumable_remaining: f32::INFINITY,
     };
     let mut ctrl = HeadingHoldController::new(&state, 0.0);
     let ctx = ControllerContext::empty_for(PlaneId::TEST);
@@ -172,6 +178,8 @@ fn heading_hold_maintains_heading() {
         beta: 0.0,
         airspeed: spd,
         altitude: alt,
+
+        consumable_remaining: f32::INFINITY,
     };
     let ctrl = HeadingHoldController::from_state(&state_seed, &ControlInputs::default());
     spawn_plane(&mut app, Vec3::new(0.0, alt, 0.0), velocity, ctrl);
@@ -216,6 +224,8 @@ fn heading_hold_tracks_step_change() {
         beta: 0.0,
         airspeed: spd,
         altitude: alt,
+
+        consumable_remaining: f32::INFINITY,
     };
     let ctrl = HeadingHoldController::from_state(&state_seed, &ControlInputs::default());
     spawn_plane(&mut app, Vec3::new(0.0, alt, 0.0), velocity, ctrl);

@@ -13,7 +13,7 @@ use ml_planes::training::ppo::PpoTrainer;
 use ml_planes::training::{LevelHoldEnv, OrbitEnv};
 
 type B = Autodiff<NdArray>;
-const ORBIT_OBS_DIM: usize = 13;
+const ORBIT_OBS_DIM: usize = 14;
 
 fn jet_cfg() -> PlaneConfig {
     PlaneConfig {
@@ -40,6 +40,7 @@ fn jet_cfg() -> PlaneConfig {
         cn_r: -0.12,
         cn_delta_r: -0.10,
         thrust_max: 60000.0,
+        powerplant: Default::default(),
         aileron_limit: 0.4363,
         elevator_limit: 0.3491,
         rudder_limit: 0.2618,
@@ -72,7 +73,7 @@ fn ppo_50_iterations_no_nan_no_reward_collapse() {
     let inner = trainer.model.valid();
     let inner_device = inner.log_std.val().device();
     let test_obs = Tensor::<<B as burn::tensor::backend::AutodiffBackend>::InnerBackend, 2>::zeros(
-        [1, 10],
+        [1, 11],
         &inner_device,
     );
     let (action, lp) = inner.sample_action(test_obs);

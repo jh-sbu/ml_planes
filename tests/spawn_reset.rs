@@ -25,6 +25,8 @@ fn spawn_then_sync_flight_state() {
         velocity: Some(Vec3::new(50.0, 0.0, 0.0)),
         attitude: Some(Quat::IDENTITY),
         angular_velocity: Some(Vec3::ZERO),
+
+        fuel_fraction: None,
     };
     let cfg = common::generic_jet_config();
 

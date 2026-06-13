@@ -1,7 +1,7 @@
 use bevy::prelude::*;
-use bevy_rapier3d::prelude::{ExternalForce, Velocity};
+use bevy_rapier3d::prelude::{AdditionalMassProperties, ExternalForce, Velocity};
 
-use crate::aerodynamics::compute_aero_forces;
+use crate::aerodynamics::{compute_aero_forces, engine_thrust};
 use crate::controllers::ActiveController;
 use crate::plane::context::{ControllerContext, PlaneSnapshot};
 use crate::plane::plugin::PlaneConfigHandle;
@@ -85,5 +85,51 @@ pub fn apply_aerodynamic_forces(
             force: force_world,
             torque: torque_world,
         };
+    }
+}
+
+/// FixedUpdate: burn each plane's consumable for the thrust it produces this tick.
+/// Uses the shared [`engine_thrust`] / [`Powerplant::burn_rate`] primitives so the
+/// live sim and the training integrator agree. A non-finite (unmodelled) tank stays
+/// non-finite. Silently skips planes whose `PlaneConfig` asset is not yet loaded.
+pub fn consume_fuel(
+    time: Res<Time<Fixed>>,
+    plane_configs: Res<Assets<PlaneConfig>>,
+    mut query: Query<(&mut FlightState, &ControlInputs, &PlaneConfigHandle)>,
+) {
+    let dt = time.delta_secs();
+    for (mut state, inputs, config_handle) in query.iter_mut() {
+        let Some(cfg) = plane_configs.get(&config_handle.0) else {
+            continue;
+        };
+        let thrust = engine_thrust(&state, inputs, cfg);
+        let burn = cfg.powerplant.burn_rate(thrust) * dt;
+        state.consumable_remaining = (state.consumable_remaining - burn).max(0.0);
+    }
+}
+
+/// FixedUpdate: keep the Rapier body mass in sync with remaining fuel for
+/// mass-contributing (jet) powerplants, so the airframe gets lighter as it burns.
+/// Electric planes are left untouched (constant mass). Runs before the physics step.
+pub fn update_plane_mass(
+    plane_configs: Res<Assets<PlaneConfig>>,
+    mut query: Query<(
+        &FlightState,
+        &PlaneConfigHandle,
+        &mut AdditionalMassProperties,
+    )>,
+) {
+    for (state, config_handle, mut mass_props) in query.iter_mut() {
+        let Some(cfg) = plane_configs.get(&config_handle.0) else {
+            continue;
+        };
+        if !cfg.powerplant.contributes_mass() {
+            continue;
+        }
+        if let AdditionalMassProperties::MassProperties(mp) = mass_props.as_mut() {
+            mp.mass = cfg
+                .powerplant
+                .effective_mass(cfg.mass, state.consumable_remaining);
+        }
     }
 }

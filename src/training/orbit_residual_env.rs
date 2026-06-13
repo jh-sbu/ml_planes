@@ -247,6 +247,8 @@ impl TrainingEnv for ResidualOrbitEnv {
         let attitude = level_attitude_for_heading(head_x, head_z);
         let angular_velocity = Vec3::new(dp, dq, dr);
 
+        // Randomize fuel load so the policy observes a range of fuel fractions / masses.
+        let fuel_fraction = self.rng.next_f32(0.2, 1.0);
         self.state = FlightState {
             position,
             velocity,
@@ -256,6 +258,8 @@ impl TrainingEnv for ResidualOrbitEnv {
             beta: 0.0,
             airspeed,
             altitude,
+
+            consumable_remaining: self.cfg.powerplant.capacity() * fuel_fraction,
         };
         self.state.update_air_data();
         self.episode_step = 0;
@@ -281,6 +285,8 @@ impl TrainingEnv for ResidualOrbitEnv {
             velocity: Some(self.state.velocity),
             attitude: Some(attitude),
             angular_velocity: Some(angular_velocity),
+
+            fuel_fraction: Some(fuel_fraction),
         };
 
         (self.build_observation(), spawn_spec)
@@ -376,6 +382,7 @@ mod tests {
             cn_r: -0.12,
             cn_delta_r: -0.10,
             thrust_max: 60000.0,
+            powerplant: Default::default(),
             aileron_limit: 0.4363,
             elevator_limit: 0.3491,
             rudder_limit: 0.2618,
@@ -393,6 +400,8 @@ mod tests {
             beta: 0.0,
             airspeed: 100.0,
             altitude: 1000.0,
+
+            consumable_remaining: f32::INFINITY,
         };
         state.update_air_data();
         state
@@ -401,7 +410,7 @@ mod tests {
     #[test]
     fn dimensions_are_correct() {
         let env = ResidualOrbitEnv::new(1000.0, 100.0, 1000.0, jet_cfg());
-        assert_eq!(ORBIT_OBS_DIM, 13);
+        assert_eq!(ORBIT_OBS_DIM, 14);
         assert_eq!(env.observation_dim(), ORBIT_OBS_DIM);
         assert_eq!(env.action_dim(), 4);
     }
@@ -444,6 +453,8 @@ mod tests {
             beta: 0.0,
             airspeed: spawn.velocity.unwrap().length(),
             altitude: spawn.position.unwrap().y,
+            // Mirror the env's randomized fuel so the appended fuel obs term matches.
+            consumable_remaining: env.cfg.powerplant.capacity() * spawn.fuel_fraction.unwrap(),
         };
         ref_state.update_air_data();
 

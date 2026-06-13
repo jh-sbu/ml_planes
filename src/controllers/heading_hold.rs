@@ -162,6 +162,8 @@ mod tests {
             beta: 0.0,
             airspeed: 80.0,
             altitude: 1000.0,
+
+            consumable_remaining: f32::INFINITY,
         }
     }
 

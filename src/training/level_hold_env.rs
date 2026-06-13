@@ -123,6 +123,8 @@ impl LevelHoldEnv {
             r / 1.0,
             pitch_angle(self.state.attitude) / 0.5,
             self.state.velocity.y / 30.0,
+            // Remaining fuel fraction in [0, 1] (last element; matches RlLevelHoldController).
+            self.state.fuel_fraction_obs(),
         ]
     }
 
@@ -176,6 +178,9 @@ impl TrainingEnv for LevelHoldEnv {
         let dq = self.rng.next_f32(-ANG_VEL_RANGE, ANG_VEL_RANGE);
         let dr = self.rng.next_f32(-ANG_VEL_RANGE, ANG_VEL_RANGE);
         let dvv = self.rng.next_f32(-VVEL_RANGE, VVEL_RANGE);
+        // Randomize the fuel load so the policy observes (and is robust to) a range of
+        // fuel fractions / airframe masses. Never start empty.
+        let fuel_fraction = self.rng.next_f32(0.2, 1.0);
 
         // Base level-flight attitude: body +Z (up) aligns with world +Y (up).
         // Roll (body X) and pitch (body Y) perturbations are applied in body frame.
@@ -195,6 +200,7 @@ impl TrainingEnv for LevelHoldEnv {
             beta: 0.0,
             airspeed: spawn_spd,
             altitude: spawn_alt,
+            consumable_remaining: self.cfg.powerplant.capacity() * fuel_fraction,
         };
         self.state.update_air_data();
         self.episode_step = 0;
@@ -204,6 +210,7 @@ impl TrainingEnv for LevelHoldEnv {
             velocity: Some(self.state.velocity),
             attitude: Some(attitude),
             angular_velocity: Some(ang_vel),
+            fuel_fraction: Some(fuel_fraction),
         };
 
         (self.build_observation(), spawn_spec)
@@ -226,7 +233,7 @@ impl TrainingEnv for LevelHoldEnv {
     }
 
     fn observation_dim(&self) -> usize {
-        10
+        11
     }
     fn action_dim(&self) -> usize {
         4
@@ -283,6 +290,7 @@ mod tests {
             cn_r: -0.12,
             cn_delta_r: -0.10,
             thrust_max: 60000.0,
+            powerplant: Default::default(),
             aileron_limit: 0.4363,
             elevator_limit: 0.3491,
             rudder_limit: 0.2618,
@@ -292,7 +300,7 @@ mod tests {
     #[test]
     fn dimensions_are_correct() {
         let env = LevelHoldEnv::new(1000.0, 80.0, jet_cfg());
-        assert_eq!(env.observation_dim(), 10);
+        assert_eq!(env.observation_dim(), 11);
         assert_eq!(env.action_dim(), 4);
     }
 
@@ -300,7 +308,7 @@ mod tests {
     fn reset_returns_correct_obs_length() {
         let mut env = LevelHoldEnv::new(1000.0, 80.0, jet_cfg());
         let (obs, _) = env.reset();
-        assert_eq!(obs.len(), 10);
+        assert_eq!(obs.len(), 11);
     }
 
     #[test]
@@ -308,7 +316,7 @@ mod tests {
         let mut env = LevelHoldEnv::new(1000.0, 80.0, jet_cfg());
         env.reset();
         let (obs, _reward, _done, _info) = env.step(&[0.0, 0.0, 0.0, 0.0]);
-        assert_eq!(obs.len(), 10);
+        assert_eq!(obs.len(), 11);
     }
 
     #[test]

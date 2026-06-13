@@ -86,6 +86,7 @@ mod tests {
             cn_r: -0.12,
             cn_delta_r: -0.10,
             thrust_max: 60000.0,
+            powerplant: Default::default(),
             aileron_limit: 0.4363,
             elevator_limit: 0.3491,
             rudder_limit: 0.2618,
@@ -138,7 +139,7 @@ mod tests {
         let mut vec = VecEnv::new(envs);
         vec.reset_all();
         let obs_after_reset = vec.reset_at(0);
-        assert_eq!(obs_after_reset.len(), 10);
+        assert_eq!(obs_after_reset.len(), 11);
         assert!(obs_after_reset.iter().all(|v| v.is_finite()));
     }
 }

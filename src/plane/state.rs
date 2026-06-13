@@ -8,8 +8,14 @@
 use bevy::ecs::component::Component;
 use bevy::math::{Quat, Vec3};
 
+/// Normalization scale for the remaining-consumable RL observation term. Matches the
+/// generic jet's fuel capacity so a full tank reads as 1.0; both the training
+/// environments and the inference controllers divide by this exact constant, so the
+/// observation is identical on both sides regardless of the airframe's actual capacity.
+pub const FUEL_OBS_SCALE: f32 = 2000.0;
+
 /// Full 6-DOF kinematic state of a plane, updated each physics tick.
-#[derive(Component, Default, Debug, Clone)]
+#[derive(Component, Debug, Clone)]
 pub struct FlightState {
     pub position: Vec3,         // world frame [m]
     pub velocity: Vec3,         // world frame [m/s]
@@ -19,6 +25,30 @@ pub struct FlightState {
     pub beta: f32,              // sideslip angle [rad]
     pub airspeed: f32,          // |velocity| [m/s]
     pub altitude: f32,          // position.y [m]
+    /// Remaining consumable: fuel mass [kg] for jet powerplants, charge [kWh] for
+    /// electric. Interpreted via the plane's [`Powerplant`](crate::plane::Powerplant).
+    ///
+    /// Defaults to `f32::INFINITY` = "unmodelled / unlimited tank": such a state burns
+    /// nothing, never flames out, and adds no fuel mass, so code paths that never opt
+    /// into the fuel model (most tests, ad-hoc states) behave exactly as before.
+    /// Spawn/reset assigns a finite capacity to enable the fuel model.
+    pub consumable_remaining: f32,
+}
+
+impl Default for FlightState {
+    fn default() -> Self {
+        Self {
+            position: Vec3::ZERO,
+            velocity: Vec3::ZERO,
+            attitude: Quat::IDENTITY,
+            angular_velocity: Vec3::ZERO,
+            alpha: 0.0,
+            beta: 0.0,
+            airspeed: 0.0,
+            altitude: 0.0,
+            consumable_remaining: f32::INFINITY,
+        }
+    }
 }
 
 impl FlightState {
@@ -42,6 +72,13 @@ impl FlightState {
 
         self.alpha = (-v_body.z).atan2(v_body.x);
         self.beta = (v_body.y / self.airspeed).asin();
+    }
+
+    /// Normalized remaining-consumable observation term in [0, 1] for RL policies.
+    /// An unmodelled (infinite) tank reads as full (1.0). Shared by the training
+    /// environments and the inference controllers via [`FUEL_OBS_SCALE`].
+    pub fn fuel_fraction_obs(&self) -> f32 {
+        (self.consumable_remaining / FUEL_OBS_SCALE).clamp(0.0, 1.0)
     }
 }
 

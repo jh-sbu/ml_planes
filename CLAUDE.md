@@ -60,7 +60,9 @@ src/
 
 | Type | Kind | Description |
 |---|---|---|
-| `PlaneConfig` | RON asset | Geometry, mass/inertia, aero coefficients, engine params, control limits |
+| `PlaneConfig` | RON asset | Geometry, mass/inertia, aero coefficients, engine params, **`powerplant`**, control limits |
+| `Powerplant` | enum (in `PlaneConfig`) | `JetFuel { capacity_kg, tsfc, fuel_type }` (burns mass, lightens, flames out) or `Electric { capacity, consumption }` (constant mass). Helpers: `capacity()`, `contributes_mass()`, `effective_mass(empty, remaining)`, `burn_rate(thrust)`. `#[serde(default)]` ⇒ generic-jet default |
+| `FuelType` | enum | `JetA`/`Jp8`/`Jp5` + `properties()` (density, specific energy) + `label()`. For HUD/display; kerosene grades are ~identical so the grade does **not** enter the burn math |
 | `FlightPlan` | RON asset | Ordered legs (`Waypoint`/`Orbit`) + L1 period/damping; loaded from `assets/plans/*.plan.ron` via the Bevy asset loader |
 | `FlightState` | ECS component | Position, velocity, attitude (quat), angular velocity, α, β, airspeed, altitude |
 | `ControlInputs` | ECS component | Aileron/elevator/rudder/throttle **or** rate commands (see Action Spaces) |
@@ -72,9 +74,9 @@ src/
 | `ManualController` | struct | Passthrough — applies raw keyboard/stick inputs, no autopilot |
 | `OrbitController` | struct | 3-level cascade PID orbit around a fixed world-frame point |
 | `HeadingHoldController` | struct | Holds a configurable heading via an inner level-hold cascade |
-| `RlLevelHoldController` | struct | Burn `ActorCritic` policy for level hold (obs dim=10); `inference`/`training`-gated |
-| `RlOrbitController` | struct | Burn `ActorCritic` policy for orbit (obs dim=13); `inference`/`training`-gated |
-| `RlOrbitResidualController` | struct | Burn `ActorCritic` policy emitting residual deltas added to the PID orbit baseline (obs dim=13); paired with `ResidualOrbitEnv` |
+| `RlLevelHoldController` | struct | Burn `ActorCritic` policy for level hold (obs dim=11); `inference`/`training`-gated |
+| `RlOrbitController` | struct | Burn `ActorCritic` policy for orbit (obs dim=14); `inference`/`training`-gated |
+| `RlOrbitResidualController` | struct | Burn `ActorCritic` policy emitting residual deltas added to the PID orbit baseline (obs dim=14); paired with `ResidualOrbitEnv` |
 | `RlLstmOrbitController` | struct | Recurrent `LstmActorCritic` orbit policy (Wu et al. FC-LSTM-FC); carries `LstmHiddenState` across steps; paired with `WuOrbitEnv` |
 | `LevelHoldRewardConfig` / `OrbitRewardConfig` | plain structs | Reward weights, scales, alive bonus, failure penalty, and termination thresholds; loaded from `assets/training/*.reward.ron` at training startup |
 | `WuOrbitRewardConfig` / `CurriculumStage` | plain structs/enum | Wu et al. multiplicative-Gaussian orbit reward (`R^TT × R^PS × R^RS`) + 3-stage curriculum; from `wu_orbit.reward.ron` |
@@ -122,6 +124,49 @@ the self-contained training integrator, so both see the same altitude physics.
 | Roll / Yaw | Lateral-directional coefficients + stability derivatives (see `PlaneConfig`) |
 
 All coefficients are defined per-asset in `.plane.ron` files. No compile-time aero data.
+
+### Fuel & Charge (Powerplant)
+
+Each `PlaneConfig` carries a `powerplant` (`plane/config.rs`). `FlightState.consumable_remaining`
+tracks the remaining fuel (kg) or charge (kWh); it **defaults to `f32::INFINITY`** = an
+unmodelled / unlimited tank, so ad-hoc states and most tests neither burn nor change mass
+(`effective_mass` and `engine_thrust` treat non-finite as full). Spawn/reset opt into the model
+by assigning a finite capacity.
+
+- **Thrust** comes from the shared `aerodynamics::engine_thrust(state, inputs, cfg)`: the usual
+  `throttle · thrust_max · density_ratio(altitude)`, but **0 when empty** (flameout / dead battery).
+  Used by both `compute_aero_forces` and the burn accounting so the live sim and training agree.
+- **Burn** is thrust-specific: `Powerplant::burn_rate(thrust)` = `tsfc · thrust` (jet) or
+  `consumption · thrust` (electric), consumed each tick. In training this lives in
+  `integrate_state`; in the live sim, two FixedUpdate systems (`plane/systems.rs`) run before the
+  physics step: `consume_fuel` (decrement) and `update_plane_mass` (rewrite Rapier
+  `AdditionalMassProperties.mass` for mass-contributing powerplants).
+- **Mass**: `effective_mass(empty_mass, remaining)` = `empty + remaining` for jets (airframe
+  lightens as it burns), `empty` for electric (constant). `PlaneConfig.mass` is the **dry/empty**
+  mass — the generic jet's 5000 kg dry + 2000 kg fuel ⇒ 7000 kg loaded. Inertia is held constant
+  w.r.t. fuel (scope decision).
+- **Fuel types** (`FuelType::{JetA,Jp8,Jp5}`) carry density + specific energy but, because
+  kerosene grades differ <1%, are display-only — capacity is stored directly in kg. Volume-limited
+  tanks / energy-based range are deferred.
+- **HUD** (`ui/hud.rs`, visual): a fuel/charge readout labelled by powerplant kind
+  ("Fuel … kg [Jet A]" vs "Charge … kWh") with a fraction bar.
+- Example assets: `assets/planes/generic_jet.plane.ron` (JetFuel) and
+  `electric_trainer.plane.ron` (Electric); `assets/scenarios/mixed_powerplant.scenario.ron` flies both.
+
+**RL impact:** appending the fuel fraction grew the observation (level-hold 10→11, orbit
+family 13→14, via `FlightState::fuel_fraction_obs` / `FUEL_OBS_SCALE`). This **invalidated all
+prior checkpoints** — a 13/10-dim `.mpk` loads but panics at the matmul on the new obs (guarded
+by `rl_inference::loaded_orbit_policy_runs_forward_pass`). Current valid (but **short, smoke-only**)
+checkpoints live at `models/<task>/fuel_smoke_<task>.mpk` (the orbit one is also the
+`ppo_orbit_1.mpk` test fixture). Pre-existing `models/**` checkpoints from before this change are
+dimensionally stale — retrain before use. To restore production quality, retrain each task and
+re-tune the (now heavier, 7000 kg loaded) jet:
+
+```
+# per task ∈ {level_hold, orbit, residual_orbit, lstm_orbit}: use the train-evaluate-optimize skill,
+# or directly:  cargo run --release --features training --bin train_ppo -- --task <t> --plain
+# then re-tune PID gains for the heavier jet via the `tune` skill (writes generic_jet.tuning.ron).
+```
 
 ### Action Spaces
 
@@ -290,7 +335,7 @@ A second PPO track trains recurrent policies for partially-observed orbit contro
 advances stages automatically once the mean episode return crosses the stage threshold.
 Stages and the multiplicative-Gaussian reward (`R^TT × R^PS × R^RS`, `wu_orbit_reward.rs`)
 are configured in `assets/training/wu_orbit.reward.ron`. The env shares `OrbitEnv`'s
-spawn/termination logic and 13-dim observation (see the module header for documented
+spawn/termination logic and 14-dim observation (see the module header for documented
 deviations from the paper).
 
 ### Behavior Cloning (Supervised Pretraining)
@@ -349,10 +394,10 @@ families). Supports `--task {level_hold|orbit|residual_orbit|lstm_orbit}` and, f
 
 ## 4. Maneuver Roadmap
 
-1. **Level flight hold** — COMPLETE. Cascade PID: altitude outer → pitch inner, airspeed, roll, yaw. RL policy trained (`RlLevelHoldController`, obs dim=10).
+1. **Level flight hold** — COMPLETE. Cascade PID: altitude outer → pitch inner, airspeed, roll, yaw. RL policy trained (`RlLevelHoldController`, obs dim=11).
 2. **Ascent** — COMPLETE. Climbs to target altitude then hands off to level hold.
 3. **Formation flight (wingman)** — COMPLETE. Follows leader at fixed body-frame offset (`WingmanController`).
-4. **Circular orbit** — COMPLETE. 3-level cascade PID around world-frame point. Three RL variants: `RlOrbitController` (direct, obs dim=13), `RlOrbitResidualController` (residual over PID), and `RlLstmOrbitController` (recurrent, Wu-curriculum). Policies also reachable via behavior-cloning warm start.
+4. **Circular orbit** — COMPLETE. 3-level cascade PID around world-frame point. Three RL variants: `RlOrbitController` (direct, obs dim=14), `RlOrbitResidualController` (residual over PID), and `RlLstmOrbitController` (recurrent, Wu-curriculum). Policies also reachable via behavior-cloning warm start.
 5. **Flight-plan following** — COMPLETE. `L1Controller` follows a preset `FlightPlan` (waypoint sequences + orbit circles) via L1 nonlinear lateral guidance. Replaces the former single-target `WaypointController`.
 6. **Aerial refueling** — NEXT. Approach lead plane from the rear to a docking position.
 7. *(extensible — add new `TrainingEnv` impls without changing core architecture)*
@@ -492,6 +537,7 @@ app.add_plugins(EguiPlugin { enable_multipass_for_primary_context: false });
 - `orbit_tune_sync.rs` — orbit tuning-pool / gain-sync invariants
 - `scenario.rs` — `.scenario.ron` parse/resolve/build + CSV header pinning (`ml_planes::scenario::CSV_HEADER`)
 - `lifecycle.rs` — runtime spawn/remove commands, auto-indexing, orphaned-wingman + camera cleanup (camera case is `visual`-gated)
+- `fuel.rs` — live-sim fuel: spawn-time tank load (`fuel_fraction`), `consume_fuel` burn + `update_plane_mass`, shipped-asset powerplant parse
 - `rl_inference.rs` — RL controller load + deterministic inference (`inference`/`training`-gated)
 - `ppo_training.rs` — RL trainer instantiation (training-gated; run with `--features training`)
 

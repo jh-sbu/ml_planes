@@ -22,6 +22,10 @@ use crate::training::ppo::model::ActorCritic;
 
 type InfB = NdArray;
 
+/// Observation dimension for the level-hold policy. Must match
+/// `LevelHoldEnv::observation_dim` and `build_obs` below.
+pub const LEVEL_HOLD_OBS_DIM: usize = 11;
+
 /// Trained PPO level-hold controller that runs inference on the CPU.
 ///
 /// `ActorCritic<NdArray>` is not `Sync` (burn's `Param` uses `OnceCell`),
@@ -42,7 +46,7 @@ impl RlLevelHoldController {
         target_airspeed: f32,
     ) -> Result<Self, burn::record::RecorderError> {
         let device: <InfB as Backend>::Device = Default::default();
-        let model = ActorCritic::<InfB>::new(&device, 10).load_file(
+        let model = ActorCritic::<InfB>::new(&device, LEVEL_HOLD_OBS_DIM).load_file(
             path,
             &DefaultFileRecorder::<FullPrecisionSettings>::default(),
             &device,
@@ -64,7 +68,7 @@ impl RlLevelHoldController {
         let device: <InfB as Backend>::Device = Default::default();
         let record = NamedMpkBytesRecorder::<FullPrecisionSettings>::default()
             .load(bytes.to_vec(), &device)?;
-        let model = ActorCritic::<InfB>::new(&device, 10).load_record(record);
+        let model = ActorCritic::<InfB>::new(&device, LEVEL_HOLD_OBS_DIM).load_record(record);
         Ok(Self {
             model: std::sync::Mutex::new(model),
             device,
@@ -82,7 +86,10 @@ impl FlightController for RlLevelHoldController {
         _dt: f32,
     ) -> ControlInputs {
         let obs = build_obs(state, self.target_altitude, self.target_airspeed);
-        let obs_t = Tensor::<InfB, 2>::from_data(TensorData::new(obs, vec![1, 10]), &self.device);
+        let obs_t = Tensor::<InfB, 2>::from_data(
+            TensorData::new(obs, vec![1, LEVEL_HOLD_OBS_DIM]),
+            &self.device,
+        );
         // Deterministic inference: use mean action (no sampling noise).
         let action_t = self.model.lock().unwrap().mean_action(obs_t);
         let action = action_t
@@ -122,6 +129,8 @@ fn build_obs(state: &FlightState, target_alt: f32, target_spd: f32) -> Vec<f32> 
         r / 1.0,
         pitch_angle(state.attitude) / 0.5,
         state.velocity.y / 30.0,
+        // Remaining fuel/charge fraction in [0, 1] (last element).
+        state.fuel_fraction_obs(),
     ]
 }
 

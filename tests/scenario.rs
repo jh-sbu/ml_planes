@@ -29,7 +29,12 @@ fn wingman_formation_asset_resolves_to_two_planes() {
 
 #[test]
 fn shipped_scenarios_parse_and_resolve() {
-    for name in ["level_hold", "orbit", "wingman_formation"] {
+    for name in [
+        "level_hold",
+        "orbit",
+        "wingman_formation",
+        "mixed_powerplant",
+    ] {
         let path = format!("assets/scenarios/{name}.scenario.ron");
         let scenario = Scenario::from_path(Path::new(&path)).unwrap_or_else(|e| {
             panic!("load {path}: {e}");

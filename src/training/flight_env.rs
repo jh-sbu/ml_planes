@@ -1,6 +1,6 @@
 use bevy::math::{Quat, Vec3};
 
-use crate::aerodynamics::compute_aero_forces;
+use crate::aerodynamics::{compute_aero_forces, engine_thrust};
 use crate::plane::{ControlInputs, FlightState, PlaneConfig};
 
 pub(crate) fn roll_angle(attitude: Quat) -> f32 {
@@ -42,11 +42,18 @@ pub(crate) fn integrate_state(
     dt: f32,
 ) {
     let aero = compute_aero_forces(state, inputs, cfg);
+    // Thrust for this step, evaluated on the incoming state (same altitude as the aero
+    // forces above), so the fuel burned matches the thrust actually produced.
+    let thrust = engine_thrust(state, inputs, cfg);
 
-    // Linear dynamics (world frame).
-    let gravity_world = Vec3::new(0.0, -9.81 * cfg.mass, 0.0);
+    // Linear dynamics (world frame). Effective mass = empty + remaining fuel for jets
+    // (the airframe gets lighter as it burns); constant for electric.
+    let mass = cfg
+        .powerplant
+        .effective_mass(cfg.mass, state.consumable_remaining);
+    let gravity_world = Vec3::new(0.0, -9.81 * mass, 0.0);
     let force_world = state.attitude * aero.force_body + gravity_world;
-    state.velocity += (force_world / cfg.mass) * dt;
+    state.velocity += (force_world / mass) * dt;
     state.position += state.velocity * dt;
 
     // Angular dynamics (body frame, diagonal inertia).
@@ -71,6 +78,11 @@ pub(crate) fn integrate_state(
     let daw = 0.5 * (-ax * p - ay * q - az * r);
     state.attitude =
         Quat::from_xyzw(ax + dax * dt, ay + day * dt, az + daz * dt, aw + daw * dt).normalize();
+
+    // Consume fuel/charge for the thrust produced this step (clamped at empty). A
+    // non-finite (unmodelled) tank stays non-finite, so unfuelled states never deplete.
+    state.consumable_remaining =
+        (state.consumable_remaining - cfg.powerplant.burn_rate(thrust) * dt).max(0.0);
 
     state.update_air_data();
 }
@@ -113,6 +125,121 @@ pub(crate) fn inputs_to_direct_action(inputs: &ControlInputs) -> [f32; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::aerodynamics::engine_thrust;
+    use crate::plane::{FuelType, Powerplant};
+
+    /// Generic jet with an explicit jet powerplant: empty mass 3500 kg, 2000 kg fuel.
+    fn jet_cfg() -> PlaneConfig {
+        let mut cfg = crate::environment::generic_jet_spawn_config();
+        cfg.mass = 3500.0;
+        cfg.thrust_max = 60000.0;
+        cfg.powerplant = Powerplant::JetFuel {
+            capacity_kg: 2000.0,
+            tsfc: 2.0e-5,
+            fuel_type: FuelType::JetA,
+        };
+        cfg
+    }
+
+    fn level_state(consumable: f32) -> FlightState {
+        let mut s = FlightState {
+            velocity: Vec3::new(100.0, 0.0, 0.0),
+            attitude: Quat::IDENTITY,
+            consumable_remaining: consumable,
+            ..Default::default()
+        };
+        s.update_air_data(); // altitude 0, airspeed 100
+        s
+    }
+
+    #[test]
+    fn jet_burns_fuel_and_loses_mass() {
+        let cfg = jet_cfg();
+        let inputs = ControlInputs {
+            throttle: 1.0,
+            ..Default::default()
+        };
+        let mut state = level_state(2000.0);
+        let dt = 1.0 / 60.0;
+
+        // Thrust used for this step (computed on the pre-integration state).
+        let thrust = engine_thrust(&state, &inputs, &cfg);
+        let m0 = cfg
+            .powerplant
+            .effective_mass(cfg.mass, state.consumable_remaining);
+
+        integrate_state(&mut state, &inputs, &cfg, dt);
+
+        let expected_burn = cfg.powerplant.burn_rate(thrust) * dt;
+        let actual_burn = 2000.0 - state.consumable_remaining;
+        assert!(expected_burn > 0.0);
+        assert!(
+            (actual_burn - expected_burn).abs() < 1e-3,
+            "actual burn {actual_burn} != expected {expected_burn}"
+        );
+        let m1 = cfg
+            .powerplant
+            .effective_mass(cfg.mass, state.consumable_remaining);
+        assert!(
+            m1 < m0,
+            "effective mass should drop as fuel burns: {m1} !< {m0}"
+        );
+    }
+
+    #[test]
+    fn electric_drains_charge_at_constant_mass() {
+        let mut cfg = jet_cfg();
+        cfg.powerplant = Powerplant::Electric {
+            capacity: 100.0,
+            consumption: 1.0e-5,
+        };
+        let inputs = ControlInputs {
+            throttle: 1.0,
+            ..Default::default()
+        };
+        let mut state = level_state(100.0);
+
+        let m0 = cfg
+            .powerplant
+            .effective_mass(cfg.mass, state.consumable_remaining);
+        integrate_state(&mut state, &inputs, &cfg, 1.0 / 60.0);
+
+        assert!(state.consumable_remaining < 100.0, "charge should deplete");
+        let m1 = cfg
+            .powerplant
+            .effective_mass(cfg.mass, state.consumable_remaining);
+        assert_eq!(m0, cfg.mass, "electric mass is the airframe mass");
+        assert_eq!(
+            m1, cfg.mass,
+            "electric mass stays constant as charge drains"
+        );
+    }
+
+    #[test]
+    fn fuel_depletes_then_flames_out() {
+        let mut cfg = jet_cfg();
+        // Tiny tank: ~0.05 kg drains in a fraction of a second at full throttle.
+        cfg.powerplant = Powerplant::JetFuel {
+            capacity_kg: 0.05,
+            tsfc: 2.0e-5,
+            fuel_type: FuelType::JetA,
+        };
+        let inputs = ControlInputs {
+            throttle: 1.0,
+            ..Default::default()
+        };
+        let mut state = level_state(0.05);
+
+        for _ in 0..600 {
+            integrate_state(&mut state, &inputs, &cfg, 1.0 / 60.0);
+        }
+        assert_eq!(state.consumable_remaining, 0.0, "tank should be empty");
+        assert_eq!(
+            engine_thrust(&state, &inputs, &cfg),
+            0.0,
+            "engine should be flamed out when empty"
+        );
+    }
 
     #[test]
     fn direct_action_round_trips_through_inverse() {

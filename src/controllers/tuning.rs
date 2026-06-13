@@ -345,6 +345,8 @@ mod tests {
             beta: 0.0,
             airspeed: 100.0,
             altitude: 500.0,
+
+            consumable_remaining: f32::INFINITY,
         };
         let ctrl = LevelHoldController::with_tuning(&state, &tuning, &ControlInputs::default());
         assert!((ctrl.altitude_pid.kp - 0.03).abs() < 1e-6, "alt_kp");

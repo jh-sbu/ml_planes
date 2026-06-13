@@ -46,6 +46,7 @@ pub fn generic_jet_spawn_config() -> PlaneConfig {
         cn_r: 0.0,
         cn_delta_r: 0.0,
         thrust_max: 0.0,
+        powerplant: Default::default(),
         aileron_limit: 0.4363,
         elevator_limit: 0.3491,
         rudder_limit: 0.2618,
@@ -95,7 +96,10 @@ pub fn spawn_plane(
 ) -> SpawnedPlane {
     let plane_id = PlaneId(ids.0);
     ids.0 += 1;
-    let state = initial_state_from_spec(spec);
+    let mut state = initial_state_from_spec(spec);
+    // Opt this plane into the fuel model: fill the tank to the requested fraction of
+    // capacity (default full). The integrator / `consume_fuel` then burn it down.
+    state.consumable_remaining = cfg.powerplant.capacity() * spec.fuel_fraction.unwrap_or(1.0);
     let position = state.position;
     let attitude = state.attitude;
     let linvel = state.velocity;
@@ -115,7 +119,11 @@ pub fn spawn_plane(
             ExternalForce::default(),
             AdditionalMassProperties::MassProperties(MassProperties {
                 local_center_of_mass: Vec3::ZERO,
-                mass: cfg.mass,
+                // Empty mass + fuel load (jets); empty mass alone for electric.
+                // `update_plane_mass` keeps this current as fuel burns.
+                mass: cfg
+                    .powerplant
+                    .effective_mass(cfg.mass, state.consumable_remaining),
                 principal_inertia: cfg.inertia,
                 principal_inertia_local_frame: Quat::IDENTITY,
             }),

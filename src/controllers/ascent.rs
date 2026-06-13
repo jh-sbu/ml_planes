@@ -90,6 +90,8 @@ mod tests {
             beta: 0.0,
             airspeed,
             altitude,
+
+            consumable_remaining: f32::INFINITY,
         }
     }
 
