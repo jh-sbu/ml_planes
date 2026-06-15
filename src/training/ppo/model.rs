@@ -36,6 +36,14 @@ impl<B: Backend> PolicyNet<B> {
         let x = self.fc2.forward(x).tanh();
         self.out.forward(x)
     }
+
+    /// Observation dimension this network expects, read from the first layer's
+    /// weight shape `[obs_dim, 64]`. After `load_record`/`load_file` this reflects
+    /// the *loaded* checkpoint's dimension, so it can be validated against the
+    /// dimension the caller will actually feed.
+    pub fn input_dim(&self) -> usize {
+        self.fc1.weight.val().dims()[0]
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -86,6 +94,11 @@ impl<B: Backend> ActorCritic<B> {
             value: ValueNet::new(device, obs_dim),
             log_std: Param::from_tensor(log_std_init),
         }
+    }
+
+    /// Observation dimension the policy network expects (see [`PolicyNet::input_dim`]).
+    pub fn input_dim(&self) -> usize {
+        self.policy.input_dim()
     }
 
     /// Deterministic action = tanh(policy_mean). Used for inference.
@@ -233,6 +246,28 @@ mod tests {
             assert!(v.abs() <= 1.0 + 1e-5, "action out of [-1,1]: {v}");
             assert!(v.is_finite(), "action is NaN/inf: {v}");
         }
+    }
+
+    #[test]
+    fn input_dim_reports_construction_dim() {
+        assert_eq!(ActorCritic::<B>::new(&device(), 13).input_dim(), 13);
+        assert_eq!(ActorCritic::<B>::new(&device(), 14).input_dim(), 14);
+    }
+
+    #[test]
+    fn input_dim_reflects_loaded_record_dim() {
+        use burn::record::{FullPrecisionSettings, NamedMpkBytesRecorder, Recorder};
+
+        // Save a 13-dim model, then load it into a freshly-built 14-dim model.
+        // `load_record` adopts the saved shape, so `input_dim` must report 13.
+        let saved = ActorCritic::<B>::new(&device(), 13);
+        let recorder = NamedMpkBytesRecorder::<FullPrecisionSettings>::default();
+        let bytes = recorder
+            .record(saved.into_record(), ())
+            .expect("record to bytes");
+        let record = recorder.load(bytes, &device()).expect("load record");
+        let loaded = ActorCritic::<B>::new(&device(), 14).load_record(record);
+        assert_eq!(loaded.input_dim(), 13);
     }
 
     #[test]

@@ -18,6 +18,7 @@ use burn::{
     tensor::{backend::Backend, Tensor, TensorData},
 };
 
+use crate::controllers::model_load::ModelLoadError;
 use crate::controllers::orbit::{
     build_orbit_observation, OrbitController, OrbitDirection, ORBIT_OBS_DIM,
 };
@@ -27,6 +28,19 @@ use crate::plane::{ControlInputs, FlightState};
 use crate::training::ppo::model::ActorCritic;
 
 type InfB = NdArray;
+
+/// Reject a checkpoint whose observation dimension does not match `ORBIT_OBS_DIM`
+/// (a stale pre-fuel model) before it can reach a forward pass.
+fn check_obs_dim(model: &ActorCritic<InfB>) -> Result<(), ModelLoadError> {
+    let found = model.input_dim();
+    if found != ORBIT_OBS_DIM {
+        return Err(ModelLoadError::DimensionMismatch {
+            expected: ORBIT_OBS_DIM,
+            found,
+        });
+    }
+    Ok(())
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct RlOrbitResidualConfig {
@@ -85,13 +99,14 @@ impl RlOrbitResidualController {
         config: RlOrbitResidualConfig,
         state: &FlightState,
         tuning: Option<&OrbitTuning>,
-    ) -> Result<Self, burn::record::RecorderError> {
+    ) -> Result<Self, ModelLoadError> {
         let device: <InfB as Backend>::Device = Default::default();
         let model = ActorCritic::<InfB>::new(&device, ORBIT_OBS_DIM).load_file(
             path,
             &DefaultFileRecorder::<FullPrecisionSettings>::default(),
             &device,
         )?;
+        check_obs_dim(&model)?;
         let pid = match tuning {
             Some(t) => OrbitController::with_tuning(state, t, &ControlInputs::default()),
             None => OrbitController::from_state(state, &ControlInputs::default()),
@@ -116,11 +131,12 @@ impl RlOrbitResidualController {
         config: RlOrbitResidualConfig,
         state: &FlightState,
         tuning: Option<&OrbitTuning>,
-    ) -> Result<Self, burn::record::RecorderError> {
+    ) -> Result<Self, ModelLoadError> {
         let device: <InfB as Backend>::Device = Default::default();
         let record = NamedMpkBytesRecorder::<FullPrecisionSettings>::default()
             .load(bytes.to_vec(), &device)?;
         let model = ActorCritic::<InfB>::new(&device, ORBIT_OBS_DIM).load_record(record);
+        check_obs_dim(&model)?;
         let pid = match tuning {
             Some(t) => OrbitController::with_tuning(state, t, &ControlInputs::default()),
             None => OrbitController::from_state(state, &ControlInputs::default()),

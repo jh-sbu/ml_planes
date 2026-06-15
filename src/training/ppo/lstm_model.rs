@@ -147,6 +147,13 @@ impl<B: Backend> LstmPolicyNet<B> {
         (out.reshape([batch, seq_len, 4]), final_state)
     }
 
+    /// Observation dimension this network expects, read from the first layer's
+    /// weight shape `[obs_dim, LSTM_FC]`. After `load_record`/`load_file` this
+    /// reflects the *loaded* checkpoint's dimension.
+    pub fn input_dim(&self) -> usize {
+        self.fc1.weight.val().dims()[0]
+    }
+
     /// Single-step forward for inference.
     ///
     /// `obs`: `[batch, obs_dim]`
@@ -250,6 +257,11 @@ impl<B: Backend> LstmActorCritic<B> {
             value: LstmValueNet::new(device, obs_dim),
             log_std: Param::from_tensor(log_std_init),
         }
+    }
+
+    /// Observation dimension the policy network expects (see [`LstmPolicyNet::input_dim`]).
+    pub fn input_dim(&self) -> usize {
+        self.policy.input_dim()
     }
 
     // -----------------------------------------------------------------------

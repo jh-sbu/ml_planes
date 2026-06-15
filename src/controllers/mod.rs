@@ -7,6 +7,8 @@ pub mod kind;
 pub mod l1;
 pub mod level_hold;
 pub mod manual;
+#[cfg(any(feature = "inference", feature = "training"))]
+pub mod model_load;
 pub mod orbit;
 pub mod orbit_marker;
 pub mod pid;
@@ -31,6 +33,8 @@ pub use kind::ControllerKind;
 pub use l1::{L1Controller, L1Phase, L1Status};
 pub use level_hold::LevelHoldController;
 pub use manual::ManualController;
+#[cfg(any(feature = "inference", feature = "training"))]
+pub use model_load::ModelLoadError;
 pub use orbit::{
     build_orbit_observation, orbit_observation_terms, OrbitController, OrbitDirection,
     OrbitObservationTerms, OrbitParams,

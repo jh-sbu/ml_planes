@@ -15,6 +15,7 @@ use burn::{
     tensor::{backend::Backend, Tensor, TensorData},
 };
 
+use crate::controllers::model_load::ModelLoadError;
 use crate::controllers::orbit::{
     build_orbit_observation, OrbitController, OrbitDirection, ORBIT_OBS_DIM,
 };
@@ -24,6 +25,19 @@ use crate::training::direct_action_to_inputs;
 use crate::training::ppo::lstm_model::{LstmActorCritic, LstmHiddenState, LSTM_HIDDEN};
 
 type InfB = NdArray;
+
+/// Reject a checkpoint whose observation dimension does not match `ORBIT_OBS_DIM`
+/// (a stale pre-fuel model) before it can reach a forward pass.
+fn check_obs_dim(model: &LstmActorCritic<InfB>) -> Result<(), ModelLoadError> {
+    let found = model.input_dim();
+    if found != ORBIT_OBS_DIM {
+        return Err(ModelLoadError::DimensionMismatch {
+            expected: ORBIT_OBS_DIM,
+            found,
+        });
+    }
+    Ok(())
+}
 
 // ---------------------------------------------------------------------------
 // Config
@@ -81,16 +95,14 @@ pub struct RlLstmOrbitController {
 impl RlLstmOrbitController {
     /// Load weights from `path` (without `.mpk` extension).
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn load(
-        path: &str,
-        config: RlLstmOrbitConfig,
-    ) -> Result<Self, burn::record::RecorderError> {
+    pub fn load(path: &str, config: RlLstmOrbitConfig) -> Result<Self, ModelLoadError> {
         let device: <InfB as Backend>::Device = Default::default();
         let model = LstmActorCritic::<InfB>::new(&device, ORBIT_OBS_DIM).load_file(
             path,
             &DefaultFileRecorder::<FullPrecisionSettings>::default(),
             &device,
         )?;
+        check_obs_dim(&model)?;
         Ok(Self {
             model: std::sync::Mutex::new(model),
             device,
@@ -105,14 +117,12 @@ impl RlLstmOrbitController {
     }
 
     /// Load weights from embedded bytes — for WASM builds where `std::fs` is unavailable.
-    pub fn load_bytes(
-        bytes: &[u8],
-        config: RlLstmOrbitConfig,
-    ) -> Result<Self, burn::record::RecorderError> {
+    pub fn load_bytes(bytes: &[u8], config: RlLstmOrbitConfig) -> Result<Self, ModelLoadError> {
         let device: <InfB as Backend>::Device = Default::default();
         let record = NamedMpkBytesRecorder::<FullPrecisionSettings>::default()
             .load(bytes.to_vec(), &device)?;
         let model = LstmActorCritic::<InfB>::new(&device, ORBIT_OBS_DIM).load_record(record);
+        check_obs_dim(&model)?;
         Ok(Self {
             model: std::sync::Mutex::new(model),
             device,

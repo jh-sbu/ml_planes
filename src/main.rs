@@ -8,7 +8,7 @@ use ml_planes::controllers::{
 #[cfg(any(feature = "inference", feature = "training"))]
 #[allow(unused_imports)]
 use ml_planes::controllers::{
-    RlLevelHoldController, RlLstmOrbitConfig, RlLstmOrbitController, RlOrbitConfig,
+    ModelLoadError, RlLevelHoldController, RlLstmOrbitConfig, RlLstmOrbitController, RlOrbitConfig,
     RlOrbitController, RlOrbitResidualConfig, RlOrbitResidualController, SelectedModel,
 };
 use ml_planes::environment::{
@@ -30,6 +30,12 @@ use ml_planes::controllers::{
 };
 #[cfg(feature = "visual")]
 use ml_planes::plane::PlaneTuningHandle;
+#[cfg(all(
+    feature = "visual",
+    any(feature = "inference", feature = "training"),
+    not(target_arch = "wasm32")
+))]
+use ml_planes::ui::notifications::Notifications;
 
 #[cfg(feature = "visual")]
 use bevy::asset::{AssetMetaCheck, AssetPlugin};
@@ -669,13 +675,14 @@ fn apply_model_switch(
         Changed<SelectedModel>,
     >,
     tuning_assets: Res<Assets<PlaneTuning>>,
+    mut notes: ResMut<Notifications>,
 ) {
     for (state, mut ctrl, kind, sel, tuning_handle, profile) in query.iter_mut() {
         let Some(dir) = kind.model_dir() else {
             continue;
         };
         if !model_path_matches_dir(&sel.0, dir) {
-            eprintln!("Ignoring model '{}' for controller {}", sel.0, kind.name());
+            warn!("Ignoring model '{}' for controller {}", sel.0, kind.name());
             continue;
         }
 
@@ -684,14 +691,14 @@ fn apply_model_switch(
                 let (target_alt, target_spd) = level_hold_targets_from_controller(&mut ctrl, state);
                 match RlLevelHoldController::load(&sel.0, target_alt, target_spd) {
                     Ok(new_ctrl) => ctrl.0 = Box::new(new_ctrl),
-                    Err(e) => eprintln!("Failed to load model {}: {e}", sel.0),
+                    Err(e) => report_skipped_model(&mut notes, &sel.0, &e),
                 }
             }
             ControllerKind::RlOrbit => {
                 let config = orbit_config_from_controller(&mut ctrl, state);
                 match RlOrbitController::load(&sel.0, config) {
                     Ok(new_ctrl) => ctrl.0 = Box::new(new_ctrl),
-                    Err(e) => eprintln!("Failed to load model {}: {e}", sel.0),
+                    Err(e) => report_skipped_model(&mut notes, &sel.0, &e),
                 }
             }
             ControllerKind::RlOrbitResidual => {
@@ -702,19 +709,36 @@ fn apply_model_switch(
                     .and_then(|pt| pt.get_orbit(profile_name));
                 match RlOrbitResidualController::load(&sel.0, config, state, orbit_tuning) {
                     Ok(new_ctrl) => ctrl.0 = Box::new(new_ctrl),
-                    Err(e) => eprintln!("Failed to load model {}: {e}", sel.0),
+                    Err(e) => report_skipped_model(&mut notes, &sel.0, &e),
                 }
             }
             ControllerKind::RlLstmOrbit => {
                 let config = lstm_orbit_config_from_controller(&mut ctrl, state);
                 match RlLstmOrbitController::load(&sel.0, config) {
                     Ok(new_ctrl) => ctrl.0 = Box::new(new_ctrl),
-                    Err(e) => eprintln!("Failed to load LSTM orbit model {}: {e}", sel.0),
+                    Err(e) => report_skipped_model(&mut notes, &sel.0, &e),
                 }
             }
             _ => {}
         }
     }
+}
+
+/// Log a model-load failure and surface a transient HUD banner. Used when an
+/// incompatible (e.g. stale-dimension) checkpoint is skipped and the controller
+/// keeps its current (PID fallback) behavior.
+#[cfg(all(
+    feature = "visual",
+    any(feature = "inference", feature = "training"),
+    not(target_arch = "wasm32")
+))]
+fn report_skipped_model(notes: &mut Notifications, path: &str, err: &ModelLoadError) {
+    warn!("Skipping model '{path}': {err}");
+    let name = std::path::Path::new(path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(path);
+    notes.push(format!("Model '{name}' skipped — {err}"));
 }
 
 /// When `ControllerKind` changes to an RL kind, load the actual RL model,
@@ -742,6 +766,7 @@ fn apply_rl_controller_switch(
     >,
     model_lib: Res<ModelLibrary>,
     tuning_assets: Res<Assets<PlaneTuning>>,
+    mut notes: ResMut<Notifications>,
 ) {
     for (entity, state, mut controller, mut kind, sel, tuning_handle, profile) in query.iter_mut() {
         if kind.is_added()
@@ -777,7 +802,7 @@ fn apply_rl_controller_switch(
                 let (tgt_alt, tgt_spd) = level_hold_targets_from_controller(&mut controller, state);
                 match RlLevelHoldController::load(&path, tgt_alt, tgt_spd) {
                     Ok(rl) => controller.0 = Box::new(rl),
-                    Err(e) => eprintln!("Failed to load RL model '{}': {e}", path),
+                    Err(e) => report_skipped_model(&mut notes, &path, &e),
                 }
             }
             ControllerKind::RlOrbit => {
@@ -785,7 +810,7 @@ fn apply_rl_controller_switch(
                 match RlOrbitController::load(&path, config) {
                     Ok(rl) => controller.0 = Box::new(rl),
                     Err(e) => {
-                        eprintln!("Failed to load RL orbit model '{}': {e}", path);
+                        report_skipped_model(&mut notes, &path, &e);
                         kind.set_if_neq(ControllerKind::Orbit);
                     }
                 }
@@ -799,7 +824,7 @@ fn apply_rl_controller_switch(
                 match RlOrbitResidualController::load(&path, config, state, orbit_tuning) {
                     Ok(rl) => controller.0 = Box::new(rl),
                     Err(e) => {
-                        eprintln!("Failed to load RL orbit residual model '{}': {e}", path);
+                        report_skipped_model(&mut notes, &path, &e);
                         kind.set_if_neq(ControllerKind::Orbit);
                     }
                 }
@@ -809,7 +834,7 @@ fn apply_rl_controller_switch(
                 match RlLstmOrbitController::load(&path, config) {
                     Ok(rl) => controller.0 = Box::new(rl),
                     Err(e) => {
-                        eprintln!("Failed to load RL LSTM orbit model '{}': {e}", path);
+                        report_skipped_model(&mut notes, &path, &e);
                         kind.set_if_neq(ControllerKind::Orbit);
                     }
                 }

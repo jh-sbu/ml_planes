@@ -15,6 +15,7 @@ use burn::{
     tensor::{backend::Backend, Tensor, TensorData},
 };
 
+use crate::controllers::model_load::ModelLoadError;
 use crate::controllers::FlightController;
 use crate::plane::{ControlInputs, FlightState};
 use crate::training::direct_action_to_inputs;
@@ -25,6 +26,19 @@ type InfB = NdArray;
 /// Observation dimension for the level-hold policy. Must match
 /// `LevelHoldEnv::observation_dim` and `build_obs` below.
 pub const LEVEL_HOLD_OBS_DIM: usize = 11;
+
+/// Reject a checkpoint whose observation dimension does not match
+/// `LEVEL_HOLD_OBS_DIM` (a stale pre-fuel model) before it can reach a forward pass.
+fn check_obs_dim(model: &ActorCritic<InfB>) -> Result<(), ModelLoadError> {
+    let found = model.input_dim();
+    if found != LEVEL_HOLD_OBS_DIM {
+        return Err(ModelLoadError::DimensionMismatch {
+            expected: LEVEL_HOLD_OBS_DIM,
+            found,
+        });
+    }
+    Ok(())
+}
 
 /// Trained PPO level-hold controller that runs inference on the CPU.
 ///
@@ -44,13 +58,14 @@ impl RlLevelHoldController {
         path: &str,
         target_altitude: f32,
         target_airspeed: f32,
-    ) -> Result<Self, burn::record::RecorderError> {
+    ) -> Result<Self, ModelLoadError> {
         let device: <InfB as Backend>::Device = Default::default();
         let model = ActorCritic::<InfB>::new(&device, LEVEL_HOLD_OBS_DIM).load_file(
             path,
             &DefaultFileRecorder::<FullPrecisionSettings>::default(),
             &device,
         )?;
+        check_obs_dim(&model)?;
         Ok(Self {
             model: std::sync::Mutex::new(model),
             device,
@@ -64,11 +79,12 @@ impl RlLevelHoldController {
         bytes: &[u8],
         target_altitude: f32,
         target_airspeed: f32,
-    ) -> Result<Self, burn::record::RecorderError> {
+    ) -> Result<Self, ModelLoadError> {
         let device: <InfB as Backend>::Device = Default::default();
         let record = NamedMpkBytesRecorder::<FullPrecisionSettings>::default()
             .load(bytes.to_vec(), &device)?;
         let model = ActorCritic::<InfB>::new(&device, LEVEL_HOLD_OBS_DIM).load_record(record);
+        check_obs_dim(&model)?;
         Ok(Self {
             model: std::sync::Mutex::new(model),
             device,
