@@ -27,6 +27,29 @@ impl Default for FormationOffset {
     }
 }
 
+/// Last-tick diagnostics published by `WingmanController::update()` for display
+/// in the HUD. Not used by the control law — purely observational telemetry.
+///
+/// The three component fields are the projections each cascade channel actually
+/// drives on (leader-right, leader-forward, world-Y); they are a channel-relevant
+/// view, not a strict orthogonal decomposition of `pos_error_mag`.
+#[derive(Clone, Debug, Default)]
+pub struct WingmanDiagnostics {
+    /// Was the leader present in `ControllerContext` this tick? When false, the
+    /// geometric fields below are stale (last good value).
+    pub leader_found: bool,
+    /// World-frame slot error (`target_pos - own.position`) [m].
+    pub pos_error: Vec3,
+    /// `|pos_error|` [m].
+    pub pos_error_mag: f32,
+    /// Cross-track component along the leader's right wing (`lateral_error`) [m].
+    pub cross_track: f32,
+    /// Fore-aft component along the leader's heading (`range_error`) [m].
+    pub range_error: f32,
+    /// Vertical component (`pos_error.y`) [m].
+    pub altitude_error: f32,
+}
+
 // ---------------------------------------------------------------------------
 // WingmanController
 
@@ -72,6 +95,9 @@ pub struct WingmanController {
     /// `kd` term supplies the heading-rate damping). Mirrors the orbit
     /// controller's `heading_pid`: kp=0.7, kd=0.1, limits=±π/3.
     pub heading_pid: PidController,
+    /// Last-tick diagnostics for HUD display (written by `update`, read-only
+    /// for the control law).
+    pub diagnostics: WingmanDiagnostics,
 }
 
 impl WingmanController {
@@ -102,6 +128,7 @@ impl WingmanController {
             range_pid: PidController::new(0.2, 0.02, 0.5, 15.0, -10.0, 10.0),
             lateral_pid: PidController::new(0.002, 0.0, 0.01, 0.5, -0.5, 0.5),
             heading_pid: PidController::new(0.7, 0.0, 0.1, 0.0, -FRAC_PI_3, FRAC_PI_3),
+            diagnostics: WingmanDiagnostics::default(),
         }
     }
 }
@@ -110,6 +137,8 @@ impl FlightController for WingmanController {
     fn update(&mut self, own: &FlightState, ctx: &ControllerContext, dt: f32) -> ControlInputs {
         let Some(leader_snap) = ctx.find(self.leader_id) else {
             // Leader not in context — hold current targets in inner controller.
+            // Mark diagnostics stale; geometric fields keep their last value.
+            self.diagnostics.leader_found = false;
             return self.inner.update(own, ctx, dt);
         };
         let leader = &leader_snap.state;
@@ -153,7 +182,17 @@ impl FlightController for WingmanController {
         let heading_error = cross.atan2(dot);
         self.inner.target_roll = -self.heading_pid.update(heading_error, dt);
 
-        // 5. Delegate stabilization to inner LevelHoldController.
+        // 5. Publish diagnostics for the HUD (observational only).
+        self.diagnostics = WingmanDiagnostics {
+            leader_found: true,
+            pos_error,
+            pos_error_mag: pos_error.length(),
+            cross_track: lateral_error,
+            range_error,
+            altitude_error: pos_error.y,
+        };
+
+        // 6. Delegate stabilization to inner LevelHoldController.
         self.inner.update(own, ctx, dt)
     }
 
@@ -307,6 +346,63 @@ mod tests {
             ctrl.inner.target_roll.abs() > 0.01,
             "expected corrective bank for heading misalignment, target_roll={}",
             ctrl.inner.target_roll
+        );
+    }
+
+    #[test]
+    fn update_populates_diagnostics_when_leader_present() {
+        // Wingman shifted a known 5 m off the slot along +leader_right (the
+        // cross-track axis). Diagnostics must record leader_found and the error.
+        let leader = level_state(Vec3::new(0.0, 1000.0, 0.0), 100.0);
+        let offset = FormationOffset {
+            offset_body: Vec3::new(-20.0, 15.0, 0.0),
+        };
+        let desired = leader.position + leader.attitude * offset.offset_body;
+
+        let leader_right = leader.attitude * Vec3::Y;
+        let own_pos = desired + leader_right * 5.0;
+        let own = level_state(own_pos, 100.0);
+
+        let mut ctrl = WingmanController::new(LEADER_ID, &leader, &own, offset);
+        let ctx = make_ctx(OWN_ID, &own, Some(LEADER_ID), Some(&leader));
+        ctrl.update(&own, &ctx, 1.0 / 60.0);
+
+        let d = &ctrl.diagnostics;
+        assert!(d.leader_found, "leader should be found in ctx");
+        assert!(
+            (d.pos_error_mag - 5.0).abs() < 1e-3,
+            "pos_error_mag={}",
+            d.pos_error_mag
+        );
+        // The 5 m offset is purely cross-track. pos_error = target - own, so an
+        // own position +5 m along leader_right yields cross_track = -5 m.
+        assert!(
+            (d.cross_track + 5.0).abs() < 1e-3,
+            "cross_track={}",
+            d.cross_track
+        );
+        assert!(d.range_error.abs() < 1e-3, "range_error={}", d.range_error);
+        assert!(
+            d.altitude_error.abs() < 1e-3,
+            "altitude_error={}",
+            d.altitude_error
+        );
+    }
+
+    #[test]
+    fn update_marks_leader_not_found_in_fallback() {
+        let own = level_state(Vec3::new(0.0, 1000.0, 0.0), 100.0);
+        let leader_initial = level_state(Vec3::new(0.0, 1000.0, 0.0), 100.0);
+        let mut ctrl =
+            WingmanController::new(LEADER_ID, &leader_initial, &own, FormationOffset::default());
+
+        // ctx contains only own plane — no leader snapshot.
+        let ctx = make_ctx(OWN_ID, &own, None, None);
+        ctrl.update(&own, &ctx, 1.0 / 60.0);
+
+        assert!(
+            !ctrl.diagnostics.leader_found,
+            "leader should be marked not found"
         );
     }
 

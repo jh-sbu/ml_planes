@@ -191,6 +191,16 @@ pub fn draw_flight_hud(
                     if selected_leader_id != current_leader_id {
                         wc.leader_id = selected_leader_id;
                     }
+
+                    let d = &wc.diagnostics;
+                    if d.leader_found {
+                        ui.label(format!("Pos error: {:.1} m", d.pos_error_mag));
+                        ui.label(format!("  Cross-track: {:+.1} m", d.cross_track));
+                        ui.label(format!("  Fore-aft:    {:+.1} m", d.range_error));
+                        ui.label(format!("  Vertical:    {:+.1} m", d.altitude_error));
+                    } else {
+                        ui.label("Leader: lost (holding)");
+                    }
                 }
             }
 
