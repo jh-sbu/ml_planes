@@ -1,0 +1,54 @@
+// Tanker — aerial-refueling tanker, KC-135R Stratotanker class.
+// Researched real-world sizing (empty ~45 t, span ~40 m, 4 × ~96 kN turbofans)
+// expressed in this sim's simplified linear-aero schema. The defining trait is the
+// enormous fuel load (~90 t) the airframe carries to give away — sets up M13 (aerial
+// refueling). Aero coefficients are physically plausible approximations, not
+// flight-test data. Aspect ratio b²/S ≈ 7.1; loaded thrust-to-weight ≈ 0.29.
+(
+    // --- Geometry ---
+    wing_area: 225.0,       // S  [m²]
+    mean_chord: 5.7,        // c̄  [m]
+    wing_span: 40.0,        // b  [m]
+
+    // --- Mass / Inertia ---
+    mass: 45000.0,          // [kg] DRY / empty — fuel adds on top,
+                            //      so a full plane masses 45000 + 90000 = 135000 kg.
+    inertia: (1.3e7, 2.6e7, 3.8e7), // Ixx, Iyy, Izz [kg·m²]
+
+    // --- Longitudinal Aerodynamic Coefficients ---
+    cl0: 0.1,
+    cl_alpha: 4.8,
+    cl_delta_e: 0.4,
+    cl_max: 1.4,
+
+    cd0: 0.022,
+    cd_induced: 0.05,       // CDi ≈ 1/(π·e·AR), AR≈7.1
+
+    cm0: -0.02,
+    cm_alpha: 0.6,          // positive = nose-down restoring (stable)
+    cm_q: -16.0,            // pitch damping (long tail arm)
+    cm_delta_e: -1.2,
+
+    // --- Lateral-Directional Coefficients ---
+    cl_beta: -0.08,
+    cl_p: -0.5,             // roll damping (large span)
+    cl_r: 0.12,
+    cl_delta_a: 0.18,
+
+    cn_beta: 0.10,
+    cn_r: -0.12,
+    cn_delta_r: -0.10,
+
+    // --- Engine ---
+    thrust_max: 384000.0,   // [N] at throttle = 1.0 (4 × ~96 kN)
+
+    // --- Powerplant (consumable) ---
+    // High-bypass turbofan burning JP-8. The large ~90 t load is the tanker's payload
+    // of transferable fuel; the airframe lightens dramatically as it burns/gives away.
+    powerplant: JetFuel(capacity_kg: 90000.0, tsfc: 1.7e-5, fuel_type: Jp8),
+
+    // --- Control Limits ---
+    aileron_limit: 0.4363,  // [rad] ≈ 25°
+    elevator_limit: 0.3491, // [rad] ≈ 20°
+    rudder_limit: 0.2618,   // [rad] ≈ 15°
+)

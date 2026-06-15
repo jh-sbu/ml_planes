@@ -1,0 +1,54 @@
+// Physics-scaled STARTER PID gains for cargo_jet.plane.ron — NOT yet /tune-validated.
+// Derived from generic_jet.tuning.ron "normal" profiles scaled by the cargo jet's
+// cruise physics (tune skill Phase-1 ratios): altitude gains ∝ 1/V_c (V_c≈171 m/s ⇒
+// ×0.77), airspeed gains ∝ T_c/V_c (×2.20). Pitch inner loop and feedforward kept at
+// generic values (nondimensionally similar; same cm_δe / elevator authority).
+// Run `/tune assets/planes/cargo_jet.plane.ron <controller>` to refine across the envelope.
+PlaneTuning(
+    level_hold: {
+        "normal": LevelHoldTuning(
+            alt_kp: 0.0115,
+            alt_ki: 0.169,
+            alt_kd: 0.107,
+            pitch_kp: 0.910,
+            pitch_kd: 0.764,
+            spd_kp: 0.022,
+            spd_ki: 0.132,
+            throttle_ff_gain: 0.3,
+        ),
+    },
+    orbit: {
+        "normal": OrbitTuning(
+            radial_kp: 0.002,
+            radial_kd: 0.01,
+            heading_kp: 0.7,
+            heading_kd: 0.1,
+            inner: LevelHoldTuning(
+                alt_kp: 0.0077,
+                alt_ki: 0.092,
+                alt_kd: 0.031,
+                pitch_kp: 1.000,
+                pitch_kd: 0.500,
+                spd_kp: 0.022,
+                spd_ki: 0.132,
+                throttle_ff_gain: 0.7,
+            ),
+        ),
+    },
+    heading_hold: {
+        "normal": HeadingHoldTuning(
+            heading_kp: 0.7,
+            heading_kd: 0.1,
+            inner: LevelHoldTuning(
+                alt_kp: 0.0077,
+                alt_ki: 0.092,
+                alt_kd: 0.031,
+                pitch_kp: 1.000,
+                pitch_kd: 0.500,
+                spd_kp: 0.022,
+                spd_ki: 0.132,
+                throttle_ff_gain: 0.7,
+            ),
+        ),
+    },
+)

@@ -1,0 +1,52 @@
+// Light Business Jet — Embraer Phenom 300 / Citation CJ class.
+// Researched real-world sizing (empty ~3.8 t, span ~16 m, 2 × ~14 kN turbofans,
+// ~1.8 t fuel) expressed in this sim's simplified linear-aero schema. Aero
+// coefficients are physically plausible approximations, not flight-test data.
+// Aspect ratio b²/S ≈ 9.1 (efficient cruise wing); loaded thrust-to-weight ≈ 0.51.
+(
+    // --- Geometry ---
+    wing_area: 28.0,        // S  [m²]
+    mean_chord: 1.8,        // c̄  [m]
+    wing_span: 16.0,        // b  [m]
+
+    // --- Mass / Inertia ---
+    mass: 3800.0,           // [kg] DRY / empty — fuel adds on top,
+                            //      so a full plane masses 3800 + 1800 = 5600 kg.
+    inertia: (14000.0, 26000.0, 38000.0), // Ixx, Iyy, Izz [kg·m²]
+
+    // --- Longitudinal Aerodynamic Coefficients ---
+    cl0: 0.1,
+    cl_alpha: 5.0,          // dCL/dα [1/rad] (high-aspect wing)
+    cl_delta_e: 0.4,
+    cl_max: 1.4,
+
+    cd0: 0.020,             // zero-lift drag (clean airframe)
+    cd_induced: 0.040,      // CDi ≈ 1/(π·e·AR), AR≈9.1
+
+    cm0: -0.02,
+    cm_alpha: 0.6,          // positive = nose-down restoring (stable)
+    cm_q: -14.0,
+    cm_delta_e: -1.2,
+
+    // --- Lateral-Directional Coefficients ---
+    cl_beta: -0.08,
+    cl_p: -0.45,
+    cl_r: 0.12,
+    cl_delta_a: 0.18,
+
+    cn_beta: 0.10,
+    cn_r: -0.12,
+    cn_delta_r: -0.10,
+
+    // --- Engine ---
+    thrust_max: 28000.0,    // [N] at throttle = 1.0 (2 × ~14 kN)
+
+    // --- Powerplant (consumable) ---
+    // Small civilian turbofans burning Jet A; ~1.8 t fuel (~modest endurance).
+    powerplant: JetFuel(capacity_kg: 1800.0, tsfc: 2.0e-5, fuel_type: JetA),
+
+    // --- Control Limits ---
+    aileron_limit: 0.4363,  // [rad] ≈ 25°
+    elevator_limit: 0.3491, // [rad] ≈ 20°
+    rudder_limit: 0.2618,   // [rad] ≈ 15°
+)

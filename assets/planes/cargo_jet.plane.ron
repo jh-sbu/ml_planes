@@ -1,0 +1,52 @@
+// Cargo Jet — heavy military airlifter, C-17 Globemaster III class.
+// Researched real-world sizing (empty ~128 t, span ~52 m, 4 × ~180 kN high-bypass
+// turbofans, ~90 t fuel) expressed in this sim's simplified linear-aero schema.
+// Aero coefficients are physically plausible approximations, not flight-test data.
+// Aspect ratio b²/S ≈ 7.7; loaded thrust-to-weight ≈ 0.30.
+(
+    // --- Geometry ---
+    wing_area: 350.0,       // S  [m²]
+    mean_chord: 6.8,        // c̄  [m]
+    wing_span: 52.0,        // b  [m]
+
+    // --- Mass / Inertia ---
+    mass: 128000.0,         // [kg] DRY / empty — fuel (see powerplant) adds on top,
+                            //      so a full plane masses 128000 + 90000 = 218000 kg.
+    inertia: (1.95e7, 2.46e7, 4.2e7), // Ixx, Iyy, Izz [kg·m²] (held constant w.r.t. fuel)
+
+    // --- Longitudinal Aerodynamic Coefficients ---
+    cl0: 0.1,
+    cl_alpha: 4.8,          // dCL/dα [1/rad] (higher-aspect wing, modestly steeper)
+    cl_delta_e: 0.4,
+    cl_max: 1.4,            // stall cap (no high-lift devices modeled)
+
+    cd0: 0.024,             // zero-lift drag (large wetted area)
+    cd_induced: 0.045,      // CDi ≈ 1/(π·e·AR), AR≈7.7
+
+    cm0: -0.02,
+    cm_alpha: 0.6,          // positive = nose-down restoring (stable)
+    cm_q: -16.0,            // pitch damping (long tail arm)
+    cm_delta_e: -1.2,
+
+    // --- Lateral-Directional Coefficients ---
+    cl_beta: -0.08,
+    cl_p: -0.5,             // roll damping (large span)
+    cl_r: 0.12,
+    cl_delta_a: 0.18,
+
+    cn_beta: 0.10,
+    cn_r: -0.12,
+    cn_delta_r: -0.10,
+
+    // --- Engine ---
+    thrust_max: 720000.0,   // [N] at throttle = 1.0 (4 × ~180 kN)
+
+    // --- Powerplant (consumable) ---
+    // High-bypass turbofan burning JP-8; tsfc lower than the generic jet. ~90 t fuel.
+    powerplant: JetFuel(capacity_kg: 90000.0, tsfc: 1.6e-5, fuel_type: Jp8),
+
+    // --- Control Limits ---
+    aileron_limit: 0.4363,  // [rad] ≈ 25°
+    elevator_limit: 0.3491, // [rad] ≈ 20°
+    rudder_limit: 0.2618,   // [rad] ≈ 15°
+)

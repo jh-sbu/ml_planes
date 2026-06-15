@@ -87,6 +87,23 @@ fn shipped_plane_assets_parse_with_expected_powerplants() {
         !electric.powerplant.contributes_mass(),
         "electric mass is constant"
     );
+
+    // The transport-class jets (cargo, business, tanker) all burn jet fuel and so
+    // contribute mass — they must parse and report a JetFuel powerplant.
+    for stem in ["cargo_jet", "business_jet", "tanker"] {
+        let cfg: PlaneConfig = ron::de::from_str(
+            &std::fs::read_to_string(format!("assets/planes/{stem}.plane.ron")).unwrap(),
+        )
+        .unwrap_or_else(|e| panic!("{stem} parses: {e}"));
+        assert!(
+            matches!(cfg.powerplant, Powerplant::JetFuel { .. }),
+            "{stem} should be jet-fuel"
+        );
+        assert!(
+            cfg.powerplant.contributes_mass(),
+            "{stem} jet fuel contributes mass"
+        );
+    }
 }
 
 #[test]

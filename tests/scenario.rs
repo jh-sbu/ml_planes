@@ -34,6 +34,7 @@ fn shipped_scenarios_parse_and_resolve() {
         "orbit",
         "wingman_formation",
         "mixed_powerplant",
+        "fleet_demo",
     ] {
         let path = format!("assets/scenarios/{name}.scenario.ron");
         let scenario = Scenario::from_path(Path::new(&path)).unwrap_or_else(|e| {

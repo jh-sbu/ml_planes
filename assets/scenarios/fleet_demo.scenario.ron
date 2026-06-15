@@ -1,0 +1,47 @@
+// Fleet demo: the three transport-class airframes (cargo jet, light business jet,
+// tanker) flying level side by side, each at its own cruise altitude/airspeed and
+// laterally separated. Exercises the new .plane.ron configs and their physics-scaled
+// "normal" level_hold tuning end to end.
+//
+// Run: cargo run --example observe_state --no-default-features -- \
+//        --scenario assets/scenarios/fleet_demo.scenario.ron --steps 3840 --interval 64
+//
+// Each plane spawns on-condition (spawn altitude = level-hold target, spawn velocity =
+// target airspeed along +X) so level-hold engages cleanly. Cruise speeds reflect each
+// airframe's V_c: cargo/tanker ≈ 170 m/s, the lighter business jet ≈ 100 m/s.
+(
+    steps: 3840,
+    interval: 64,
+    planes: [
+        (
+            name: "cargo",
+            config: "assets/planes/cargo_jet.plane.ron",
+            position: (0.0, 1000.0, -200.0),
+            velocity: (170.0, 0.0, 0.0),
+            controller: LevelHold(
+                altitude: 1000.0,
+                airspeed: 170.0,
+            ),
+        ),
+        (
+            name: "business",
+            config: "assets/planes/business_jet.plane.ron",
+            position: (0.0, 800.0, 0.0),
+            velocity: (100.0, 0.0, 0.0),
+            controller: LevelHold(
+                altitude: 800.0,
+                airspeed: 100.0,
+            ),
+        ),
+        (
+            name: "tanker",
+            config: "assets/planes/tanker.plane.ron",
+            position: (0.0, 1200.0, 200.0),
+            velocity: (168.0, 0.0, 0.0),
+            controller: LevelHold(
+                altitude: 1200.0,
+                airspeed: 168.0,
+            ),
+        ),
+    ],
+)
