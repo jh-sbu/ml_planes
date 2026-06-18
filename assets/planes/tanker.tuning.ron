@@ -1,19 +1,23 @@
-// Physics-scaled STARTER PID gains for tanker.plane.ron — NOT yet /tune-validated.
-// Derived from generic_jet.tuning.ron "normal" profiles scaled by the tanker's cruise
-// physics (tune skill Phase-1 ratios): altitude gains ∝ 1/V_c (V_c≈168 m/s ⇒ ×0.78),
-// airspeed gains ∝ T_c/V_c (×2.47). Pitch inner loop and feedforward kept at generic
-// values (nondimensionally similar; same cm_δe / elevator authority).
-// Run `/tune assets/planes/tanker.plane.ron <controller>` to refine across the envelope.
+// Physics-scaled STARTER gains for orbit/heading_hold — NOT yet /tune-validated.
+// Run `/tune assets/planes/tanker.plane.ron <controller>` to refine those across the envelope.
+//
+// level_hold."normal" — /tune-validated 2026-06-18 (passes all 5 envelope scenarios,
+// 200m/80–2000m/130 m·s⁻¹). NOTE: observe_state flies the DRY 45 t airframe (it spawns
+// mass=cfg.mass with infinite fuel), so these are tuned for 45 t — the live sim spawns the
+// loaded ~135 t jet, which (being even more sluggish in pitch) may want still more pitch_kd.
+// The tanker's huge pitch inertia gives a lightly-damped phugoid that locks into a
+// ±22 m limit cycle (pitch_target clamp → bang-bang) under generic-style gains; the fix was
+// heavy inner-loop pitch-rate damping (pitch_kd 0.76→8.0) plus a small alt_kd bump.
 PlaneTuning(
     level_hold: {
         "normal": LevelHoldTuning(
-            alt_kp: 0.0117,
-            alt_ki: 0.172,
-            alt_kd: 0.109,
-            pitch_kp: 0.910,
-            pitch_kd: 0.764,
-            spd_kp: 0.0247,
-            spd_ki: 0.148,
+            alt_kp: 0.015,
+            alt_ki: 0.22,
+            alt_kd: 0.20,
+            pitch_kp: 2.0,
+            pitch_kd: 8.0,
+            spd_kp: 0.03,
+            spd_ki: 0.15,
             throttle_ff_gain: 0.3,
         ),
     },
