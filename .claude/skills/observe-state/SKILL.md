@@ -62,6 +62,9 @@ level-hold scenario this skill writes per envelope point is:
             // Spawn AT target airspeed (+X). Required — omitting velocity defaults
             // to 100 m/s, turning a steady-state test into a deceleration transient.
             velocity: (TARGET_AIRSPEED, 0.0, 0.0),
+            // Optional starting fuel as a fraction of capacity [0,1]; omit = full
+            // tank. observe_state flies the resulting LOADED mass and burns fuel.
+            // fuel_fraction: 1.0,
             controller: LevelHold(
                 altitude: TARGET_ALT,
                 airspeed: TARGET_AIRSPEED,
@@ -96,9 +99,14 @@ cargo run --example observe_state --no-default-features -- --scenario <FILE>
 Use the Read tool to open the supplied `.plane.ron`. Extract:
 
 - `thrust_max` — maximum thrust (N)
-- `mass` — aircraft mass (kg)
+- `mass` — **dry/empty** aircraft mass (kg)
+- `powerplant` — `JetFuel { capacity_kg }` or `Electric`
 - `cl_max` — maximum lift coefficient
 - `wing_area` (S) — reference area (m²)
+
+observe_state flies the **loaded** mass: `mass_loaded = mass + capacity_kg` for a
+full JetFuel tank (the default), or `mass` for Electric. Use `mass_loaded` for the
+lift/weight and feasibility estimates below.
 
 Estimate a rough cruise speed range (airspeed where lift ≈ weight at moderate α).
 Set `PLANE = <supplied path>` — generated scenarios set `config: "PLANE"`.
@@ -187,11 +195,15 @@ The `.mpk` extension on the model path is optional. No gain overrides apply to R
 ```
 step, time_s, plane, pos_x, altitude_m, pos_z, airspeed_ms, alpha_deg, beta_deg,
 roll_deg, pitch_deg, yaw_deg, pitch_rate, roll_rate, yaw_rate,
-elevator, throttle, aileron, rudder, radial_error_m, heading_error_rad, bank_ff_rad
+elevator, throttle, aileron, rudder, radial_error_m, heading_error_rad, bank_ff_rad,
+fuel_remaining
 ```
 
 One row per plane per sampled step (single-plane envelope runs → one row per
-step). The trailing three orbit columns are blank for level-hold planes. Step 0
+step). The three orbit columns (`radial_error_m`..`bank_ff_rad`) are blank for
+level-hold planes. The trailing `fuel_remaining` is the powerplant consumable left
+(kg for jets, kWh for electric); watch it to confirm the tank did not run dry mid-run
+(a flameout zeroes thrust and would invalidate the result). Step 0
 often shows all-zero state — normal, the state populates by step 1.
 
 ---

@@ -33,6 +33,16 @@ Set `steps` per phase (1800 = coarse grid, 3840 = full 60 s validation) and
 `interval: 64` (one row per second). The loader enables `implicit_some`, so write
 bare values (`tuning: (...)`), not `Some(...)`.
 
+> **Fuel / loaded mass.** `observe_state` now models the powerplant: a plane
+> spawns with `fuel_fraction × capacity` of fuel and flies at the corresponding
+> **loaded mass** (`effective_mass(dry_mass, fuel)`), burning down over the run.
+> `fuel_fraction` defaults to `1.0` (full tank) when omitted — so tunes are done at
+> the heaviest, deployed condition. Add `fuel_fraction: F` (0–1) to a plane to tune
+> at a different load. The dry `mass` field in `.plane.ron` is the **empty** mass;
+> for jets the flown mass is `mass + fuel_fraction × capacity_kg` (electric burns no
+> mass). Use this **loaded mass** everywhere a Phase-1 formula says "mass" (see
+> Phase 1).
+
 **Level-hold template** (`STEPS`, `TARGET_ALT`, `TARGET_AIRSPEED`, and the 7 gains):
 
 ```ron
@@ -46,6 +56,8 @@ bare values (`tuning: (...)`), not `Some(...)`.
         // Spawn AT target airspeed (+X). Required — omitting velocity defaults to
         // 100 m/s and corrupts every non-100 envelope point with a speed transient.
         velocity: (TARGET_AIRSPEED, 0.0, 0.0),
+        // Optional — fraction of fuel/charge capacity [0,1]; omit = full tank.
+        // fuel_fraction: 1.0,
         controller: LevelHold(
             altitude: TARGET_ALT,
             airspeed: TARGET_AIRSPEED,
@@ -71,6 +83,7 @@ bare values (`tuning: (...)`), not `Some(...)`.
         config: "PLANE",
         position: (0.0, TARGET_ALT, 0.0),
         velocity: (TARGET_AIRSPEED, 0.0, 0.0),   // spawn at target airspeed (+X)
+        // fuel_fraction: 1.0,   // optional [0,1]; omit = full tank (loaded mass)
         controller: Orbit(
             radius: RADIUS,
             direction: CounterClockwise,
@@ -102,6 +115,7 @@ is the commanded heading; 2 outer + 7 inner gains):
         config: "PLANE",
         position: (0.0, TARGET_ALT, 0.0),
         velocity: (TARGET_AIRSPEED, 0.0, 0.0),   // spawn at target airspeed, heading 0 (+X)
+        // fuel_fraction: 1.0,   // optional [0,1]; omit = full tank (loaded mass)
         controller: HeadingHold(
             heading_deg: TARGET_HEADING_DEG,
             altitude: TARGET_ALT,
@@ -125,10 +139,13 @@ is the commanded heading; 2 outer + 7 inner gains):
 ```
 step, time_s, plane, pos_x, altitude_m, pos_z, airspeed_ms, alpha_deg, beta_deg,
 roll_deg, pitch_deg, yaw_deg, pitch_rate, roll_rate, yaw_rate,
-elevator, throttle, aileron, rudder, radial_error_m, heading_error_rad, bank_ff_rad
+elevator, throttle, aileron, rudder, radial_error_m, heading_error_rad, bank_ff_rad,
+fuel_remaining
 ```
 
 Level-hold tuning uses `altitude_m`, `airspeed_ms`, `elevator`, `pitch_rate`.
+The trailing `fuel_remaining` (kg jet / kWh electric) is informational — it lets you
+confirm the tank did not run dry mid-run (a flameout would corrupt the result).
 Orbit tuning also uses `radial_error_m` and `heading_error_rad` (blank for
 level-hold runs). Step 0 often shows all-zero state — ignore it; evaluate the
 final window only.
@@ -169,19 +186,30 @@ Stop here.
 Use the Read tool to open `PLANE`. Extract:
 
 - `thrust_max` — maximum thrust (N)
-- `mass` — aircraft mass (kg)
+- `mass` — **dry/empty** aircraft mass (kg)
+- `powerplant` — for `JetFuel`, the `capacity_kg`; for `Electric`, no mass contribution
 - `wing_area` (S) — reference area (m²)
 - `cl0`, `cl_alpha`, `cl_max`
 - `cd0`, `cd_induced`
 - `cm_delta_e`, `elevator_limit`
 - `mean_chord`
 
+**Compute the loaded mass first.** `observe_state` flies the plane at its loaded
+mass, not the dry `mass` field. For the default full tank:
+
+```
+mass_loaded = mass + capacity_kg          # JetFuel  (use mass + fuel_fraction × capacity_kg if you set fuel_fraction)
+mass_loaded = mass                         # Electric (constant mass)
+```
+
+Use `mass_loaded` (NOT the dry `mass` field) everywhere "mass" appears below.
+
 **Compute cruise reference values** (air density ρ = 1.225 kg/m³):
 
 ```
-V_c  = sqrt(2 * mass * 9.81 / (1.225 * wing_area * (cl0 + cl_alpha * 0.05)))
+V_c  = sqrt(2 * mass_loaded * 9.81 / (1.225 * wing_area * (cl0 + cl_alpha * 0.05)))
 q_c  = 0.5 * 1.225 * V_c²
-CL_c = mass * 9.81 / (q_c * wing_area)
+CL_c = mass_loaded * 9.81 / (q_c * wing_area)
 CD_c = cd0 + cd_induced * CL_c²
 T_c  = (q_c * wing_area * CD_c) / thrust_max   [normalised 0–1]
 ```
@@ -221,7 +249,7 @@ physics-based outer-loop estimates with empirically selected ones when those est
 likely unreliable.
 
 **Run Phase 1b when any of the following hold:**
-- `thrust_max / (mass × 9.81)` is outside [0.3, 0.8]
+- `thrust_max / (mass_loaded × 9.81)` is outside [0.3, 0.8]
 - Computed `V_c` is below 50 m/s or above 200 m/s
 - Computed `T_c` exceeds 0.85 or is below 0.1
 - (Post-Round-0 fallback) Round 0 fails 3+ scenarios **and** failure modes are inconsistent
@@ -541,10 +569,12 @@ Use **Edit** to insert `level_hold: { … }` before the final `)` of the `PlaneT
 ## Orbit Phase 1 — Read config and derive physics-based gain estimates
 
 Use the Read tool to open `PLANE`. Extract the same fields as level-hold Phase 1
-(`thrust_max`, `mass`, `wing_area`, `cl0`, `cl_alpha`, `cd0`, `cd_induced`,
-`cm_delta_e`, `elevator_limit`).
+(`thrust_max`, `mass`, `powerplant`, `wing_area`, `cl0`, `cl_alpha`, `cd0`,
+`cd_induced`, `cm_delta_e`, `elevator_limit`).
 
-Compute the same cruise reference values (`V_c`, `q_c`, `CL_c`, `CD_c`, `T_c`).
+Compute `mass_loaded` (= `mass + capacity_kg` for JetFuel at full tank, `mass` for
+Electric) and the same cruise reference values (`V_c`, `q_c`, `CL_c`, `CD_c`, `T_c`)
+using `mass_loaded` — exactly as in level-hold Phase 1.
 
 **Inner-loop candidates** (same formulas as level-hold Phase 1):
 
@@ -832,11 +862,13 @@ Use **Edit** to insert `orbit: { … }` before the final `)` of the `PlaneTuning
 
 ## H1 — Read config and derive physics-based gain estimates
 
-Use the Read tool to open `PLANE`. Extract `mass`, `wing_area`, `cl0`, `cl_alpha`.
+Use the Read tool to open `PLANE`. Extract `mass`, `powerplant`, `wing_area`,
+`cl0`, `cl_alpha`. Compute `mass_loaded` (= `mass + capacity_kg` for JetFuel at
+full tank, `mass` for Electric) — observe_state flies the loaded mass.
 
 Compute cruise speed:
 ```
-V_c = sqrt(2 * mass * 9.81 / (1.225 * wing_area * (cl0 + cl_alpha * 0.05)))
+V_c = sqrt(2 * mass_loaded * 9.81 / (1.225 * wing_area * (cl0 + cl_alpha * 0.05)))
 ```
 
 **Outer-loop candidates:**

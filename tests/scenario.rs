@@ -55,10 +55,43 @@ fn shipped_scenarios_parse_and_resolve() {
 #[test]
 fn csv_header_is_pinned() {
     // Skills parse this exact column layout; guard against silent drift.
+    // `fuel_remaining` is appended last so existing positional column indices
+    // stay stable for skills that parse by position.
     assert_eq!(
         CSV_HEADER,
         "step,time_s,plane,pos_x,altitude_m,pos_z,airspeed_ms,alpha_deg,beta_deg,\
          roll_deg,pitch_deg,yaw_deg,pitch_rate,roll_rate,yaw_rate,\
-         elevator,throttle,aileron,rudder,radial_error_m,heading_error_rad,bank_ff_rad"
+         elevator,throttle,aileron,rudder,radial_error_m,heading_error_rad,bank_ff_rad,\
+         fuel_remaining"
     );
+}
+
+#[test]
+fn fuel_fraction_is_carried_through_resolve() {
+    // A per-plane `fuel_fraction` in the scenario RON must survive resolution so
+    // observe_state can load the tank to that fraction of capacity. Omitting it
+    // resolves to None (observe_state then defaults to a full tank).
+    let src = r#"(
+        steps: 10,
+        interval: 1,
+        planes: [
+            (
+                name: "partial",
+                position: (0.0, 500.0, 0.0),
+                velocity: (100.0, 0.0, 0.0),
+                fuel_fraction: 0.25,
+                controller: LevelHold(altitude: 500.0, airspeed: 100.0),
+            ),
+            (
+                name: "default_tank",
+                position: (0.0, 500.0, 0.0),
+                velocity: (100.0, 0.0, 0.0),
+                controller: LevelHold(altitude: 500.0, airspeed: 100.0),
+            ),
+        ],
+    )"#;
+    let scenario = Scenario::from_ron_str(src).expect("parse fuel scenario");
+    let resolved = scenario.resolve().expect("resolve");
+    assert_eq!(resolved.planes[0].fuel_fraction, Some(0.25));
+    assert_eq!(resolved.planes[1].fuel_fraction, None);
 }

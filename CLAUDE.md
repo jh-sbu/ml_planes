@@ -87,7 +87,7 @@ src/
 | `VecEnv<E>` | struct | Wraps any `TrainingEnv` to run N parallel episodes (seeds offset per env) |
 | `DemonstrationEnv` / `BcDataset` | trait / struct | Behavior cloning: `collect_demonstrations()` rolls out a PID expert into a supervised dataset for `train_bc` pretraining |
 | `EvaluationSummary` / `TaskMetrics` | structs | Policy-evaluation output from `evaluate_policy` (success rate + per-metric families) |
-| `Scenario` / `ResolvedScenario` | RON model (`src/scenario.rs`) | Multi-plane `.scenario.ron`: per-plane initial state, `.plane.ron` config, and a `ControllerSpec` (incl. `Wingman` peer references by name, optional inline tuning, cfg-gated RL specs). `resolve()` assigns `PlaneId`s and computes initial states; `build_controller()` builds the boxed controller. Drives `examples/observe_state.rs` via `--scenario`. |
+| `Scenario` / `ResolvedScenario` | RON model (`src/scenario.rs`) | Multi-plane `.scenario.ron`: per-plane initial state, optional `fuel_fraction` (0–1; default full tank → loaded mass), `.plane.ron` config, and a `ControllerSpec` (incl. `Wingman` peer references by name, optional inline tuning, cfg-gated RL specs). `resolve()` assigns `PlaneId`s and computes initial states; `build_controller()` builds the boxed controller. Drives `examples/observe_state.rs` via `--scenario`. CSV output ends with a `fuel_remaining` column. |
 
 ### Physics Layering
 
@@ -131,7 +131,11 @@ Each `PlaneConfig` carries a `powerplant` (`plane/config.rs`). `FlightState.cons
 tracks the remaining fuel (kg) or charge (kWh); it **defaults to `f32::INFINITY`** = an
 unmodelled / unlimited tank, so ad-hoc states and most tests neither burn nor change mass
 (`effective_mass` and `engine_thrust` treat non-finite as full). Spawn/reset opt into the model
-by assigning a finite capacity.
+by assigning a finite capacity. The live `spawn_plane`, the training reset, **and the
+`observe_state`/`.scenario.ron` runner** all load a finite tank (`capacity × fuel_fraction`,
+default full) and fly the resulting loaded mass — so `observe_state` (and the `/tune`,
+`/observe-state` skills it drives) see the real loaded weight, not the dry `mass` field. Set a
+per-plane `fuel_fraction` (0–1) in the scenario to fly a partial tank.
 
 - **Thrust** comes from the shared `aerodynamics::engine_thrust(state, inputs, cfg)`: the usual
   `throttle · thrust_max · density_ratio(altitude)`, but **0 when empty** (flameout / dead battery).
@@ -535,7 +539,7 @@ app.add_plugins(EguiPlugin { enable_multipass_for_primary_context: false });
 - `wingman.rs` — formation flight relative-position tracking
 - `flight_plan.rs` — L1 flight-plan leg sequencing / waypoint capture
 - `orbit_tune_sync.rs` — orbit tuning-pool / gain-sync invariants
-- `scenario.rs` — `.scenario.ron` parse/resolve/build + CSV header pinning (`ml_planes::scenario::CSV_HEADER`)
+- `scenario.rs` — `.scenario.ron` parse/resolve/build, per-plane `fuel_fraction` carried through `resolve()`, + CSV header pinning (`ml_planes::scenario::CSV_HEADER`, incl. trailing `fuel_remaining`)
 - `lifecycle.rs` — runtime spawn/remove commands, auto-indexing, orphaned-wingman + camera cleanup (camera case is `visual`-gated)
 - `fuel.rs` — live-sim fuel: spawn-time tank load (`fuel_fraction`), `consume_fuel` burn + `update_plane_mass`, shipped-asset powerplant parse
 - `rl_inference.rs` — RL controller load + deterministic inference (`inference`/`training`-gated)

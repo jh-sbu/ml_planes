@@ -83,6 +83,13 @@ pub struct PlaneSpec {
     /// Body-frame angular velocity [rad/s]. `None` → zero.
     #[serde(default)]
     pub angular_velocity: Option<(f32, f32, f32)>,
+    /// Starting fuel/charge as a fraction of the powerplant's capacity, in
+    /// `[0, 1]`. `None` → full tank (1.0), matching the live spawner. The
+    /// fraction is multiplied by `Powerplant::capacity()` where the config is
+    /// loaded (observe_state) to set the initial `consumable_remaining` and the
+    /// loaded mass.
+    #[serde(default)]
+    pub fuel_fraction: Option<f32>,
     /// The controller flown by this plane.
     pub controller: ControllerSpec,
 }
@@ -206,6 +213,10 @@ pub struct ResolvedPlane {
     pub angular_velocity: Vec3,
     /// Initial flight state (air data already computed).
     pub state: FlightState,
+    /// Starting fuel/charge as a fraction of powerplant capacity `[0, 1]`, carried
+    /// from the scenario. `None` → full tank. Applied (× `Powerplant::capacity()`)
+    /// where the `.plane.ron` config is loaded, since `resolve()` has only the path.
+    pub fuel_fraction: Option<f32>,
     /// Resolved orbit geometry for orbit-like controllers; `None` otherwise.
     pub orbit_diag: Option<OrbitDiag>,
     pub spec: ControllerSpec,
@@ -291,6 +302,7 @@ impl Scenario {
                 attitude,
                 angular_velocity,
                 state,
+                fuel_fraction: spec.fuel_fraction,
                 orbit_diag,
                 spec: spec.controller.clone(),
             });
@@ -486,9 +498,12 @@ impl ResolvedScenario {
 // CSV output
 
 /// Header for the per-plane CSV emitted by `observe_state` in scenario mode.
-/// One row per plane per sampled step. The trailing orbit-diagnostic columns
-/// are populated for orbit-like controllers and left blank otherwise.
-pub const CSV_HEADER: &str = "step,time_s,plane,pos_x,altitude_m,pos_z,airspeed_ms,alpha_deg,beta_deg,roll_deg,pitch_deg,yaw_deg,pitch_rate,roll_rate,yaw_rate,elevator,throttle,aileron,rudder,radial_error_m,heading_error_rad,bank_ff_rad";
+/// One row per plane per sampled step. The orbit-diagnostic columns
+/// (`radial_error_m`..`bank_ff_rad`) are populated for orbit-like controllers and
+/// left blank otherwise. The trailing `fuel_remaining` column is the powerplant
+/// consumable left (kg for jets, kWh for electric) — appended last so existing
+/// positional column indices stay stable for skills that parse by position.
+pub const CSV_HEADER: &str = "step,time_s,plane,pos_x,altitude_m,pos_z,airspeed_ms,alpha_deg,beta_deg,roll_deg,pitch_deg,yaw_deg,pitch_rate,roll_rate,yaw_rate,elevator,throttle,aileron,rudder,radial_error_m,heading_error_rad,bank_ff_rad,fuel_remaining";
 
 /// Format one CSV row for a plane at a given step. `orbit_diag` drives the three
 /// trailing orbit columns; pass the plane's [`ResolvedPlane::orbit_diag`].
@@ -517,7 +532,7 @@ pub fn csv_row(
         None => ",,".to_string(),
     };
     format!(
-        "{},{:.3},{},{:.2},{:.2},{:.2},{:.2},{:.3},{:.3},{:.3},{:.3},{:.3},{:.4},{:.4},{:.4},{:.3},{:.3},{:.3},{:.3},{}",
+        "{},{:.3},{},{:.2},{:.2},{:.2},{:.2},{:.3},{:.3},{:.3},{:.3},{:.3},{:.4},{:.4},{:.4},{:.3},{:.3},{:.3},{:.3},{},{:.1}",
         step,
         step as f32 / 64.0,
         name,
@@ -538,6 +553,7 @@ pub fn csv_row(
         inputs.aileron,
         inputs.rudder,
         orbit_cols,
+        state.consumable_remaining, // kg (jet) / kWh (electric); inf if unmodelled
     )
 }
 

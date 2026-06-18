@@ -103,6 +103,13 @@ fn main() {
         // Body-frame angular velocity → world frame for Rapier.
         let angvel_world = plane.attitude.mul_vec3(plane.angular_velocity);
 
+        // Load the tank to the requested fraction of capacity (default full),
+        // mirroring the live spawner (environment::spawner::spawn_plane). The
+        // PlanePlugin's `consume_fuel` / `update_plane_mass` systems then burn it
+        // down and keep the Rapier body mass current over the run.
+        let fuel_fraction = plane.fuel_fraction.unwrap_or(1.0);
+        let consumable = cfg.powerplant.capacity() * fuel_fraction;
+
         app.world_mut().spawn((
             RigidBody::Dynamic,
             Collider::cuboid(3.0, 0.5, 1.0),
@@ -113,11 +120,15 @@ fn main() {
             ExternalForce::default(),
             AdditionalMassProperties::MassProperties(MassProperties {
                 local_center_of_mass: Vec3::ZERO,
-                mass: cfg.mass,
+                // Empty mass + fuel load (jets); empty mass alone for electric.
+                mass: cfg.powerplant.effective_mass(cfg.mass, consumable),
                 principal_inertia: cfg.inertia,
                 principal_inertia_local_frame: Quat::IDENTITY,
             }),
-            FlightState::default(),
+            FlightState {
+                consumable_remaining: consumable,
+                ..FlightState::default()
+            },
             ControlInputs::default(),
             ActiveController(controller),
             PlaneConfigHandle(handle),
