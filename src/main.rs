@@ -491,6 +491,29 @@ mod tests {
             "CW/CCW seed banks should be symmetric: cw={cw}, ccw={ccw}"
         );
     }
+
+    #[cfg(all(
+        feature = "visual",
+        any(feature = "inference", feature = "training"),
+        not(target_arch = "wasm32")
+    ))]
+    #[test]
+    fn rl_kind_load_gate() {
+        use ControllerKind::*;
+        // Runtime (panel/hotkey) spawn: added, no model wired yet → load.
+        assert!(rl_kind_needs_load_on_change(RlOrbit, true, false));
+        // Startup spawn: added but already carries a SelectedModel → skip.
+        assert!(!rl_kind_needs_load_on_change(RlOrbit, true, true));
+        // Interactive cycle to an RL kind: not added → load.
+        assert!(rl_kind_needs_load_on_change(RlOrbit, false, false));
+        // Every RL kind is covered.
+        for k in [RlLevelHold, RlOrbit, RlOrbitResidual, RlLstmOrbit] {
+            assert!(rl_kind_needs_load_on_change(k, true, false));
+        }
+        // Non-RL kinds are never handled here.
+        assert!(!rl_kind_needs_load_on_change(Orbit, true, false));
+        assert!(!rl_kind_needs_load_on_change(LevelHold, false, false));
+    }
 }
 
 fn level_attitude_for_heading(head_x: f32, head_z: f32) -> Quat {
@@ -741,6 +764,35 @@ fn report_skipped_model(notes: &mut Notifications, path: &str, err: &ModelLoadEr
     notes.push(format!("Model '{name}' skipped — {err}"));
 }
 
+/// Whether `apply_rl_controller_switch` should (re)load a model for a plane
+/// whose `ControllerKind` was just observed as changed.
+///
+/// Only RL kinds are handled here (non-RL kinds keep the PID path). For RL kinds
+/// we load on any genuine kind change, and on the spawn frame only when no
+/// `SelectedModel` is wired yet: runtime (panel/hotkey) spawns arrive on the PID
+/// fallback with no model and need loading, whereas startup-spawned RL planes
+/// already carry both the loaded controller and a `SelectedModel`, so they're
+/// skipped to avoid a redundant reload.
+#[cfg(all(
+    feature = "visual",
+    any(feature = "inference", feature = "training"),
+    not(target_arch = "wasm32")
+))]
+fn rl_kind_needs_load_on_change(
+    kind: ControllerKind,
+    kind_added: bool,
+    has_selected_model: bool,
+) -> bool {
+    let is_rl = matches!(
+        kind,
+        ControllerKind::RlLevelHold
+            | ControllerKind::RlOrbit
+            | ControllerKind::RlOrbitResidual
+            | ControllerKind::RlLstmOrbit
+    );
+    is_rl && (!kind_added || !has_selected_model)
+}
+
 /// When `ControllerKind` changes to an RL kind, load the actual RL model,
 /// overriding the PID fallback that `apply_controller_switch` produces.
 /// If the entity lacks `SelectedModel`, inserts a default so `apply_model_switch`
@@ -769,26 +821,24 @@ fn apply_rl_controller_switch(
     mut notes: ResMut<Notifications>,
 ) {
     for (entity, state, mut controller, mut kind, sel, tuning_handle, profile) in query.iter_mut() {
-        if kind.is_added()
-            || !matches!(
-                *kind,
-                ControllerKind::RlLevelHold
-                    | ControllerKind::RlOrbit
-                    | ControllerKind::RlOrbitResidual
-                    | ControllerKind::RlLstmOrbit
-            )
-        {
+        if !rl_kind_needs_load_on_change(*kind, kind.is_added(), sel.is_some()) {
             continue;
         }
 
         let Some(path) = selected_or_default_model_path(*kind, sel, &model_lib) else {
-            if matches!(
-                *kind,
+            // No checkpoint available: revert the label to the PID baseline the
+            // controller is actually running, so a spawned RL plane doesn't show
+            // an "RL" label while flying PID.
+            match *kind {
                 ControllerKind::RlOrbit
-                    | ControllerKind::RlOrbitResidual
-                    | ControllerKind::RlLstmOrbit
-            ) {
-                kind.set_if_neq(ControllerKind::Orbit);
+                | ControllerKind::RlOrbitResidual
+                | ControllerKind::RlLstmOrbit => {
+                    kind.set_if_neq(ControllerKind::Orbit);
+                }
+                ControllerKind::RlLevelHold => {
+                    kind.set_if_neq(ControllerKind::LevelHold);
+                }
+                _ => {}
             }
             continue;
         };

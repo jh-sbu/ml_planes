@@ -20,12 +20,31 @@ const DEFAULT_CONFIG: &str = "planes/generic_jet.plane.ron";
 
 /// Controller kinds whose `build()` is self-sufficient (no leader, plan, or
 /// model needed), so they can be spawned directly from the panel.
+#[cfg(not(any(feature = "inference", feature = "training")))]
 const SPAWNABLE_KINDS: &[ControllerKind] = &[
     ControllerKind::Manual,
     ControllerKind::LevelHold,
     ControllerKind::Ascent,
     ControllerKind::HeadingHold,
     ControllerKind::Orbit,
+];
+
+/// As above, plus the ML controllers (only when an inference/training backend is
+/// compiled in). A runtime-spawned RL plane starts on the PID fallback that
+/// `build()` produces; `apply_rl_controller_switch` upgrades it to the trained
+/// model the same frame, or reverts the kind to its PID baseline if no model is
+/// available.
+#[cfg(any(feature = "inference", feature = "training"))]
+const SPAWNABLE_KINDS: &[ControllerKind] = &[
+    ControllerKind::Manual,
+    ControllerKind::LevelHold,
+    ControllerKind::Ascent,
+    ControllerKind::HeadingHold,
+    ControllerKind::Orbit,
+    ControllerKind::RlLevelHold,
+    ControllerKind::RlOrbit,
+    ControllerKind::RlOrbitResidual,
+    ControllerKind::RlLstmOrbit,
 ];
 
 /// Distance ahead of the camera to place a freshly-spawned plane.
@@ -185,6 +204,40 @@ mod tests {
             "never below the floor, got {}",
             pos.y
         );
+    }
+
+    #[test]
+    fn spawnable_kinds_include_pid_baseline() {
+        for k in [
+            ControllerKind::Manual,
+            ControllerKind::LevelHold,
+            ControllerKind::Ascent,
+            ControllerKind::HeadingHold,
+            ControllerKind::Orbit,
+        ] {
+            assert!(
+                SPAWNABLE_KINDS.contains(&k),
+                "{} should be spawnable",
+                k.name()
+            );
+        }
+    }
+
+    #[cfg(any(feature = "inference", feature = "training"))]
+    #[test]
+    fn spawnable_kinds_include_rl_when_ml_enabled() {
+        for k in [
+            ControllerKind::RlLevelHold,
+            ControllerKind::RlOrbit,
+            ControllerKind::RlOrbitResidual,
+            ControllerKind::RlLstmOrbit,
+        ] {
+            assert!(
+                SPAWNABLE_KINDS.contains(&k),
+                "{} should be spawnable when ML is enabled",
+                k.name()
+            );
+        }
     }
 
     #[test]
