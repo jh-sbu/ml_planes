@@ -33,4 +33,4 @@ required-features = ["training"]
 [[bin]]
 name = "evaluate_policy"
 path = "src/bin/evaluate_policy.rs"
-required-features = ["training"]
+required-features = ["inference"]

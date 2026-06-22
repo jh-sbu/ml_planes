@@ -5,7 +5,7 @@ use ml_planes::controllers::{
     ControllerKind, FormationOffset, LevelHoldController, ModelLibrary, OrbitController,
     OrbitDirection, WingmanController,
 };
-#[cfg(any(feature = "inference", feature = "training"))]
+#[cfg(feature = "inference")]
 #[allow(unused_imports)]
 use ml_planes::controllers::{
     ModelLoadError, RlLevelHoldController, RlLstmOrbitConfig, RlLstmOrbitController, RlOrbitConfig,
@@ -17,11 +17,7 @@ use ml_planes::environment::{
 use ml_planes::plane::{ControlInputs, FlightPlanHandle, FlightState, NextPlaneId, PlanePlugin};
 use ml_planes::training::SpawnSpec;
 
-#[cfg(all(
-    feature = "visual",
-    any(feature = "inference", feature = "training"),
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "visual", feature = "inference", not(target_arch = "wasm32")))]
 use ml_planes::controllers::OrbitTuning;
 #[cfg(feature = "visual")]
 use ml_planes::controllers::{
@@ -30,11 +26,7 @@ use ml_planes::controllers::{
 };
 #[cfg(feature = "visual")]
 use ml_planes::plane::PlaneTuningHandle;
-#[cfg(all(
-    feature = "visual",
-    any(feature = "inference", feature = "training"),
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "visual", feature = "inference", not(target_arch = "wasm32")))]
 use ml_planes::ui::notifications::Notifications;
 
 #[cfg(feature = "visual")]
@@ -82,7 +74,7 @@ fn main() {
 
     app.init_resource::<ModelLibrary>();
     app.add_systems(Startup, setup);
-    #[cfg(all(feature = "training", not(target_arch = "wasm32")))]
+    #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
     app.add_systems(Startup, scan_models);
 
     #[cfg(feature = "visual")]
@@ -94,11 +86,7 @@ fn main() {
             cycle_tune_profile,
         ),
     );
-    #[cfg(all(
-        feature = "visual",
-        any(feature = "inference", feature = "training"),
-        not(target_arch = "wasm32")
-    ))]
+    #[cfg(all(feature = "visual", feature = "inference", not(target_arch = "wasm32")))]
     app.add_systems(Update, cycle_rl_model);
 
     #[cfg(feature = "visual")]
@@ -110,11 +98,7 @@ fn main() {
             apply_flight_plan.after(apply_controller_switch),
         ),
     );
-    #[cfg(all(
-        feature = "visual",
-        any(feature = "inference", feature = "training"),
-        not(target_arch = "wasm32")
-    ))]
+    #[cfg(all(feature = "visual", feature = "inference", not(target_arch = "wasm32")))]
     app.add_systems(
         PostUpdate,
         (
@@ -259,10 +243,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut ids: ResMut
 
     // --- Optional RL orbit plane: 3000 m radius around origin at 800 m / 100 m/s ---
     // Native: probe filesystem at runtime.
-    #[cfg(all(
-        any(feature = "inference", feature = "training"),
-        not(target_arch = "wasm32")
-    ))]
+    #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
     {
         let model_path = "models/orbit/ppo_orbit_1";
         if std::path::Path::new(&format!("{model_path}.mpk")).exists() {
@@ -348,10 +329,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut ids: ResMut
 
     // --- Optional RL comparison plane ---
     // Native: probe filesystem at runtime.
-    #[cfg(all(
-        any(feature = "inference", feature = "training"),
-        not(target_arch = "wasm32")
-    ))]
+    #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
     {
         let model_path = "models/level_hold/ppo_level_hold";
         if std::path::Path::new(&format!("{model_path}.mpk")).exists() {
@@ -492,11 +470,7 @@ mod tests {
         );
     }
 
-    #[cfg(all(
-        feature = "visual",
-        any(feature = "inference", feature = "training"),
-        not(target_arch = "wasm32")
-    ))]
+    #[cfg(all(feature = "visual", feature = "inference", not(target_arch = "wasm32")))]
     #[test]
     fn rl_kind_load_gate() {
         use ControllerKind::*;
@@ -609,11 +583,7 @@ fn cycle_tune_profile(
 }
 
 /// T / Shift+T: cycle RL model forward/backward for the followed plane.
-#[cfg(all(
-    feature = "visual",
-    any(feature = "inference", feature = "training"),
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "visual", feature = "inference", not(target_arch = "wasm32")))]
 fn cycle_rl_model(
     mode: Res<CameraMode>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -648,7 +618,7 @@ fn cycle_rl_model(
 }
 
 /// Scan `models/<category>/` subdirectories at startup and populate `ModelLibrary`.
-#[cfg(all(feature = "training", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
 fn scan_models(mut commands: Commands) {
     let mut lib: std::collections::HashMap<String, Vec<String>> = Default::default();
     if let Ok(categories) = std::fs::read_dir("models/") {
@@ -680,11 +650,7 @@ fn scan_models(mut commands: Commands) {
 }
 
 /// Reload `ActiveController` whenever `SelectedModel` changes (HUD model dropdown).
-#[cfg(all(
-    feature = "visual",
-    any(feature = "inference", feature = "training"),
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "visual", feature = "inference", not(target_arch = "wasm32")))]
 fn apply_model_switch(
     mut query: Query<
         (
@@ -750,11 +716,7 @@ fn apply_model_switch(
 /// Log a model-load failure and surface a transient HUD banner. Used when an
 /// incompatible (e.g. stale-dimension) checkpoint is skipped and the controller
 /// keeps its current (PID fallback) behavior.
-#[cfg(all(
-    feature = "visual",
-    any(feature = "inference", feature = "training"),
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "visual", feature = "inference", not(target_arch = "wasm32")))]
 fn report_skipped_model(notes: &mut Notifications, path: &str, err: &ModelLoadError) {
     warn!("Skipping model '{path}': {err}");
     let name = std::path::Path::new(path)
@@ -773,11 +735,7 @@ fn report_skipped_model(notes: &mut Notifications, path: &str, err: &ModelLoadEr
 /// fallback with no model and need loading, whereas startup-spawned RL planes
 /// already carry both the loaded controller and a `SelectedModel`, so they're
 /// skipped to avoid a redundant reload.
-#[cfg(all(
-    feature = "visual",
-    any(feature = "inference", feature = "training"),
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "visual", feature = "inference", not(target_arch = "wasm32")))]
 fn rl_kind_needs_load_on_change(
     kind: ControllerKind,
     kind_added: bool,
@@ -797,11 +755,7 @@ fn rl_kind_needs_load_on_change(
 /// overriding the PID fallback that `apply_controller_switch` produces.
 /// If the entity lacks `SelectedModel`, inserts a default so `apply_model_switch`
 /// loads the controller on the next frame.
-#[cfg(all(
-    feature = "visual",
-    any(feature = "inference", feature = "training"),
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "visual", feature = "inference", not(target_arch = "wasm32")))]
 fn apply_rl_controller_switch(
     mut commands: Commands,
     mut query: Query<
@@ -894,11 +848,7 @@ fn apply_rl_controller_switch(
     }
 }
 
-#[cfg(all(
-    feature = "visual",
-    any(feature = "inference", feature = "training"),
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "visual", feature = "inference", not(target_arch = "wasm32")))]
 fn selected_or_default_model_path(
     kind: ControllerKind,
     selected: Option<&SelectedModel>,
@@ -916,20 +866,12 @@ fn selected_or_default_model_path(
         .and_then(|paths| paths.first().cloned())
 }
 
-#[cfg(all(
-    feature = "visual",
-    any(feature = "inference", feature = "training"),
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "visual", feature = "inference", not(target_arch = "wasm32")))]
 fn model_path_matches_dir(path: &str, dir: &str) -> bool {
     path.starts_with(&format!("models/{dir}/"))
 }
 
-#[cfg(all(
-    feature = "visual",
-    any(feature = "inference", feature = "training"),
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "visual", feature = "inference", not(target_arch = "wasm32")))]
 fn level_hold_targets_from_controller(
     controller: &mut ActiveController,
     state: &FlightState,
@@ -951,11 +893,7 @@ fn level_hold_targets_from_controller(
     (state.altitude, state.airspeed)
 }
 
-#[cfg(all(
-    feature = "visual",
-    any(feature = "inference", feature = "training"),
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "visual", feature = "inference", not(target_arch = "wasm32")))]
 fn orbit_config_from_controller(
     controller: &mut ActiveController,
     state: &FlightState,
@@ -977,11 +915,7 @@ fn orbit_config_from_controller(
     RlOrbitConfig::from_state(state)
 }
 
-#[cfg(all(
-    feature = "visual",
-    any(feature = "inference", feature = "training"),
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "visual", feature = "inference", not(target_arch = "wasm32")))]
 fn residual_config_from_controller(
     controller: &mut ActiveController,
     state: &FlightState,
@@ -1003,11 +937,7 @@ fn residual_config_from_controller(
     RlOrbitResidualConfig::from_state(state)
 }
 
-#[cfg(all(
-    feature = "visual",
-    any(feature = "inference", feature = "training"),
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "visual", feature = "inference", not(target_arch = "wasm32")))]
 fn lstm_orbit_config_from_controller(
     controller: &mut ActiveController,
     state: &FlightState,
@@ -1045,7 +975,7 @@ fn extract_orbit_params(ctrl: &mut ActiveController) -> Option<OrbitParams> {
             direction: orbit.direction,
         });
     }
-    #[cfg(any(feature = "inference", feature = "training"))]
+    #[cfg(feature = "inference")]
     {
         if let Some(rl) = ctrl.0.as_any_mut().downcast_mut::<RlOrbitController>() {
             let cfg = rl.config();

@@ -11,7 +11,7 @@
 //! feed-forward `ActorCritic`.
 //!
 //! Example:
-//!   cargo run --release --no-default-features --features training --bin evaluate_policy -- \
+//!   cargo run --release --no-default-features --features inference --bin evaluate_policy -- \
 //!     --task orbit --model models/orbit/ppo_orbit_1 --episodes 64 --backend ndarray
 //!
 //! Flags:
@@ -26,12 +26,12 @@
 //!                           (default full). Selects the WuOrbit reward stage the
 //!                           policy is scored under; reported as curriculum_stage.
 
-#[cfg(not(feature = "training"))]
+#[cfg(not(feature = "inference"))]
 fn main() {
-    eprintln!("Build with --features training to evaluate PPO policies.");
+    eprintln!("Build with --features inference to evaluate PPO policies.");
 }
 
-#[cfg(feature = "training")]
+#[cfg(feature = "inference")]
 fn main() {
     use burn::backend::NdArray;
     use ml_planes::training::eval_metrics::MetricFamily;
@@ -143,7 +143,7 @@ fn main() {
 
 /// Load a task's reward config from `--reward-config` or the supplied default
 /// path, falling back to compiled defaults on any error.
-#[cfg(feature = "training")]
+#[cfg(feature = "inference")]
 fn load_task_reward<T>(args: &[String], default_path: &str) -> T
 where
     T: serde::de::DeserializeOwned + Default,
@@ -156,7 +156,7 @@ where
     })
 }
 
-#[cfg(feature = "training")]
+#[cfg(feature = "inference")]
 fn env_obs_dim<E: ml_planes::training::TrainingEnv>(env: &E) -> usize {
     env.observation_dim()
 }
@@ -166,7 +166,7 @@ fn env_obs_dim<E: ml_planes::training::TrainingEnv>(env: &E) -> usize {
 /// string→stage mapping and stage-advance ladder live in the library
 /// (`CurriculumStage::from_cli_arg`, `WuOrbitEnv::advance_to_stage`) so they are
 /// unit-tested; this wrapper only handles the missing-arg default and exit code.
-#[cfg(feature = "training")]
+#[cfg(feature = "inference")]
 fn parse_curriculum_stage(args: &[String]) -> ml_planes::training::CurriculumStage {
     use ml_planes::training::CurriculumStage;
     match find_arg(args, "--curriculum-stage") {
@@ -185,19 +185,19 @@ fn parse_curriculum_stage(args: &[String]) -> ml_planes::training::CurriculumSta
 /// A deterministic policy that maps an observation to a mean action. Recurrent
 /// policies carry hidden state between steps; `reset` clears it at the start of
 /// every episode.
-#[cfg(feature = "training")]
+#[cfg(feature = "inference")]
 trait EvalPolicy {
     fn reset(&mut self);
     fn act(&mut self, obs: &[f32]) -> Vec<f32>;
 }
 
-#[cfg(feature = "training")]
+#[cfg(feature = "inference")]
 struct FeedForwardRunner<Bk: burn::tensor::backend::Backend> {
     model: ml_planes::training::ActorCritic<Bk>,
     device: Bk::Device,
 }
 
-#[cfg(feature = "training")]
+#[cfg(feature = "inference")]
 impl<Bk: burn::tensor::backend::Backend> EvalPolicy for FeedForwardRunner<Bk> {
     fn reset(&mut self) {}
 
@@ -215,14 +215,14 @@ impl<Bk: burn::tensor::backend::Backend> EvalPolicy for FeedForwardRunner<Bk> {
     }
 }
 
-#[cfg(feature = "training")]
+#[cfg(feature = "inference")]
 struct LstmRunner<Bk: burn::tensor::backend::Backend> {
     model: ml_planes::training::LstmActorCritic<Bk>,
     device: Bk::Device,
     state: Option<burn::nn::LstmState<Bk, 2>>,
 }
 
-#[cfg(feature = "training")]
+#[cfg(feature = "inference")]
 impl<Bk: burn::tensor::backend::Backend> EvalPolicy for LstmRunner<Bk> {
     fn reset(&mut self) {
         // Drop the carried hidden state; the next step starts from zeros.
@@ -244,7 +244,7 @@ impl<Bk: burn::tensor::backend::Backend> EvalPolicy for LstmRunner<Bk> {
     }
 }
 
-#[cfg(feature = "training")]
+#[cfg(feature = "inference")]
 fn load_ff_policy<Bk: burn::tensor::backend::Backend>(
     path: &str,
     obs_dim: usize,
@@ -265,7 +265,7 @@ where
     FeedForwardRunner { model, device }
 }
 
-#[cfg(feature = "training")]
+#[cfg(feature = "inference")]
 fn load_lstm_policy<Bk: burn::tensor::backend::Backend>(
     path: &str,
     obs_dim: usize,
@@ -294,7 +294,7 @@ where
 // Evaluation loop
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "training")]
+#[cfg(feature = "inference")]
 #[derive(Debug, Clone, Copy, Default)]
 struct CoreMetrics {
     episodes: usize,
@@ -303,7 +303,7 @@ struct CoreMetrics {
     mean_length_steps: f32,
 }
 
-#[cfg(feature = "training")]
+#[cfg(feature = "inference")]
 struct EvalResult {
     core: CoreMetrics,
     extra_rows: Vec<ml_planes::training::eval_metrics::MetricRow>,
@@ -311,7 +311,7 @@ struct EvalResult {
 
 /// Roll out `episodes` deterministic episodes, accumulating the common core
 /// metrics plus the task-specific tracking-error metrics for `family`.
-#[cfg(feature = "training")]
+#[cfg(feature = "inference")]
 fn run_eval<E, P>(
     mut env: E,
     episodes: usize,
@@ -381,12 +381,12 @@ where
 // Argument parsing helpers
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "training")]
+#[cfg(feature = "inference")]
 fn find_arg(args: &[String], key: &str) -> Option<String> {
     args.windows(2).find(|w| w[0] == key).map(|w| w[1].clone())
 }
 
-#[cfg(feature = "training")]
+#[cfg(feature = "inference")]
 fn parse_usize(args: &[String], key: &str, default: usize) -> usize {
     find_arg(args, key)
         .map(|v| {
@@ -398,7 +398,7 @@ fn parse_usize(args: &[String], key: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
-#[cfg(feature = "training")]
+#[cfg(feature = "inference")]
 fn parse_u32(args: &[String], key: &str, default: u32) -> u32 {
     find_arg(args, key)
         .map(|v| {
@@ -410,7 +410,7 @@ fn parse_u32(args: &[String], key: &str, default: u32) -> u32 {
         .unwrap_or(default)
 }
 
-#[cfg(feature = "training")]
+#[cfg(feature = "inference")]
 fn generic_jet_config() -> ml_planes::plane::config::PlaneConfig {
     ml_planes::plane::config::PlaneConfig {
         wing_area: 20.0,

@@ -7,18 +7,18 @@ pub mod kind;
 pub mod l1;
 pub mod level_hold;
 pub mod manual;
-#[cfg(any(feature = "inference", feature = "training"))]
+#[cfg(feature = "inference")]
 pub mod model_load;
 pub mod orbit;
 pub mod orbit_marker;
 pub mod pid;
-#[cfg(any(feature = "inference", feature = "training"))]
+#[cfg(feature = "inference")]
 pub mod rl_level_hold;
-#[cfg(any(feature = "inference", feature = "training"))]
+#[cfg(feature = "inference")]
 pub mod rl_lstm_orbit;
-#[cfg(any(feature = "inference", feature = "training"))]
+#[cfg(feature = "inference")]
 pub mod rl_orbit;
-#[cfg(any(feature = "inference", feature = "training"))]
+#[cfg(feature = "inference")]
 pub mod rl_orbit_residual;
 pub mod selected_model;
 pub mod traits;
@@ -33,7 +33,7 @@ pub use kind::ControllerKind;
 pub use l1::{L1Controller, L1Phase, L1Status};
 pub use level_hold::LevelHoldController;
 pub use manual::ManualController;
-#[cfg(any(feature = "inference", feature = "training"))]
+#[cfg(feature = "inference")]
 pub use model_load::ModelLoadError;
 pub use orbit::{
     build_orbit_observation, orbit_observation_terms, OrbitController, OrbitDirection,
@@ -41,13 +41,13 @@ pub use orbit::{
 };
 pub use orbit_marker::{active_orbit_center, OrbitMarker};
 pub use pid::PidController;
-#[cfg(any(feature = "inference", feature = "training"))]
+#[cfg(feature = "inference")]
 pub use rl_level_hold::RlLevelHoldController;
-#[cfg(any(feature = "inference", feature = "training"))]
+#[cfg(feature = "inference")]
 pub use rl_lstm_orbit::{RlLstmOrbitConfig, RlLstmOrbitController};
-#[cfg(any(feature = "inference", feature = "training"))]
+#[cfg(feature = "inference")]
 pub use rl_orbit::{RlOrbitConfig, RlOrbitController};
-#[cfg(any(feature = "inference", feature = "training"))]
+#[cfg(feature = "inference")]
 pub use rl_orbit_residual::{RlOrbitResidualConfig, RlOrbitResidualController};
 pub use selected_model::{ModelLibrary, SelectedModel};
 pub use traits::FlightController;

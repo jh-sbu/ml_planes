@@ -34,7 +34,7 @@ pub fn active_orbit_center(ctrl: &mut dyn FlightController) -> Option<OrbitMarke
         });
     }
 
-    #[cfg(any(feature = "inference", feature = "training"))]
+    #[cfg(feature = "inference")]
     {
         use crate::controllers::{
             RlLstmOrbitController, RlOrbitController, RlOrbitResidualController,

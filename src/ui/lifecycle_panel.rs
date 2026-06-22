@@ -20,7 +20,7 @@ const DEFAULT_CONFIG: &str = "planes/generic_jet.plane.ron";
 
 /// Controller kinds whose `build()` is self-sufficient (no leader, plan, or
 /// model needed), so they can be spawned directly from the panel.
-#[cfg(not(any(feature = "inference", feature = "training")))]
+#[cfg(not(feature = "inference"))]
 const SPAWNABLE_KINDS: &[ControllerKind] = &[
     ControllerKind::Manual,
     ControllerKind::LevelHold,
@@ -34,7 +34,7 @@ const SPAWNABLE_KINDS: &[ControllerKind] = &[
 /// `build()` produces; `apply_rl_controller_switch` upgrades it to the trained
 /// model the same frame, or reverts the kind to its PID baseline if no model is
 /// available.
-#[cfg(any(feature = "inference", feature = "training"))]
+#[cfg(feature = "inference")]
 const SPAWNABLE_KINDS: &[ControllerKind] = &[
     ControllerKind::Manual,
     ControllerKind::LevelHold,
@@ -223,7 +223,7 @@ mod tests {
         }
     }
 
-    #[cfg(any(feature = "inference", feature = "training"))]
+    #[cfg(feature = "inference")]
     #[test]
     fn spawnable_kinds_include_rl_when_ml_enabled() {
         for k in [

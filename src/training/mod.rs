@@ -6,7 +6,7 @@ mod flight_env;
 pub mod level_hold_env;
 pub mod orbit_env;
 pub mod orbit_residual_env;
-#[cfg(any(feature = "inference", feature = "training"))]
+#[cfg(feature = "inference")]
 pub mod ppo;
 pub mod ppo_config;
 pub mod reward_config;
@@ -19,7 +19,7 @@ pub use env::{Observation, SpawnSpec, StepInfo, TrainingEnv};
 pub use eval::{evaluate_policy, EvaluationSummary};
 pub use eval_metrics::{MetricFamily, TaskMetrics};
 
-#[cfg(any(feature = "inference", feature = "training"))]
+#[cfg(feature = "inference")]
 pub(crate) use flight_env::direct_action_to_inputs;
 /// Shared deterministic 6-DOF Euler integrator, re-exported for in-crate
 /// controller convergence tests (the `flight_env` module itself is private).
@@ -42,7 +42,7 @@ pub trait CurriculumEnv: TrainingEnv {
 pub use level_hold_env::LevelHoldEnv;
 pub use orbit_env::OrbitEnv;
 pub use orbit_residual_env::ResidualOrbitEnv;
-#[cfg(any(feature = "inference", feature = "training"))]
+#[cfg(feature = "inference")]
 pub use ppo::{ActorCritic, LstmActorCritic, LstmHiddenState, LSTM_HIDDEN};
 
 #[cfg(feature = "training")]

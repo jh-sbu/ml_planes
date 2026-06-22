@@ -4,7 +4,7 @@ use bevy::tasks::{futures_lite::future, AsyncComputeTaskPool, Task};
 use crate::controllers::{PlaneTuning, SelectedTuningProfile};
 use crate::plane::PlaneTuningHandle;
 
-#[cfg(all(feature = "training", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
 use crate::controllers::SelectedModel;
 
 // ---------------------------------------------------------------------------
@@ -18,7 +18,7 @@ pub struct PendingTuningLoad {
     pub task: Task<Option<PlaneTuning>>,
 }
 
-#[cfg(all(feature = "training", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
 pub struct PendingModelLoad {
     pub entity: Entity,
     pub task: Task<Option<String>>,
@@ -31,7 +31,7 @@ pub struct PendingModelLoad {
 #[derive(Resource, Default)]
 pub struct PendingLoads {
     pub tuning: Vec<PendingTuningLoad>,
-    #[cfg(all(feature = "training", not(target_arch = "wasm32")))]
+    #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
     pub model: Vec<PendingModelLoad>,
 }
 
@@ -56,7 +56,7 @@ pub fn spawn_tuning_load(entity: Entity, pick_orbit: bool, pending: &mut Pending
     });
 }
 
-#[cfg(all(feature = "training", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
 pub fn spawn_model_load(entity: Entity, pending: &mut PendingLoads) {
     let task = AsyncComputeTaskPool::get().spawn(async {
         let handle = rfd::AsyncFileDialog::new()
@@ -82,7 +82,7 @@ pub fn poll_pending_loads(
     mut pending: ResMut<PendingLoads>,
     mut tuning_assets: ResMut<Assets<PlaneTuning>>,
     mut profiles: Query<(&PlaneTuningHandle, &mut SelectedTuningProfile)>,
-    #[cfg(all(feature = "training", not(target_arch = "wasm32")))] mut models: Query<
+    #[cfg(all(feature = "inference", not(target_arch = "wasm32")))] mut models: Query<
         &mut SelectedModel,
     >,
 ) {
@@ -113,7 +113,7 @@ pub fn poll_pending_loads(
         },
     );
 
-    #[cfg(all(feature = "training", not(target_arch = "wasm32")))]
+    #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
     pending.model.retain_mut(
         |load| match future::block_on(future::poll_once(&mut load.task)) {
             None => true,

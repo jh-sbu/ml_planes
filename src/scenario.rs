@@ -29,7 +29,7 @@ use crate::controllers::{
 };
 use crate::plane::{ControlInputs, FlightState, PlaneId};
 
-#[cfg(feature = "inference")]
+#[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
 use crate::controllers::{
     RlLevelHoldController, RlLstmOrbitConfig, RlLstmOrbitController, RlOrbitConfig,
     RlOrbitController, RlOrbitResidualConfig, RlOrbitResidualController,
@@ -416,7 +416,7 @@ impl ResolvedScenario {
                 Ok(Box::new(L1Controller::from_plan(state, plan, &prev)))
             }
             ControllerSpec::Manual => Ok(Box::new(ManualController::new())),
-            #[cfg(feature = "inference")]
+            #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
             ControllerSpec::RlLevelHold {
                 model,
                 altitude,
@@ -424,7 +424,7 @@ impl ResolvedScenario {
             } => RlLevelHoldController::load(&strip_mpk(model), *altitude, *airspeed)
                 .map(|c| Box::new(c) as Box<dyn FlightController>)
                 .map_err(|e| format!("failed to load RL model '{model}': {e}")),
-            #[cfg(feature = "inference")]
+            #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
             ControllerSpec::RlOrbit {
                 model,
                 altitude,
@@ -444,7 +444,7 @@ impl ResolvedScenario {
                     .map(|c| Box::new(c) as Box<dyn FlightController>)
                     .map_err(|e| format!("failed to load RL model '{model}': {e}"))
             }
-            #[cfg(feature = "inference")]
+            #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
             ControllerSpec::RlOrbitResidual {
                 model,
                 altitude,
@@ -468,7 +468,7 @@ impl ResolvedScenario {
                     .map(|c| Box::new(c) as Box<dyn FlightController>)
                     .map_err(|e| format!("failed to load RL model '{model}': {e}"))
             }
-            #[cfg(feature = "inference")]
+            #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
             ControllerSpec::RlLstmOrbit {
                 model,
                 altitude,
@@ -490,6 +490,20 @@ impl ResolvedScenario {
                     .map(|c| Box::new(c) as Box<dyn FlightController>)
                     .map_err(|e| format!("failed to load RL model '{model}': {e}"))
             }
+            // The RL `ControllerSpec` variants exist on wasm (they are gated on
+            // `feature = "inference"`, which the wasm build enables), but the
+            // `Rl*Controller::load()` filesystem loaders are native-only — wasm
+            // has only `load_bytes`. Scenario files are a native/headless example
+            // feature, so loading an RL policy from a `.scenario.ron` is
+            // unsupported on wasm rather than wired to embedded bytes.
+            #[cfg(all(feature = "inference", target_arch = "wasm32"))]
+            ControllerSpec::RlLevelHold { .. }
+            | ControllerSpec::RlOrbit { .. }
+            | ControllerSpec::RlOrbitResidual { .. }
+            | ControllerSpec::RlLstmOrbit { .. } => Err(
+                "RL controllers from .scenario.ron require a native filesystem; unsupported on wasm"
+                    .into(),
+            ),
         }
     }
 }
@@ -682,7 +696,7 @@ fn load_flight_plan(path: &str) -> Result<FlightPlan, String> {
     ron::de::from_str(&bytes).map_err(|e| format!("cannot parse flight plan '{path}': {e}"))
 }
 
-#[cfg(feature = "inference")]
+#[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
 fn strip_mpk(path: &str) -> String {
     path.strip_suffix(".mpk").unwrap_or(path).to_string()
 }
