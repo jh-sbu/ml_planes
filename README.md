@@ -26,7 +26,9 @@ cargo test --no-default-features
 | Flag | Effect |
 |---|---|
 | `visual` (default) | Full Bevy rendering pipeline, egui HUD, Rapier debug render |
-| `training` | Enables the `burn` ML framework |
+| `inference` | `burn` CPU (ndarray) backend only — loads/runs trained RL policies headlessly (incl. `evaluate_policy`), no GPU/training stack |
+| `training` | Builds on `inference`; adds the `burn` GPU/autodiff/train stack for the training loops |
+| `wasm` | `visual` + `inference` — browser build (CPU inference in the renderer) |
 | *(none — `--no-default-features`)* | Headless physics only; used for tests and training loops |
 
 ## Architecture

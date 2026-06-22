@@ -53,7 +53,7 @@ src/
     ppo/            # MLP track: model.rs/trainer.rs/buffer.rs (ActorCritic, PpoTrainer)
                     # LSTM track: lstm_model.rs/lstm_trainer.rs/lstm_buffer.rs
                     # csv_log.rs — training-metric CSV logging
-  bin/              # train_ppo, train_bc, evaluate_policy (all required-features = training)
+  bin/              # train_ppo, train_bc (required-features = training); evaluate_policy (required-features = inference)
 ```
 
 ### Key Types
@@ -435,7 +435,7 @@ path = "src/bin/train_ppo.rs"
 name = "train_bc"         # required-features = ["training"] — BC pretraining
 path = "src/bin/train_bc.rs"
 [[bin]]
-name = "evaluate_policy"  # required-features = ["training"] — policy rollout/metrics
+name = "evaluate_policy"  # required-features = ["inference"] — policy rollout/metrics
 path = "src/bin/evaluate_policy.rs"
 ```
 

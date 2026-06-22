@@ -103,7 +103,7 @@ cargo run --release --no-default-features --features training --bin train_ppo --
 Evaluate with the existing evaluator and the same task:
 
 ```bash
-cargo run --release --no-default-features --features training --bin evaluate_policy -- \
+cargo run --release --no-default-features --features inference --bin evaluate_policy -- \
   --task <task> \
   --backend ndarray \
   --model models/<model_dir>/<baseline_stem> \
@@ -193,7 +193,7 @@ Use the **same** `--episodes`, `--max-steps` (if supplied), and reward-config
 policy as the baseline evaluation, so the two are comparable:
 
 ```bash
-cargo run --release --no-default-features --features training --bin evaluate_policy -- \
+cargo run --release --no-default-features --features inference --bin evaluate_policy -- \
   --task <task> \
   --backend ndarray \
   --model models/<model_dir>/<improved_stem> \
