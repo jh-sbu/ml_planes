@@ -8,10 +8,13 @@ use common::{build_headless_app, build_headless_app_with, generic_jet_config};
 #[cfg(feature = "visual")]
 use ml_planes::camera::{systems::recover_camera_on_target_loss, CameraMode};
 use ml_planes::controllers::{
-    ControllerKind, FormationOffset, LevelHoldController, WingmanController,
+    ControllerKind, FormationOffset, LevelHoldController, PlaneTuning, SelectedTuningProfile,
+    WingmanController,
 };
 use ml_planes::environment::{spawn_plane, LifecyclePlugin, RemovePlaneCommand, SpawnPlaneCommand};
-use ml_planes::plane::{FlightState, NextPlaneId, PlaneConfig, PlaneConfigHandle, PlaneIndex};
+use ml_planes::plane::{
+    FlightState, NextPlaneId, PlaneConfig, PlaneConfigHandle, PlaneIndex, PlaneTuningHandle,
+};
 use ml_planes::training::SpawnSpec;
 
 /// Collect the `PlaneIndex` ordinal of every live plane.
@@ -108,6 +111,95 @@ fn spawn_with_custom_path(
         &cfg,
     );
     commands.insert_resource(SpawnedEntity(spawned.entity));
+}
+
+/// A runtime-spawned plane whose config ships a `.tuning.ron` sibling must carry
+/// the `PlaneTuningHandle` + `SelectedTuningProfile` so the visual
+/// `apply_initial_tuning` system can apply the per-config gains — otherwise it
+/// silently flies on `LevelHoldController` defaults.
+#[test]
+fn spawn_command_attaches_tuning_for_config_with_sibling() {
+    let mut app = build_headless_app_with(|app| {
+        app.add_plugins(LifecyclePlugin);
+    });
+    app.update();
+
+    app.world_mut().trigger(SpawnPlaneCommand {
+        spec: SpawnSpec {
+            position: Some(Vec3::new(0.0, 1000.0, 0.0)),
+            velocity: Some(Vec3::new(120.0, 0.0, 0.0)),
+            ..Default::default()
+        },
+        kind: ControllerKind::LevelHold,
+        config_path: "planes/cargo_jet.plane.ron".to_string(),
+    });
+    app.update();
+
+    let world = app.world_mut();
+    let entity = {
+        let mut q = world.query_filtered::<Entity, With<PlaneIndex>>();
+        q.iter(world).next().expect("a plane was spawned")
+    };
+    let handle = world
+        .entity(entity)
+        .get::<PlaneTuningHandle>()
+        .expect("cargo jet should carry a tuning handle")
+        .0
+        .clone();
+    let expected: Handle<PlaneTuning> = world
+        .resource::<AssetServer>()
+        .load("planes/cargo_jet.tuning.ron");
+    assert_eq!(
+        handle, expected,
+        "tuning handle should point at the cargo jet's .tuning.ron"
+    );
+    assert_eq!(
+        world
+            .entity(entity)
+            .get::<SelectedTuningProfile>()
+            .expect("spawned plane should select a tuning profile")
+            .0,
+        "normal",
+        "runtime spawns default to the \"normal\" profile"
+    );
+}
+
+/// A config with no `.tuning.ron` sibling must NOT attach tuning components, so
+/// the plane keeps its `build()`-default controller without a dangling handle.
+#[test]
+fn spawn_command_skips_tuning_without_sibling() {
+    let mut app = build_headless_app_with(|app| {
+        app.add_plugins(LifecyclePlugin);
+    });
+    app.update();
+
+    app.world_mut().trigger(SpawnPlaneCommand {
+        spec: SpawnSpec {
+            position: Some(Vec3::new(0.0, 1000.0, 0.0)),
+            velocity: Some(Vec3::new(120.0, 0.0, 0.0)),
+            ..Default::default()
+        },
+        kind: ControllerKind::LevelHold,
+        config_path: "planes/no_such_airframe.plane.ron".to_string(),
+    });
+    app.update();
+
+    let world = app.world_mut();
+    let entity = {
+        let mut q = world.query_filtered::<Entity, With<PlaneIndex>>();
+        q.iter(world).next().expect("a plane was spawned")
+    };
+    assert!(
+        world.entity(entity).get::<PlaneTuningHandle>().is_none(),
+        "no tuning sibling → no tuning handle"
+    );
+    assert!(
+        world
+            .entity(entity)
+            .get::<SelectedTuningProfile>()
+            .is_none(),
+        "no tuning sibling → no selected profile"
+    );
 }
 
 #[derive(Resource)]

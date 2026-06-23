@@ -53,6 +53,12 @@ const SPAWN_AHEAD_M: f32 = 400.0;
 /// starts safely above the ground death-plane.
 const MIN_SPAWN_ALT_M: f32 = 500.0;
 /// Initial airspeed for a panel/hotkey-spawned plane.
+///
+/// Note: 100 m/s is below the sustainable level-flight envelope of a *loaded*
+/// heavy jet (the 218 t cargo jet holds level only at ~110-120 m/s and above — see
+/// the validated envelope in `assets/planes/cargo_jet.tuning.ron`). A cargo/tanker
+/// spawned here will trim into a slow controlled descent; this is physical, not a
+/// tuning bug. Lighter airframes (generic/business jet) hold fine at 100 m/s.
 const SPAWN_SPEED_MS: f32 = 100.0;
 
 /// Spawn-form state for the Planes panel (selected kind + config path).

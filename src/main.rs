@@ -143,14 +143,9 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut ids: ResMut
         ControllerKind::LevelHold,
         &cfg,
     );
-    #[cfg(feature = "visual")]
-    {
-        let tuning_handle: Handle<PlaneTuning> = asset_server.load("planes/generic_jet.tuning.ron");
-        commands.entity(leader.entity).insert((
-            PlaneTuningHandle(tuning_handle),
-            SelectedTuningProfile("normal".to_string()),
-        ));
-    }
+    // `spawn_plane` attaches the per-config `PlaneTuningHandle` + a "normal"
+    // `SelectedTuningProfile` automatically, so the visual `apply_initial_tuning`
+    // system applies generic_jet's gains without any manual wiring here.
 
     // --- Wingman plane: trails 20 m behind, 15 m to the right ---
     let offset = FormationOffset::default(); // (-20, 15, 0) in leader body frame
@@ -214,10 +209,9 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut ids: ResMut
         orbit_direction,
     );
 
-    // Only referenced by the visual tuning block below; `spawn_plane` already
-    // indexed it, so the entity handle is unused in headless builds.
-    #[cfg_attr(not(feature = "visual"), allow(unused_variables))]
-    let pid_orbit = spawn_plane(
+    // `spawn_plane` indexes the plane and attaches generic_jet's tuning handle +
+    // "normal" profile, so the orbit gains are applied automatically.
+    spawn_plane(
         &mut commands,
         &mut ids,
         &asset_server,
@@ -232,14 +226,6 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut ids: ResMut
         ControllerKind::Orbit,
         &cfg,
     );
-    #[cfg(feature = "visual")]
-    {
-        let tuning_handle: Handle<PlaneTuning> = asset_server.load("planes/generic_jet.tuning.ron");
-        commands.entity(pid_orbit.entity).insert((
-            PlaneTuningHandle(tuning_handle),
-            SelectedTuningProfile("normal".to_string()),
-        ));
-    }
 
     // --- Optional RL orbit plane: 3000 m radius around origin at 800 m / 100 m/s ---
     // Native: probe filesystem at runtime.

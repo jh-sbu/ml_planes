@@ -1,10 +1,12 @@
 use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
 
-use crate::controllers::{ActiveController, ControllerKind, FlightController};
+use crate::controllers::{
+    ActiveController, ControllerKind, FlightController, PlaneTuning, SelectedTuningProfile,
+};
 use crate::plane::{
     ControlInputs, FlightState, NextPlaneId, PlaneConfig, PlaneConfigHandle, PlaneId, PlaneIndex,
-    SpawnedPlane,
+    PlaneTuningHandle, SpawnedPlane,
 };
 use crate::training::SpawnSpec;
 
@@ -141,6 +143,17 @@ pub fn spawn_plane(
         ))
         .id();
 
+    // Attach the per-config tuning pool so the visual `apply_initial_tuning`
+    // system applies the airframe's PID gains once the asset loads. Skipped when
+    // the config ships no `.tuning.ron` sibling, leaving `build()` defaults.
+    if let Some(tuning_path) = tuning_path_for_config(config_path) {
+        let tuning_handle: Handle<PlaneTuning> = asset_server.load(tuning_path);
+        commands.entity(entity).insert((
+            PlaneTuningHandle(tuning_handle),
+            SelectedTuningProfile("normal".to_string()),
+        ));
+    }
+
     #[cfg(feature = "visual")]
     commands.entity(entity).insert(PhysicsInterp {
         prev_pos: position,
@@ -165,6 +178,19 @@ pub fn spawn_plane(
 /// is what keeps `cfg` (mass/inertia/fuel) consistent with `config_path`'s
 /// aerodynamics from the first physics step. A mismatched (e.g. generic) inertia
 /// under a heavy airframe's aero moments diverges to a non-finite state.
+/// Derive the `.tuning.ron` sibling for a `.plane.ron` config path, returning it
+/// only if the file actually ships on disk (under `assets/`). A spawned plane
+/// carrying this handle + a `SelectedTuningProfile` gets its per-config PID gains
+/// applied by the visual `apply_initial_tuning` system; without it the plane
+/// silently flies on `LevelHoldController` defaults. Returns `None` when no
+/// sibling exists so callers skip the handle gracefully.
+pub fn tuning_path_for_config(config_path: &str) -> Option<String> {
+    let tuning_path = format!("{}.tuning.ron", config_path.strip_suffix(".plane.ron")?);
+    std::path::Path::new(&format!("assets/{tuning_path}"))
+        .exists()
+        .then_some(tuning_path)
+}
+
 pub fn load_spawn_config(config_path: &str) -> PlaneConfig {
     let disk_path = format!("assets/{config_path}");
     match std::fs::read(&disk_path) {
@@ -224,6 +250,26 @@ mod tests {
             cfg.mass,
             generic_jet_spawn_config().mass,
             "missing config falls back to the generic-jet spawn config"
+        );
+    }
+
+    #[test]
+    fn tuning_path_derives_sibling_when_present() {
+        // The cargo jet ships a `.tuning.ron` next to its `.plane.ron`.
+        assert_eq!(
+            tuning_path_for_config("planes/cargo_jet.plane.ron"),
+            Some("planes/cargo_jet.tuning.ron".to_string()),
+            "should map .plane.ron to its existing .tuning.ron sibling"
+        );
+    }
+
+    #[test]
+    fn tuning_path_is_none_without_sibling() {
+        // No `.tuning.ron` ships for this name → no tuning handle to attach.
+        assert_eq!(
+            tuning_path_for_config("planes/no_such_airframe.plane.ron"),
+            None,
+            "a config without a tuning sibling yields no tuning path"
         );
     }
 }

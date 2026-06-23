@@ -7,6 +7,8 @@ PlaneTuning(
         // Profile "normal" — level-hold tune 2026-06-23, 2 rounds.
         // Validated across 5 envelope points (500/120, 1000/160, 2000/190,
         // 3000/170, 300/110); worst ΔAlt ≤ 3.6 m, worst ΔSpd ≤ 0.26 m/s.
+        // Envelope floor is ~110 m/s: this loaded 218 t jet cannot hold level at
+        // 100 m/s — it trims into a slow descent. Do not expect a 100 m/s hold.
         // Note: ki sized for the integral-clamp architecture (ki·clamp ≥ trim),
         // and a stiff+damped inner pitch loop (2.0/8.0) to kill the phugoid limit
         // cycle of the 218 t loaded heavy jet.
