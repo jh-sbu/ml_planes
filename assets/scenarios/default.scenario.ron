@@ -1,0 +1,76 @@
+// Default startup scene for the visual app — the scenario the main menu's
+// "Start Scenario" screen offers as `default`. This is a faithful translation of
+// the former hardcoded `main.rs::setup()` demo: a level-hold leader with a
+// wingman in formation, a PID orbit, the two RL comparison planes, and an L1
+// flight-plan follower.
+//
+// All planes cruise at 100 m/s, so `velocity` is omitted and derived from
+// `heading_deg` (0 = +X, 90 = +Z) at the default speed — this also yaws the
+// initial attitude to face the velocity, matching the old setup.
+//
+// The RL planes (`rl_orbit`, `rl_level_hold`) only *build* on a native
+// `--features inference` build with their model present; in the default visual
+// build (no inference) or when the `.mpk` is missing they are skipped with a
+// notification, so the file still loads everywhere.
+//
+// `steps`/`interval` are only used by the headless `observe_state` runner; the
+// live app ignores them. Also runnable headless:
+//   cargo run --example observe_state --no-default-features -- \
+//     --scenario assets/scenarios/default.scenario.ron --steps 64 --interval 64
+(
+    steps: 3840,
+    interval: 64,
+    planes: [
+        (
+            name: "leader",
+            position: (0.0, 1000.0, 0.0),
+            controller: LevelHold(altitude: 1000.0, airspeed: 100.0),
+        ),
+        (
+            name: "wingman",
+            position: (-20.0, 1000.0, -15.0),
+            controller: Wingman(leader: "leader", offset: (-20.0, 15.0, 0.0)),
+        ),
+        (
+            name: "pid_orbit",
+            position: (0.0, 1200.0, 3000.0),
+            controller: Orbit(
+                center_x: 0.0,
+                center_z: 0.0,
+                radius: 3000.0,
+                direction: CounterClockwise,
+                altitude: 1200.0,
+                airspeed: 100.0,
+            ),
+        ),
+        (
+            name: "rl_orbit",
+            position: (0.0, 800.0, -3000.0),
+            heading_deg: 180.0,
+            controller: RlOrbit(
+                model: "models/orbit/ppo_orbit_1.mpk",
+                center_x: 0.0,
+                center_z: 0.0,
+                radius: 3000.0,
+                direction: CounterClockwise,
+                altitude: 800.0,
+                airspeed: 100.0,
+            ),
+        ),
+        (
+            name: "rl_level_hold",
+            position: (0.0, 1000.0, -30.0),
+            controller: RlLevelHold(
+                model: "models/level_hold/ppo_level_hold.mpk",
+                altitude: 1000.0,
+                airspeed: 100.0,
+            ),
+        ),
+        (
+            name: "flight_plan",
+            position: (2000.0, 1000.0, 2000.0),
+            heading_deg: -135.0,
+            controller: FlightPlan(plan: "assets/plans/patrol.plan.ron"),
+        ),
+    ],
+)

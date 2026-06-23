@@ -1,10 +1,136 @@
 //! Integration tests for the multi-plane scenario format.
 
-use ml_planes::controllers::WingmanController;
-use ml_planes::plane::PlaneId;
-use ml_planes::scenario::{Scenario, CSV_HEADER};
+mod common;
+
+use bevy::prelude::*;
+use common::build_headless_app;
+use ml_planes::controllers::{ControllerKind, FormationOffset, OrbitDirection, WingmanController};
+use ml_planes::environment::spawn_resolved_scenario;
+use ml_planes::plane::{NextPlaneId, PlaneId};
+use ml_planes::scenario::{ControllerSpec, ResolvedScenario, Scenario, CSV_HEADER};
 
 use std::path::Path;
+
+/// Each `ControllerSpec` variant maps to the matching `ControllerKind` so a
+/// scenario-spawned plane displays/cycles correctly in the HUD.
+#[test]
+fn controller_spec_kind_maps_each_variant() {
+    assert_eq!(
+        ControllerSpec::LevelHold {
+            altitude: 500.0,
+            airspeed: 100.0,
+            tuning: None,
+        }
+        .kind(),
+        ControllerKind::LevelHold
+    );
+    assert_eq!(
+        ControllerSpec::Orbit {
+            center_x: None,
+            center_z: None,
+            radius: 1000.0,
+            direction: OrbitDirection::CounterClockwise,
+            altitude: 500.0,
+            airspeed: 100.0,
+            tuning: None,
+        }
+        .kind(),
+        ControllerKind::Orbit
+    );
+    assert_eq!(
+        ControllerSpec::HeadingHold {
+            heading_deg: 90.0,
+            altitude: 500.0,
+            airspeed: 100.0,
+            tuning: None,
+        }
+        .kind(),
+        ControllerKind::HeadingHold
+    );
+    assert_eq!(
+        ControllerSpec::Ascent {
+            target_altitude: 2000.0,
+        }
+        .kind(),
+        ControllerKind::Ascent
+    );
+    assert_eq!(
+        ControllerSpec::Wingman {
+            leader: "leader".into(),
+            offset: None,
+        }
+        .kind(),
+        ControllerKind::Wingman
+    );
+    assert_eq!(
+        ControllerSpec::FlightPlan { plan: "p".into() }.kind(),
+        ControllerKind::FlightPlan
+    );
+    assert_eq!(ControllerSpec::Manual.kind(), ControllerKind::Manual);
+}
+
+const LEADER_WINGMAN: &str = r#"(
+    steps: 10,
+    interval: 10,
+    planes: [
+        (
+            name: "leader",
+            position: (0.0, 1000.0, 0.0),
+            velocity: (100.0, 0.0, 0.0),
+            controller: LevelHold(altitude: 1000.0, airspeed: 100.0),
+        ),
+        (
+            name: "wingman",
+            position: (-20.0, 1000.0, -15.0),
+            velocity: (100.0, 0.0, 0.0),
+            controller: Wingman(leader: "leader", offset: (-20.0, 15.0, 0.0)),
+        ),
+    ],
+)"#;
+
+#[derive(Resource)]
+struct ScenarioRes(ResolvedScenario);
+
+fn spawn_scenario_system(
+    mut commands: Commands,
+    mut ids: ResMut<NextPlaneId>,
+    asset_server: Res<AssetServer>,
+    scenario: Res<ScenarioRes>,
+) {
+    spawn_resolved_scenario(&mut commands, &mut ids, &asset_server, &scenario.0);
+}
+
+/// `spawn_resolved_scenario` turns a resolved scenario into live plane entities:
+/// each plane gets its `PlaneId` + the `ControllerKind` matching its spec, and a
+/// wingman carries the `FormationOffset` component.
+#[test]
+fn spawn_resolved_scenario_spawns_all_planes() {
+    let resolved = Scenario::from_ron_str(LEADER_WINGMAN)
+        .expect("parse fixture")
+        .resolve()
+        .expect("resolve fixture");
+
+    let mut app = build_headless_app();
+    app.insert_resource(ScenarioRes(resolved));
+    app.add_systems(Startup, spawn_scenario_system);
+    app.update();
+    app.update();
+
+    let world = app.world_mut();
+    let mut q = world.query::<(&PlaneId, &ControllerKind)>();
+    let mut kinds: Vec<(u32, ControllerKind)> = q.iter(world).map(|(id, k)| (id.0, *k)).collect();
+    kinds.sort_by_key(|(id, _)| *id);
+    assert_eq!(kinds.len(), 2, "both planes spawned");
+    assert_eq!(kinds[0].1, ControllerKind::LevelHold);
+    assert_eq!(kinds[1].1, ControllerKind::Wingman);
+
+    let mut offsets = world.query::<&FormationOffset>();
+    assert_eq!(
+        offsets.iter(world).count(),
+        1,
+        "the wingman carries a FormationOffset"
+    );
+}
 
 #[test]
 fn wingman_formation_asset_resolves_to_two_planes() {
@@ -49,6 +175,40 @@ fn shipped_scenarios_parse_and_resolve() {
                 .build_controller(idx)
                 .unwrap_or_else(|e| panic!("build {path} plane {idx}: {e}"));
         }
+    }
+}
+
+/// The refactored live-app default scene is a valid scenario with the six demo
+/// planes in order. Non-RL planes must build a controller; the RL planes resolve
+/// to their RL kinds (they only *build* under a native inference build, and are
+/// otherwise skipped by the live spawner).
+#[test]
+fn default_scenario_resolves_to_full_demo() {
+    let path = Path::new("assets/scenarios/default.scenario.ron");
+    let scenario = Scenario::from_path(path).expect("load default scenario");
+    let resolved = scenario.resolve().expect("resolve default scenario");
+
+    let names: Vec<&str> = resolved.planes.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "leader",
+            "wingman",
+            "pid_orbit",
+            "rl_orbit",
+            "rl_level_hold",
+            "flight_plan"
+        ]
+    );
+
+    assert_eq!(resolved.planes[3].spec.kind(), ControllerKind::RlOrbit);
+    assert_eq!(resolved.planes[4].spec.kind(), ControllerKind::RlLevelHold);
+
+    // The non-RL planes must build cleanly in every feature config.
+    for idx in [0usize, 1, 2, 5] {
+        resolved
+            .build_controller(idx)
+            .unwrap_or_else(|e| panic!("build default plane {idx}: {e}"));
     }
 }
 

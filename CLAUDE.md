@@ -41,7 +41,10 @@ src/
                   #   recover_camera_on_target_loss — Follow(dead) → FreeLook
   ui/             # egui HUD, map panel, time-acceleration control, file-load dialog
                   #   lifecycle_panel.rs — "Planes" roster/spawn panel + N/Delete hotkeys
-  scenario.rs     # multi-plane .scenario.ron model + controller factory (drives examples/observe_state.rs)
+                  #   menu.rs — AppState (MainMenu/ScenarioSelect/InGame), main menu +
+                  #     scenario-select screens, scenario spawn-on-enter / despawn-on-exit
+  scenario.rs     # multi-plane .scenario.ron model + controller factory (drives
+                  #   examples/observe_state.rs AND the visual menu's Start Scenario flow)
   training/
     env.rs          # TrainingEnv + CurriculumEnv traits, Observation/SpawnSpec/StepInfo
     flight_env.rs   # shared 6-DOF Euler integrator (integrate_state); pub(crate)-private
@@ -87,7 +90,7 @@ src/
 | `VecEnv<E>` | struct | Wraps any `TrainingEnv` to run N parallel episodes (seeds offset per env) |
 | `DemonstrationEnv` / `BcDataset` | trait / struct | Behavior cloning: `collect_demonstrations()` rolls out a PID expert into a supervised dataset for `train_bc` pretraining |
 | `EvaluationSummary` / `TaskMetrics` | structs | Policy-evaluation output from `evaluate_policy` (success rate + per-metric families) |
-| `Scenario` / `ResolvedScenario` | RON model (`src/scenario.rs`) | Multi-plane `.scenario.ron`: per-plane initial state, optional `fuel_fraction` (0–1; default full tank → loaded mass), `.plane.ron` config, and a `ControllerSpec` (incl. `Wingman` peer references by name, optional inline tuning, cfg-gated RL specs). `resolve()` assigns `PlaneId`s and computes initial states; `build_controller()` builds the boxed controller. Drives `examples/observe_state.rs` via `--scenario`. CSV output ends with a `fuel_remaining` column. |
+| `Scenario` / `ResolvedScenario` | RON model (`src/scenario.rs`) | Multi-plane `.scenario.ron`: per-plane initial state, optional `fuel_fraction` (0–1; default full tank → loaded mass), `.plane.ron` config, and a `ControllerSpec` (incl. `Wingman` peer references by name, optional inline tuning, RL specs). `resolve()` assigns `PlaneId`s and computes initial states; `build_controller()` builds the boxed controller; `ControllerSpec::kind()` maps a spec to its `ControllerKind`. RL specs **always parse** (so `default.scenario.ron` loads in every build) but only *build* on a native `--features inference` build; otherwise `build_controller` returns `Err` and the live spawner skips that plane. Drives `examples/observe_state.rs` via `--scenario` and the visual menu's Start Scenario flow (`environment::spawn_resolved_scenario`). CSV output ends with a `fuel_remaining` column. |
 
 ### Physics Layering
 
@@ -294,6 +297,34 @@ Planes can be added/removed at runtime via observer commands (`environment/lifec
   with Remove buttons and a spawn form (kind dropdown + config path), plus hotkeys **`N`**
   (spawn ahead of camera) and **`Delete`** (remove followed); both suppressed while egui has
   keyboard focus.
+
+### Visual App Flow (Main Menu + Scenarios)
+
+The visual app boots into a **main menu** instead of a hardcoded scene. State is a
+Bevy `States` enum `AppState { MainMenu, ScenarioSelect, InGame }` (`ui/menu.rs`,
+registered by `MenuPlugin` via `UiPlugin`) — the only `States` in the codebase.
+
+- **Main menu** (`MainMenu`): **Start Scenario** → `ScenarioSelect`; **Train** (only under
+  `feature = "training"`, a no-op placeholder); **Quit** (`MessageWriter<AppExit>` — note Bevy
+  0.18 uses `MessageWriter`, not `EventWriter`).
+- **Scenario select** (`ScenarioSelect`): lists `assets/scenarios/*.scenario.ron` (native scans
+  the dir, `default` first; wasm falls back to the embedded default). Picking one sets
+  `SelectedScenario` and enters `InGame`; **Back** returns to the menu.
+- **In game** (`InGame`): `OnEnter` loads + resolves the selected scenario and spawns it via
+  `environment::spawn_resolved_scenario` (build-failure planes, e.g. missing RL `.mpk`, are
+  skipped with a `Notifications` banner). `OnExit` despawns all `PlaneId` entities and resets the
+  camera to `FreeLook`. **`Esc`** returns to the menu (suppressed while egui wants keyboard).
+- All gameplay HUD/input/`apply_*` systems are gated `run_if(in_state(AppState::InGame))` (in
+  `ui/plugin.rs` and `main.rs`), so the menu screens stay clean. `main.rs::setup` no longer
+  exists — the former hardcoded demo scene is now `assets/scenarios/default.scenario.ron`.
+
+`spawn_resolved_scenario` (`environment/scenario_spawn.rs`) is the live-app counterpart to
+`observe_state`'s hand-spawning: per plane it calls `build_controller`, seeds the Rapier body
+via `load_spawn_config`, spawns through `spawn_plane` with `ControllerSpec::kind()`, and attaches
+per-kind extras (`FormationOffset` for wingmen, `SelectedModel` for RL, `FlightPlanHandle` for
+flight plans so `apply_flight_plan` re-installs the `L1Controller` after the tuning rebuild).
+Scenario `config` paths use the observe_state `assets/...` convention and are stripped to the
+Bevy asset-relative form for the live spawner.
 
 ### Training Physics (Self-Contained)
 
@@ -539,7 +570,7 @@ app.add_plugins(EguiPlugin { enable_multipass_for_primary_context: false });
 - `wingman.rs` — formation flight relative-position tracking
 - `flight_plan.rs` — L1 flight-plan leg sequencing / waypoint capture
 - `orbit_tune_sync.rs` — orbit tuning-pool / gain-sync invariants
-- `scenario.rs` — `.scenario.ron` parse/resolve/build, per-plane `fuel_fraction` carried through `resolve()`, + CSV header pinning (`ml_planes::scenario::CSV_HEADER`, incl. trailing `fuel_remaining`)
+- `scenario.rs` — `.scenario.ron` parse/resolve/build, per-plane `fuel_fraction` carried through `resolve()`, `ControllerSpec::kind()` mapping, `spawn_resolved_scenario` live spawn, `default.scenario.ron` resolve, + CSV header pinning (`ml_planes::scenario::CSV_HEADER`, incl. trailing `fuel_remaining`)
 - `lifecycle.rs` — runtime spawn/remove commands, auto-indexing, orphaned-wingman + camera cleanup (camera case is `visual`-gated)
 - `fuel.rs` — live-sim fuel: spawn-time tank load (`fuel_fraction`), `consume_fuel` burn + `update_plane_mass`, shipped-asset powerplant parse
 - `rl_inference.rs` — RL controller load + deterministic inference (`inference`/`training`-gated)

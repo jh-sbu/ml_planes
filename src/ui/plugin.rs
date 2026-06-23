@@ -5,6 +5,7 @@ use super::file_load::{poll_pending_loads, PendingLoads};
 use super::hud::draw_flight_hud;
 use super::lifecycle_panel::{draw_plane_panel, plane_lifecycle_hotkeys, PlanePanelState};
 use super::map::{draw_map, MapState};
+use super::menu::{AppState, MenuPlugin};
 use super::notifications::{draw_notifications, Notifications};
 use super::time_control::{draw_time_control, SimSpeed};
 
@@ -12,11 +13,15 @@ pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<PendingLoads>()
+        // The menu plugin owns the AppState machine + scenario spawn/teardown.
+        app.add_plugins(MenuPlugin)
+            .init_resource::<PendingLoads>()
             .init_resource::<MapState>()
             .init_resource::<SimSpeed>()
             .init_resource::<PlanePanelState>()
             .init_resource::<Notifications>()
+            // Gameplay HUD/panels only draw while a scenario is flying, so the
+            // menu screens (which use the same egui context) stay uncluttered.
             .add_systems(
                 EguiPrimaryContextPass,
                 (
@@ -25,9 +30,13 @@ impl Plugin for UiPlugin {
                     draw_time_control,
                     draw_plane_panel,
                     draw_notifications,
-                ),
+                )
+                    .run_if(in_state(AppState::InGame)),
             )
-            .add_systems(Update, plane_lifecycle_hotkeys)
+            .add_systems(
+                Update,
+                plane_lifecycle_hotkeys.run_if(in_state(AppState::InGame)),
+            )
             .add_systems(PostUpdate, poll_pending_loads);
     }
 }

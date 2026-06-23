@@ -51,6 +51,7 @@ pub fn build_headless_app_with(configure: impl FnOnce(&mut App)) -> App {
 
 /// Returns a PlaneConfig matching assets/planes/generic_jet.plane.ron exactly.
 /// Used to insert into Assets<PlaneConfig> synchronously, bypassing async file loading.
+#[allow(dead_code)]
 pub fn generic_jet_config() -> PlaneConfig {
     PlaneConfig {
         wing_area: 20.0,

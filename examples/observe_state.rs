@@ -88,7 +88,17 @@ fn main() {
     // tests/common/mod.rs — bypasses async asset loading).
     let plane_count = resolved.planes.len();
     for idx in 0..plane_count {
-        let controller = resolved.build_controller(idx).unwrap_or_else(|e| fatal(&e));
+        // Skip (rather than abort) a plane whose controller can't be built — e.g.
+        // an RL spec without a native `--features inference` build, or a missing
+        // model file. Mirrors the visual app's `spawn_resolved_scenario`, so the
+        // same scenario (incl. `default.scenario.ron`) runs headless on any build.
+        let controller = match resolved.build_controller(idx) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("skipping plane '{}': {e}", resolved.planes[idx].name);
+                continue;
+            }
+        };
 
         let plane = &resolved.planes[idx];
         let cfg = match &plane.config {

@@ -11,8 +11,10 @@
 //! plane via [`ResolvedScenario::build_controller`], spawns the entities, and
 //! streams per-plane CSV.
 //!
-//! RL controller specs (`RlLevelHold`, `RlOrbit`, …) only exist when built with
-//! `--features inference`; a scenario referencing them otherwise fails to parse.
+//! RL controller specs (`RlLevelHold`, `RlOrbit`, …) always parse so a scenario
+//! (e.g. `default.scenario.ron`) loads in every build, but they only *build* on a
+//! native `--features inference` build; otherwise [`ResolvedScenario::build_controller`]
+//! returns `Err` and the live spawner skips that plane.
 
 use std::collections::HashSet;
 use std::f32::consts::FRAC_PI_2;
@@ -23,9 +25,9 @@ use serde::Deserialize;
 
 use crate::controllers::tuning::{HeadingHoldTuning, LevelHoldTuning, OrbitTuning};
 use crate::controllers::{
-    AscentController, FlightController, FlightPlan, FormationOffset, HeadingHoldController,
-    L1Controller, LevelHoldController, ManualController, OrbitController, OrbitDirection,
-    OrbitParams, WingmanController,
+    AscentController, ControllerKind, FlightController, FlightPlan, FormationOffset,
+    HeadingHoldController, L1Controller, LevelHoldController, ManualController, OrbitController,
+    OrbitDirection, OrbitParams, WingmanController,
 };
 use crate::plane::{ControlInputs, FlightState, PlaneId};
 
@@ -136,13 +138,17 @@ pub enum ControllerSpec {
         plan: String,
     },
     Manual,
-    #[cfg(feature = "inference")]
+    // The RL variants are intentionally NOT feature-gated: the default
+    // `visual` build has no `inference`, but its `default.scenario.ron` still
+    // lists the RL demo planes. Keeping the variants always-parseable lets the
+    // file load everywhere; `build_controller` returns `Err` (→ the live spawner
+    // skips the plane) when RL can't actually be loaded. Their fields are all
+    // plain types, so no inference-only dependency leaks in.
     RlLevelHold {
         model: String,
         altitude: f32,
         airspeed: f32,
     },
-    #[cfg(feature = "inference")]
     RlOrbit {
         model: String,
         #[serde(default)]
@@ -154,7 +160,6 @@ pub enum ControllerSpec {
         altitude: f32,
         airspeed: f32,
     },
-    #[cfg(feature = "inference")]
     RlOrbitResidual {
         model: String,
         #[serde(default)]
@@ -168,7 +173,6 @@ pub enum ControllerSpec {
         #[serde(default = "default_residual_scale")]
         residual_scale: f32,
     },
-    #[cfg(feature = "inference")]
     RlLstmOrbit {
         model: String,
         #[serde(default)]
@@ -182,9 +186,56 @@ pub enum ControllerSpec {
     },
 }
 
-#[cfg(feature = "inference")]
 fn default_residual_scale() -> f32 {
     0.3
+}
+
+impl ControllerSpec {
+    /// The [`ControllerKind`] this spec spawns as, so a scenario-spawned plane
+    /// displays and cycles correctly in the HUD/map. Mirrors the variant mapping
+    /// in [`ResolvedScenario::build_controller`].
+    pub fn kind(&self) -> ControllerKind {
+        match self {
+            ControllerSpec::LevelHold { .. } => ControllerKind::LevelHold,
+            ControllerSpec::Orbit { .. } => ControllerKind::Orbit,
+            ControllerSpec::HeadingHold { .. } => ControllerKind::HeadingHold,
+            ControllerSpec::Ascent { .. } => ControllerKind::Ascent,
+            ControllerSpec::Wingman { .. } => ControllerKind::Wingman,
+            ControllerSpec::FlightPlan { .. } => ControllerKind::FlightPlan,
+            ControllerSpec::Manual => ControllerKind::Manual,
+            ControllerSpec::RlLevelHold { .. } => ControllerKind::RlLevelHold,
+            ControllerSpec::RlOrbit { .. } => ControllerKind::RlOrbit,
+            ControllerSpec::RlOrbitResidual { .. } => ControllerKind::RlOrbitResidual,
+            ControllerSpec::RlLstmOrbit { .. } => ControllerKind::RlLstmOrbit,
+        }
+    }
+
+    /// The body-frame formation slot for a `Wingman` spec (resolved with the
+    /// default offset when omitted); `None` for every other controller. Used by
+    /// the live spawner to attach the `FormationOffset` component.
+    pub fn formation_offset(&self) -> Option<Vec3> {
+        match self {
+            ControllerSpec::Wingman { offset, .. } => Some(
+                offset
+                    .map(|(x, y, z)| Vec3::new(x, y, z))
+                    .unwrap_or(DEFAULT_OFFSET),
+            ),
+            _ => None,
+        }
+    }
+
+    /// The RL model stem (`.mpk` stripped) for an RL spec; `None` otherwise. Used
+    /// by the live spawner to attach `SelectedModel` for HUD model cycling.
+    #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
+    pub fn rl_model_stem(&self) -> Option<String> {
+        match self {
+            ControllerSpec::RlLevelHold { model, .. }
+            | ControllerSpec::RlOrbit { model, .. }
+            | ControllerSpec::RlOrbitResidual { model, .. }
+            | ControllerSpec::RlLstmOrbit { model, .. } => Some(strip_mpk(model)),
+            _ => None,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -490,18 +541,18 @@ impl ResolvedScenario {
                     .map(|c| Box::new(c) as Box<dyn FlightController>)
                     .map_err(|e| format!("failed to load RL model '{model}': {e}"))
             }
-            // The RL `ControllerSpec` variants exist on wasm (they are gated on
-            // `feature = "inference"`, which the wasm build enables), but the
-            // `Rl*Controller::load()` filesystem loaders are native-only — wasm
-            // has only `load_bytes`. Scenario files are a native/headless example
-            // feature, so loading an RL policy from a `.scenario.ron` is
-            // unsupported on wasm rather than wired to embedded bytes.
-            #[cfg(all(feature = "inference", target_arch = "wasm32"))]
+            // RL specs always parse (see the enum), but they can only be *built*
+            // on a native build with `--features inference`: the non-inference
+            // build has no `burn` backend, and the wasm build's `Rl*Controller`
+            // loaders are `load_bytes`-only (no filesystem). In every other config
+            // we return `Err` so the live spawner skips the plane (and
+            // `observe_state` reports a clear error) rather than failing to parse.
+            #[cfg(not(all(feature = "inference", not(target_arch = "wasm32"))))]
             ControllerSpec::RlLevelHold { .. }
             | ControllerSpec::RlOrbit { .. }
             | ControllerSpec::RlOrbitResidual { .. }
             | ControllerSpec::RlLstmOrbit { .. } => Err(
-                "RL controllers from .scenario.ron require a native filesystem; unsupported on wasm"
+                "RL controllers from .scenario.ron require a native build with --features inference"
                     .into(),
             ),
         }
@@ -631,7 +682,6 @@ fn orbit_diag_for(spec: &ControllerSpec, position: Vec3, velocity: Vec3) -> Opti
             direction,
             ..
         } => (*center_x, *center_z, *radius, *direction),
-        #[cfg(feature = "inference")]
         ControllerSpec::RlOrbit {
             center_x,
             center_z,
@@ -860,12 +910,23 @@ mod tests {
         assert_eq!(diag.radius, 800.0);
     }
 
-    #[cfg(not(feature = "inference"))]
+    // RL specs always parse + resolve so `default.scenario.ron` loads in every
+    // build; without a native inference build, only the *controller build* fails
+    // (so the live spawner skips the plane), not the parse.
+    #[cfg(not(all(feature = "inference", not(target_arch = "wasm32"))))]
     #[test]
-    fn rl_variant_without_feature_fails_to_parse() {
+    fn rl_variant_parses_but_build_controller_fails_without_inference() {
         let src = r#"(planes: [
             (name: "rl", controller: RlLevelHold(model: "m", altitude: 500.0, airspeed: 100.0)),
         ])"#;
-        assert!(Scenario::from_ron_str(src).is_err());
+        let resolved = Scenario::from_ron_str(src)
+            .expect("RL spec parses")
+            .resolve()
+            .expect("RL scenario resolves");
+        assert_eq!(resolved.planes[0].spec.kind(), ControllerKind::RlLevelHold);
+        assert!(
+            resolved.build_controller(0).is_err(),
+            "RL controller cannot be built without a native inference build"
+        );
     }
 }

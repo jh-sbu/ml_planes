@@ -1,31 +1,30 @@
 use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
 
+// Always-on surface: the menu spawns scenarios, so the binary itself only needs
+// the core plugins + the model library. Gameplay/controller types are gated to
+// the visual build that runs the systems using them.
+use ml_planes::controllers::ModelLibrary;
+use ml_planes::environment::{EnvironmentPlugin, LifecyclePlugin};
+use ml_planes::plane::PlanePlugin;
+
+#[cfg(feature = "visual")]
 use ml_planes::controllers::{
-    ControllerKind, FormationOffset, LevelHoldController, ModelLibrary, OrbitController,
-    OrbitDirection, WingmanController,
+    ActiveController, ControllerKind, ControllerTuning, FlightPlan, L1Controller, OrbitController,
+    OrbitParams, PlaneTuning, SelectedTuningProfile, TuningApplied,
 };
-#[cfg(feature = "inference")]
-#[allow(unused_imports)]
-use ml_planes::controllers::{
-    ModelLoadError, RlLevelHoldController, RlLstmOrbitConfig, RlLstmOrbitController, RlOrbitConfig,
-    RlOrbitController, RlOrbitResidualConfig, RlOrbitResidualController, SelectedModel,
-};
-use ml_planes::environment::{
-    generic_jet_spawn_config, spawn_plane, EnvironmentPlugin, LifecyclePlugin,
-};
-use ml_planes::plane::{ControlInputs, FlightPlanHandle, FlightState, NextPlaneId, PlanePlugin};
-use ml_planes::training::SpawnSpec;
+#[cfg(feature = "visual")]
+use ml_planes::plane::{ControlInputs, FlightPlanHandle, FlightState, PlaneTuningHandle};
 
 #[cfg(all(feature = "visual", feature = "inference", not(target_arch = "wasm32")))]
 use ml_planes::controllers::OrbitTuning;
-#[cfg(feature = "visual")]
+#[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
+#[allow(unused_imports)]
 use ml_planes::controllers::{
-    ActiveController, ControllerTuning, FlightPlan, L1Controller, OrbitParams, PlaneTuning,
-    SelectedTuningProfile, TuningApplied,
+    LevelHoldController, ModelLoadError, RlLevelHoldController, RlLstmOrbitConfig,
+    RlLstmOrbitController, RlOrbitConfig, RlOrbitController, RlOrbitResidualConfig,
+    RlOrbitResidualController, SelectedModel,
 };
-#[cfg(feature = "visual")]
-use ml_planes::plane::PlaneTuningHandle;
 #[cfg(all(feature = "visual", feature = "inference", not(target_arch = "wasm32")))]
 use ml_planes::ui::notifications::Notifications;
 
@@ -36,7 +35,7 @@ use bevy_egui::EguiPlugin;
 #[cfg(feature = "visual")]
 use ml_planes::camera::{CameraMode, CameraPlugin};
 #[cfg(feature = "visual")]
-use ml_planes::ui::UiPlugin;
+use ml_planes::ui::{AppState, UiPlugin};
 
 fn main() {
     let mut app = App::new();
@@ -73,10 +72,14 @@ fn main() {
     }
 
     app.init_resource::<ModelLibrary>();
-    app.add_systems(Startup, setup);
+    // The visual app boots into the main menu; the scenario it picks is spawned
+    // on `OnEnter(AppState::InGame)` by the `MenuPlugin` (added via `UiPlugin`).
+    // The headless build has no menu, so it spawns nothing automatically.
     #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
     app.add_systems(Startup, scan_models);
 
+    // Gameplay control/tuning systems only run while a scenario is flying, so the
+    // menu screens don't drive controller switching, input polling, etc.
     #[cfg(feature = "visual")]
     app.add_systems(
         Update,
@@ -84,10 +87,11 @@ fn main() {
             poll_controller_inputs,
             switch_controller,
             cycle_tune_profile,
-        ),
+        )
+            .run_if(in_state(AppState::InGame)),
     );
     #[cfg(all(feature = "visual", feature = "inference", not(target_arch = "wasm32")))]
-    app.add_systems(Update, cycle_rl_model);
+    app.add_systems(Update, cycle_rl_model.run_if(in_state(AppState::InGame)));
 
     #[cfg(feature = "visual")]
     app.add_systems(
@@ -96,7 +100,8 @@ fn main() {
             apply_initial_tuning,
             apply_controller_switch.after(apply_initial_tuning),
             apply_flight_plan.after(apply_controller_switch),
-        ),
+        )
+            .run_if(in_state(AppState::InGame)),
     );
     #[cfg(all(feature = "visual", feature = "inference", not(target_arch = "wasm32")))]
     app.add_systems(
@@ -104,359 +109,22 @@ fn main() {
         (
             apply_rl_controller_switch.after(apply_controller_switch),
             apply_model_switch,
-        ),
+        )
+            .run_if(in_state(AppState::InGame)),
     );
 
     app.run();
 }
 
-fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut ids: ResMut<NextPlaneId>) {
-    // Mass/inertia for the Rapier body at spawn time; the async-loaded
-    // `.plane.ron` handle drives aerodynamics once ready.
-    let cfg = generic_jet_spawn_config();
-
-    // --- Leader plane: LevelHold at 1000 m / 100 m/s ---
-    let leader_pos = Vec3::new(0.0, 1000.0, 0.0);
-    let leader_vel = Vec3::new(100.0, 0.0, 0.0);
-    let leader_attitude = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
-
-    let leader_initial = FlightState {
-        position: leader_pos,
-        velocity: leader_vel,
-        attitude: leader_attitude,
-        airspeed: 100.0,
-        altitude: 1000.0,
-        ..Default::default()
-    };
-
-    let leader = spawn_plane(
-        &mut commands,
-        &mut ids,
-        &asset_server,
-        "planes/generic_jet.plane.ron",
-        &SpawnSpec {
-            position: Some(leader_pos),
-            velocity: Some(leader_vel),
-            ..Default::default()
-        },
-        Box::new(LevelHoldController::new(1000.0, 100.0)),
-        ControllerKind::LevelHold,
-        &cfg,
-    );
-    // `spawn_plane` attaches the per-config `PlaneTuningHandle` + a "normal"
-    // `SelectedTuningProfile` automatically, so the visual `apply_initial_tuning`
-    // system applies generic_jet's gains without any manual wiring here.
-
-    // --- Wingman plane: trails 20 m behind, 15 m to the right ---
-    let offset = FormationOffset::default(); // (-20, 15, 0) in leader body frame
-                                             // With rotation_x(-π/2): body +Y (right) maps to world +Z, body +X (fwd) maps to world +X.
-    let wingman_pos = leader_pos + leader_attitude * offset.offset_body;
-    let own_initial = FlightState {
-        position: wingman_pos,
-        velocity: leader_vel,
-        attitude: leader_attitude,
-        airspeed: 100.0,
-        altitude: wingman_pos.y,
-        ..Default::default()
-    };
-
-    let wingman = spawn_plane(
-        &mut commands,
-        &mut ids,
-        &asset_server,
-        "planes/generic_jet.plane.ron",
-        &SpawnSpec {
-            position: Some(wingman_pos),
-            velocity: Some(leader_vel),
-            ..Default::default()
-        },
-        Box::new(WingmanController::new(
-            leader.id,
-            &leader_initial,
-            &own_initial,
-            offset.clone(),
-        )),
-        ControllerKind::Wingman,
-        &cfg,
-    );
-
-    commands.entity(wingman.entity).insert(offset);
-
-    // --- PID orbit plane: 3000 m radius around origin at 1200 m / 100 m/s ---
-    let orbit_radius = 3000.0;
-    let orbit_speed = 100.0;
-    let orbit_direction = OrbitDirection::CounterClockwise;
-
-    let pid_orbit_pos = Vec3::new(0.0, 1200.0, orbit_direction.sign() * orbit_radius);
-    let pid_orbit_vel = Vec3::new(orbit_speed, 0.0, 0.0);
-    let pid_orbit_attitude = level_attitude_for_heading(pid_orbit_vel.x, pid_orbit_vel.z);
-    let mut pid_orbit_state = FlightState {
-        position: pid_orbit_pos,
-        velocity: pid_orbit_vel,
-        attitude: pid_orbit_attitude,
-        angular_velocity: Vec3::ZERO,
-        ..Default::default()
-    };
-    pid_orbit_state.update_air_data();
-
-    let mut pid_orbit_controller =
-        OrbitController::from_state(&pid_orbit_state, &ControlInputs::default());
-    configure_origin_orbit(
-        &mut pid_orbit_controller,
-        orbit_radius,
-        pid_orbit_state.altitude,
-        orbit_speed,
-        orbit_direction,
-    );
-
-    // `spawn_plane` indexes the plane and attaches generic_jet's tuning handle +
-    // "normal" profile, so the orbit gains are applied automatically.
-    spawn_plane(
-        &mut commands,
-        &mut ids,
-        &asset_server,
-        "planes/generic_jet.plane.ron",
-        &SpawnSpec {
-            position: Some(pid_orbit_pos),
-            velocity: Some(pid_orbit_vel),
-            attitude: Some(pid_orbit_attitude),
-            ..Default::default()
-        },
-        Box::new(pid_orbit_controller),
-        ControllerKind::Orbit,
-        &cfg,
-    );
-
-    // --- Optional RL orbit plane: 3000 m radius around origin at 800 m / 100 m/s ---
-    // Native: probe filesystem at runtime.
-    #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
-    {
-        let model_path = "models/orbit/ppo_orbit_1";
-        if std::path::Path::new(&format!("{model_path}.mpk")).exists() {
-            let rl_orbit_pos = Vec3::new(0.0, 800.0, -orbit_direction.sign() * orbit_radius);
-            let rl_orbit_vel = Vec3::new(-orbit_speed, 0.0, 0.0);
-            let rl_orbit_attitude = level_attitude_for_heading(rl_orbit_vel.x, rl_orbit_vel.z);
-            let config = RlOrbitConfig {
-                center_x: 0.0,
-                center_z: 0.0,
-                target_radius: orbit_radius,
-                target_altitude: rl_orbit_pos.y,
-                target_airspeed: orbit_speed,
-                direction: orbit_direction,
-            };
-
-            match RlOrbitController::load(model_path, config) {
-                Ok(rl_ctrl) => {
-                    let rl_orbit = spawn_plane(
-                        &mut commands,
-                        &mut ids,
-                        &asset_server,
-                        "planes/generic_jet.plane.ron",
-                        &SpawnSpec {
-                            position: Some(rl_orbit_pos),
-                            velocity: Some(rl_orbit_vel),
-                            attitude: Some(rl_orbit_attitude),
-                            ..Default::default()
-                        },
-                        Box::new(rl_ctrl),
-                        ControllerKind::RlOrbit,
-                        &cfg,
-                    );
-                    commands
-                        .entity(rl_orbit.entity)
-                        .insert(SelectedModel(model_path.to_string()));
-                }
-                Err(e) => eprintln!("Failed to load RL orbit model from {model_path}.mpk: {e}"),
-            }
-        }
-    }
-    // WASM: load from embedded bytes.
-    #[cfg(all(feature = "inference", target_arch = "wasm32"))]
-    {
-        const ORBIT_MPK: &[u8] = include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/models/orbit/ppo_orbit_1.mpk"
-        ));
-        let rl_orbit_pos = Vec3::new(0.0, 800.0, -orbit_direction.sign() * orbit_radius);
-        let rl_orbit_vel = Vec3::new(-orbit_speed, 0.0, 0.0);
-        let rl_orbit_attitude = level_attitude_for_heading(rl_orbit_vel.x, rl_orbit_vel.z);
-        let config = RlOrbitConfig {
-            center_x: 0.0,
-            center_z: 0.0,
-            target_radius: orbit_radius,
-            target_altitude: rl_orbit_pos.y,
-            target_airspeed: orbit_speed,
-            direction: orbit_direction,
-        };
-        match RlOrbitController::load_bytes(ORBIT_MPK, config) {
-            Ok(rl_ctrl) => {
-                let rl_orbit = spawn_plane(
-                    &mut commands,
-                    &mut ids,
-                    &asset_server,
-                    "planes/generic_jet.plane.ron",
-                    &SpawnSpec {
-                        position: Some(rl_orbit_pos),
-                        velocity: Some(rl_orbit_vel),
-                        attitude: Some(rl_orbit_attitude),
-                        ..Default::default()
-                    },
-                    Box::new(rl_ctrl),
-                    ControllerKind::RlOrbit,
-                    &cfg,
-                );
-                commands
-                    .entity(rl_orbit.entity)
-                    .insert(SelectedModel("models/orbit/ppo_orbit_1".to_string()));
-            }
-            Err(e) => eprintln!("Failed to load embedded RL orbit model: {e}"),
-        }
-    }
-
-    // --- Optional RL comparison plane ---
-    // Native: probe filesystem at runtime.
-    #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
-    {
-        let model_path = "models/level_hold/ppo_level_hold";
-        if std::path::Path::new(&format!("{model_path}.mpk")).exists() {
-            match RlLevelHoldController::load(model_path, 1000.0, 100.0) {
-                Ok(rl_ctrl) => {
-                    // Spawn 30 m behind the leader so both are visible in follow-cam.
-                    let rl_pos = Vec3::new(0.0, 1000.0, -30.0);
-                    let rl_plane = spawn_plane(
-                        &mut commands,
-                        &mut ids,
-                        &asset_server,
-                        "planes/generic_jet.plane.ron",
-                        &SpawnSpec {
-                            position: Some(rl_pos),
-                            velocity: Some(leader_vel),
-                            ..Default::default()
-                        },
-                        Box::new(rl_ctrl),
-                        ControllerKind::RlLevelHold,
-                        &cfg,
-                    );
-                    commands
-                        .entity(rl_plane.entity)
-                        .insert(SelectedModel(model_path.to_string()));
-                }
-                Err(e) => eprintln!("Failed to load RL model from {model_path}.mpk: {e}"),
-            }
-        }
-    }
-    // WASM: load from embedded bytes.
-    #[cfg(all(feature = "inference", target_arch = "wasm32"))]
-    {
-        const LEVEL_HOLD_MPK: &[u8] = include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/models/level_hold/ppo_level_hold.mpk"
-        ));
-        match RlLevelHoldController::load_bytes(LEVEL_HOLD_MPK, 1000.0, 100.0) {
-            Ok(rl_ctrl) => {
-                let rl_pos = Vec3::new(0.0, 1000.0, -30.0);
-                let rl_plane = spawn_plane(
-                    &mut commands,
-                    &mut ids,
-                    &asset_server,
-                    "planes/generic_jet.plane.ron",
-                    &SpawnSpec {
-                        position: Some(rl_pos),
-                        velocity: Some(leader_vel),
-                        ..Default::default()
-                    },
-                    Box::new(rl_ctrl),
-                    ControllerKind::RlLevelHold,
-                    &cfg,
-                );
-                commands.entity(rl_plane.entity).insert(SelectedModel(
-                    "models/level_hold/ppo_level_hold".to_string(),
-                ));
-            }
-            Err(e) => eprintln!("Failed to load embedded RL level-hold model: {e}"),
-        }
-    }
-
-    // --- Flight-plan (L1) plane: follows assets/plans/patrol.plan.ron ---
-    // Spawns 2 km out heading toward the origin. The controller starts as a PID
-    // orbit fallback and is swapped for an `L1Controller` by `apply_flight_plan`
-    // once the `.plan.ron` asset finishes loading.
-    let fp_pos = Vec3::new(2000.0, 1000.0, 2000.0);
-    let fp_vel = Vec3::new(-70.7, 0.0, -70.7); // ~100 m/s toward origin
-    let fp_attitude = level_attitude_for_heading(fp_vel.x, fp_vel.z);
-    let mut fp_state = FlightState {
-        position: fp_pos,
-        velocity: fp_vel,
-        attitude: fp_attitude,
-        angular_velocity: Vec3::ZERO,
-        ..Default::default()
-    };
-    fp_state.update_air_data();
-
-    let fp_fallback = OrbitController::from_state(&fp_state, &ControlInputs::default());
-    let fp_plane = spawn_plane(
-        &mut commands,
-        &mut ids,
-        &asset_server,
-        "planes/generic_jet.plane.ron",
-        &SpawnSpec {
-            position: Some(fp_pos),
-            velocity: Some(fp_vel),
-            attitude: Some(fp_attitude),
-            ..Default::default()
-        },
-        Box::new(fp_fallback),
-        ControllerKind::FlightPlan,
-        &cfg,
-    );
-    commands
-        .entity(fp_plane.entity)
-        .insert(FlightPlanHandle(asset_server.load("plans/patrol.plan.ron")));
-}
-
-fn configure_origin_orbit(
-    orbit: &mut OrbitController,
-    radius: f32,
-    altitude: f32,
-    airspeed: f32,
-    direction: OrbitDirection,
-) {
-    orbit.center_x = 0.0;
-    orbit.center_z = 0.0;
-    orbit.target_radius = radius;
-    orbit.target_altitude = altitude;
-    orbit.target_airspeed = airspeed;
-    orbit.direction = direction;
-    orbit.inner.target_altitude = altitude;
-    orbit.inner.target_airspeed = airspeed;
-    orbit.inner.target_roll = steady_orbit_bank(airspeed, radius, direction);
-    orbit.radial_pid.reset();
-    orbit.heading_pid.reset();
-}
-
-fn steady_orbit_bank(airspeed: f32, radius: f32, direction: OrbitDirection) -> f32 {
-    const G: f32 = 9.81;
-    -direction.sign() * (airspeed.powi(2) / (G * radius.max(1.0))).atan()
-}
-
-#[cfg(test)]
+#[cfg(all(
+    test,
+    feature = "visual",
+    feature = "inference",
+    not(target_arch = "wasm32")
+))]
 mod tests {
     use super::*;
 
-    #[test]
-    fn steady_orbit_bank_matches_pid_feedforward_chirality() {
-        let ccw = steady_orbit_bank(100.0, 1000.0, OrbitDirection::CounterClockwise);
-        let cw = steady_orbit_bank(100.0, 1000.0, OrbitDirection::Clockwise);
-
-        assert!(ccw < 0.0, "CCW orbit should seed negative bank, got {ccw}");
-        assert!(cw > 0.0, "CW orbit should seed positive bank, got {cw}");
-        assert!(
-            (ccw + cw).abs() < 1e-6,
-            "CW/CCW seed banks should be symmetric: cw={cw}, ccw={ccw}"
-        );
-    }
-
-    #[cfg(all(feature = "visual", feature = "inference", not(target_arch = "wasm32")))]
     #[test]
     fn rl_kind_load_gate() {
         use ControllerKind::*;
@@ -474,23 +142,6 @@ mod tests {
         assert!(!rl_kind_needs_load_on_change(Orbit, true, false));
         assert!(!rl_kind_needs_load_on_change(LevelHold, false, false));
     }
-}
-
-fn level_attitude_for_heading(head_x: f32, head_z: f32) -> Quat {
-    let forward = Vec3::new(head_x, 0.0, head_z).normalize_or_zero();
-    let forward = if forward.length_squared() > 0.0 {
-        forward
-    } else {
-        Vec3::X
-    };
-    let up = Vec3::Y;
-    let right = up.cross(forward).normalize_or_zero();
-    let right = if right.length_squared() > 0.0 {
-        right
-    } else {
-        Vec3::NEG_Z
-    };
-    Quat::from_mat3(&Mat3::from_cols(forward, right, up)).normalize()
 }
 
 #[cfg(feature = "visual")]
