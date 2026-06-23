@@ -155,6 +155,33 @@ pub fn spawn_plane(
     }
 }
 
+/// Load the `PlaneConfig` for a spawn `config_path` (asset-relative, e.g.
+/// `planes/cargo_jet.plane.ron`) directly from disk so the Rapier body gets the
+/// correct mass/inertia/fuel *at spawn*, before any aero applies. Falls back to
+/// the generic-jet spawn config (with a warning) if the file is missing or
+/// invalid, keeping the `N` hotkey and bad paths robust.
+///
+/// Reading synchronously here — rather than waiting on the async asset handle —
+/// is what keeps `cfg` (mass/inertia/fuel) consistent with `config_path`'s
+/// aerodynamics from the first physics step. A mismatched (e.g. generic) inertia
+/// under a heavy airframe's aero moments diverges to a non-finite state.
+pub fn load_spawn_config(config_path: &str) -> PlaneConfig {
+    let disk_path = format!("assets/{config_path}");
+    match std::fs::read(&disk_path) {
+        Ok(bytes) => match ron::de::from_bytes::<PlaneConfig>(&bytes) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                eprintln!("spawn config '{disk_path}' parse failed ({e}); using generic jet");
+                generic_jet_spawn_config()
+            }
+        },
+        Err(e) => {
+            eprintln!("spawn config '{disk_path}' read failed ({e}); using generic jet");
+            generic_jet_spawn_config()
+        }
+    }
+}
+
 pub fn detect_ground_contact(
     plane_query: Query<Entity, With<FlightState>>,
     rapier_context: ReadRapierContext,
@@ -170,5 +197,33 @@ pub fn detect_ground_contact(
                 commands.trigger(PlaneGroundContactEvent(plane));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_spawn_config_reads_real_mass_and_inertia() {
+        // The cargo jet is a heavy airframe; seeding the body from the real
+        // config (not the generic fallback) is what keeps aero/inertia consistent.
+        let cfg = load_spawn_config("planes/cargo_jet.plane.ron");
+        assert_eq!(cfg.mass, 128000.0, "should read the cargo jet's dry mass");
+        assert!(
+            (cfg.inertia.y - 2.46e7).abs() < 1.0,
+            "should read the cargo jet's heavy Iyy, got {}",
+            cfg.inertia.y
+        );
+    }
+
+    #[test]
+    fn load_spawn_config_falls_back_on_missing_file() {
+        let cfg = load_spawn_config("planes/does_not_exist.plane.ron");
+        assert_eq!(
+            cfg.mass,
+            generic_jet_spawn_config().mass,
+            "missing config falls back to the generic-jet spawn config"
+        );
     }
 }

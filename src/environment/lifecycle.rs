@@ -17,7 +17,7 @@ use crate::controllers::{ActiveController, ControllerKind, WingmanController};
 use crate::plane::{ControlInputs, NextPlaneId, PlaneId};
 use crate::training::SpawnSpec;
 
-use super::spawner::{generic_jet_spawn_config, initial_state_from_spec, spawn_plane};
+use super::spawner::{initial_state_from_spec, load_spawn_config, spawn_plane};
 
 /// Spawn a new plane at runtime. Fire with `Commands::trigger`.
 #[derive(Event, Debug, Clone)]
@@ -91,7 +91,10 @@ fn on_spawn_plane_command(
     // (Wingman/FlightPlan/RL) that need extra context the factory can't provide.
     let state = initial_state_from_spec(&cmd.spec);
     let controller = cmd.kind.build(&state, None, &ControlInputs::default());
-    let cfg = generic_jet_spawn_config();
+    // Seed the body's mass/inertia/fuel from the *chosen* config (not a hardcoded
+    // generic jet): a heavy airframe's aero moments on generic inertia diverge to a
+    // non-finite state and panic the physics step. See `load_spawn_config`.
+    let cfg = load_spawn_config(&cmd.config_path);
     spawn_plane(
         &mut commands,
         &mut ids,
