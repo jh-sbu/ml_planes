@@ -93,6 +93,7 @@ pub fn draw_plane_panel(
     map: Res<MapState>,
     mut contexts: EguiContexts,
     mut state: ResMut<PlanePanelState>,
+    mut pending: ResMut<crate::ui::file_load::PendingLoads>,
     mut commands: Commands,
     planes: Query<(Entity, &PlaneIndex, &ControllerKind, &FlightState)>,
     camera: Query<&Transform, With<Camera3d>>,
@@ -133,6 +134,9 @@ pub fn draw_plane_panel(
             ui.horizontal(|ui| {
                 ui.label("Config:");
                 ui.text_edit_singleline(&mut state.config_path);
+                if ui.button("Browse…").clicked() {
+                    crate::ui::file_load::spawn_plane_config_load(&mut pending);
+                }
             });
             if ui.button("Spawn ahead of camera").clicked() {
                 if let Ok(cam) = camera.single() {
