@@ -1,23 +1,24 @@
 // PID gains for cargo_jet.plane.ron.
-// level_hold "normal" is /tune-validated (2026-06-19) across the flight envelope.
+// level_hold "normal" is /tune-validated (2026-06-23) across the flight envelope.
 // orbit and heading_hold remain physics-scaled STARTER gains — NOT yet /tune-validated;
 // run `/tune assets/planes/cargo_jet.plane.ron <controller>` to refine them.
 PlaneTuning(
     level_hold: {
-        // Profile "normal" — level-hold tune 2026-06-19, ~5 rounds.
-        // Validated across 5 envelope points (200/120, 1000/160, 3000/190,
-        // 2000/170, 500/130); worst ΔAlt ≤ 4.7 m, worst ΔSpd ≤ 0.95 m/s.
+        // Profile "normal" — level-hold tune 2026-06-23, 2 rounds.
+        // Validated across 5 envelope points (500/120, 1000/160, 2000/190,
+        // 3000/170, 300/110); worst ΔAlt ≤ 3.6 m, worst ΔSpd ≤ 0.26 m/s.
         // Note: ki sized for the integral-clamp architecture (ki·clamp ≥ trim),
-        // and a stiff+damped inner pitch loop (1.5/2.5) to kill the limit cycle.
+        // and a stiff+damped inner pitch loop (2.0/8.0) to kill the phugoid limit
+        // cycle of the 218 t loaded heavy jet.
         "normal": LevelHoldTuning(
-            alt_kp: 0.01,
-            alt_ki: 0.28,
-            alt_kd: 0.15,
-            pitch_kp: 1.5,
-            pitch_kd: 2.5,
-            spd_kp: 0.02,
-            spd_ki: 0.42,
-            throttle_ff_gain: 0.7,
+            alt_kp: 0.015,
+            alt_ki: 0.22,
+            alt_kd: 0.20,
+            pitch_kp: 2.0,
+            pitch_kd: 8.0,
+            spd_kp: 0.04,
+            spd_ki: 0.30,
+            throttle_ff_gain: 0.3,
         ),
     },
     orbit: {
