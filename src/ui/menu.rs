@@ -21,6 +21,7 @@ use crate::camera::CameraMode;
 use crate::environment::spawn_resolved_scenario;
 use crate::plane::{NextPlaneId, PlaneId};
 use crate::scenario::Scenario;
+use crate::ui::map::MapState;
 use crate::ui::notifications::Notifications;
 
 /// Top-level screen the app is currently showing.
@@ -203,6 +204,30 @@ fn despawn_in_game_planes(
     *camera_mode = CameraMode::FreeLook;
 }
 
+/// In-game overlay: a small "Menu" window (top-right) with a single **Main Menu**
+/// button for players who don't know the `Esc` hotkey. Setting the state triggers
+/// the same `OnExit(InGame)` teardown as `Esc`. Hidden while the full-screen map is
+/// open (mirrors [`crate::ui::lifecycle_panel::draw_plane_panel`]).
+fn draw_in_game_menu(
+    map: Res<MapState>,
+    mut contexts: EguiContexts,
+    mut next: ResMut<NextState<AppState>>,
+) {
+    if map.open {
+        return;
+    }
+    let Ok(ctx) = contexts.ctx_mut() else { return };
+    egui::Window::new("Menu")
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 10.0))
+        .collapsible(true)
+        .resizable(false)
+        .show(ctx, |ui| {
+            if ui.button("Main Menu").clicked() {
+                next.set(AppState::MainMenu);
+            }
+        });
+}
+
 /// `Esc` while flying returns to the main menu (unless egui has keyboard focus,
 /// e.g. a text field). `M` is already the map toggle, so Esc is used here.
 fn menu_escape_to_main(
@@ -237,6 +262,7 @@ impl Plugin for MenuPlugin {
                 (
                     draw_main_menu.run_if(in_state(AppState::MainMenu)),
                     draw_scenario_select.run_if(in_state(AppState::ScenarioSelect)),
+                    draw_in_game_menu.run_if(in_state(AppState::InGame)),
                 ),
             )
             .add_systems(
