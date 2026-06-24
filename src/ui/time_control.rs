@@ -72,7 +72,9 @@ pub fn draw_time_control(
     let Ok(ctx) = contexts.ctx_mut() else { return };
 
     egui::Window::new("Sim Speed")
-        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 10.0))
+        // Sit just below the in-game "Menu" window (also RIGHT_TOP at y=10) so the
+        // two top-right panels don't overlap.
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 70.0))
         .collapsible(false)
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
