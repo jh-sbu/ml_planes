@@ -29,10 +29,12 @@ impl Plugin for UiPlugin {
                     draw_map,
                     draw_time_control,
                     draw_plane_panel,
-                    draw_notifications,
                 )
                     .run_if(in_state(AppState::InGame)),
             )
+            // Notifications are produced on the menu too (e.g. the Train
+            // placeholder), so render them in every state — not just InGame.
+            .add_systems(EguiPrimaryContextPass, draw_notifications)
             .add_systems(
                 Update,
                 plane_lifecycle_hotkeys.run_if(in_state(AppState::InGame)),
