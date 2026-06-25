@@ -5,3 +5,9 @@
 pub mod protocol;
 
 pub use protocol::*;
+
+#[cfg(feature = "server")]
+pub mod server;
+
+#[cfg(feature = "server")]
+pub use server::{start_renet_server, ServerPort, ServerScenario, ServerSimPlugin};
