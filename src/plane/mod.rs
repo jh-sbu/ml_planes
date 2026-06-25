@@ -15,4 +15,5 @@ pub use state::{FlightState, FUEL_OBS_SCALE};
 /// Used by the camera cycle and HUD to label planes consistently regardless of
 /// Bevy entity-ID allocation order.
 #[derive(bevy::prelude::Component, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[cfg_attr(feature = "net", derive(serde::Serialize, serde::Deserialize))]
 pub struct PlaneIndex(pub u32);

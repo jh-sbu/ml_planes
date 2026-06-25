@@ -2,6 +2,7 @@ use bevy::math::{Quat, Vec3};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "net", derive(serde::Serialize, serde::Deserialize))]
 pub struct SpawnSpec {
     pub position: Option<Vec3>,
     pub velocity: Option<Vec3>,

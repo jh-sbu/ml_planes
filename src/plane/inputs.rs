@@ -2,6 +2,7 @@ use bevy::ecs::component::Component;
 
 /// Normalized control surface commands produced by a `FlightController`.
 #[derive(Component, Default, Debug, Clone)]
+#[cfg_attr(feature = "net", derive(serde::Serialize, serde::Deserialize))]
 pub struct ControlInputs {
     pub aileron: f32,  // [-1, 1]
     pub elevator: f32, // [-1, 1]

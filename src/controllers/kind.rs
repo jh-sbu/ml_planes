@@ -13,6 +13,7 @@ use crate::plane::{ControlInputs, FlightState};
 /// Stored as a `Component` so Bevy change-detection can trigger a controller
 /// rebuild whenever the kind changes (via key press or HUD dropdown).
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "net", derive(serde::Serialize, serde::Deserialize))]
 pub enum ControllerKind {
     Manual,
     LevelHold,

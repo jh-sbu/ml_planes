@@ -5,6 +5,7 @@ use bevy::prelude::{Component, Entity, Reflect, Resource};
 use crate::plane::FlightState;
 
 #[derive(Component, Clone, Copy, PartialEq, Eq, Hash, Debug, Reflect)]
+#[cfg_attr(feature = "net", derive(serde::Serialize, serde::Deserialize))]
 pub struct PlaneId(pub u32);
 
 impl PlaneId {

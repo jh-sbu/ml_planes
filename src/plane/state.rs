@@ -16,6 +16,7 @@ pub const FUEL_OBS_SCALE: f32 = 2000.0;
 
 /// Full 6-DOF kinematic state of a plane, updated each physics tick.
 #[derive(Component, Debug, Clone)]
+#[cfg_attr(feature = "net", derive(serde::Serialize, serde::Deserialize))]
 pub struct FlightState {
     pub position: Vec3,         // world frame [m]
     pub velocity: Vec3,         // world frame [m/s]

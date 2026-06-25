@@ -9,6 +9,12 @@ visual = ["bevy/default", "bevy_egui", "rfd"]
 wasm = ["visual", "inference"]
 inference = ["burn/std", "burn/ndarray"]
 training = ["inference", "burn/wgpu", "burn/autodiff", "burn/train", "burn/tui"]
+# Networking: replication + renet UDP transport. `bevy/serialize` gives Vec3/Quat/
+# Transform serde impls used by the net protocol and the serde-derived sim types.
+net = ["dep:bevy_replicon", "dep:bevy_replicon_renet", "bevy/serialize"]
+# Headless authoritative sim. `bevy_asset` is already on the base bevy dep, so the
+# server build only needs networking on top of the headless core.
+server = ["net"]
 
 [dependencies]
 bevy = { version = "0.18", default-features = false, features = ["bevy_asset"] }
@@ -19,6 +25,8 @@ bevy_egui = { version = "0.39", optional = true }
 rfd = { version = "0.15", optional = true }
 burn = { version = "0.20", optional = true, default-features = false }
 naga = { version = "26", features = ["termcolor"] }
+bevy_replicon = { version = "0.40", optional = true }
+bevy_replicon_renet = { version = "0.16", optional = true }
 
 [[bin]]
 name = "train_ppo"
