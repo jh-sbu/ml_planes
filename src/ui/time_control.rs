@@ -15,46 +15,10 @@ use bevy_egui::{egui, EguiContexts};
 
 use crate::ui::map::MapState;
 
-/// Discrete simulation playback speeds selectable from the HUD.
-#[derive(Resource, Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum SimSpeed {
-    /// Simulation frozen (`Time<Virtual>` paused).
-    Paused,
-    /// Real-time playback.
-    #[default]
-    X1,
-    /// 5× real-time.
-    X5,
-    /// 10× real-time.
-    X10,
-}
-
-impl SimSpeed {
-    /// Virtual-time relative speed to apply when not paused.
-    pub fn relative_speed(self) -> f32 {
-        match self {
-            SimSpeed::Paused => 1.0,
-            SimSpeed::X1 => 1.0,
-            SimSpeed::X5 => 5.0,
-            SimSpeed::X10 => 10.0,
-        }
-    }
-
-    /// Whether the clock should be frozen.
-    pub fn is_paused(self) -> bool {
-        matches!(self, SimSpeed::Paused)
-    }
-
-    /// Human-readable button label.
-    pub fn label(self) -> &'static str {
-        match self {
-            SimSpeed::Paused => "Pause",
-            SimSpeed::X1 => "1x",
-            SimSpeed::X5 => "5x",
-            SimSpeed::X10 => "10x",
-        }
-    }
-}
+// `SimSpeed` now lives in the render-neutral `crate::sim_speed` module so the
+// network protocol and headless server can reference it; re-exported here so the
+// HUD call sites (`super::time_control::SimSpeed`) are unchanged.
+pub use crate::sim_speed::SimSpeed;
 
 /// Draws the upper-right "Sim Speed" panel and applies the selection to
 /// `Time<Virtual>` whenever it changes.
@@ -99,38 +63,5 @@ pub fn draw_time_control(
             vt.unpause();
             vt.set_relative_speed(sim_speed.relative_speed());
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn default_is_real_time() {
-        assert_eq!(SimSpeed::default(), SimSpeed::X1);
-    }
-
-    #[test]
-    fn relative_speeds() {
-        assert_eq!(SimSpeed::X1.relative_speed(), 1.0);
-        assert_eq!(SimSpeed::X5.relative_speed(), 5.0);
-        assert_eq!(SimSpeed::X10.relative_speed(), 10.0);
-    }
-
-    #[test]
-    fn only_paused_is_paused() {
-        assert!(SimSpeed::Paused.is_paused());
-        assert!(!SimSpeed::X1.is_paused());
-        assert!(!SimSpeed::X5.is_paused());
-        assert!(!SimSpeed::X10.is_paused());
-    }
-
-    #[test]
-    fn labels() {
-        assert_eq!(SimSpeed::Paused.label(), "Pause");
-        assert_eq!(SimSpeed::X1.label(), "1x");
-        assert_eq!(SimSpeed::X5.label(), "5x");
-        assert_eq!(SimSpeed::X10.label(), "10x");
     }
 }

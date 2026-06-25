@@ -1,0 +1,7 @@
+//! Shared network protocol compiled into both the client and the dedicated server
+//! (gated behind the `net` feature). See [`protocol`] for the replicated components,
+//! client→server command events, and [`protocol::NetProtocolPlugin`].
+
+pub mod protocol;
+
+pub use protocol::*;

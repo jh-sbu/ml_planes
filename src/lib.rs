@@ -3,8 +3,11 @@ pub mod aerodynamics;
 pub mod camera;
 pub mod controllers;
 pub mod environment;
+#[cfg(feature = "net")]
+pub mod net;
 pub mod plane;
 pub mod scenario;
+pub mod sim_speed;
 pub mod training;
 #[cfg(feature = "visual")]
 pub mod ui;
