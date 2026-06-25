@@ -33,6 +33,9 @@ src/
                   #   guidance.rs — shared L1 + orbit bank-command primitives
                   #   flight_plan.rs — FlightPlan asset; tuning.rs — per-plane gain pools
                   #   selected_model.rs — model hot-swap; orbit_marker.rs; component.rs
+                  #   sim_control.rs — SimControlPlugin: headless controller-rebuild
+                  #     systems (apply_initial_tuning/apply_controller_switch/
+                  #     apply_flight_plan + RL load arms), shared by visual client & server
   environment/    # infinite ground collider + shader, plane spawner
                   #   spawner.rs — spawn_plane (auto-assigns PlaneId + PlaneIndex)
                   #   lifecycle.rs — LifecyclePlugin: Spawn/RemovePlaneCommand observers
@@ -198,7 +201,7 @@ learns corrections to a working baseline. Training environments emit direct acti
 default = ["visual"]
 visual = ["bevy/default", "bevy_egui", "rfd"]
 wasm = ["visual", "inference"]
-inference = ["burn/std", "burn/ndarray"]
+inference = ["burn/std", "burn/ndarray", "bevy/bevy_log"]
 training = ["inference", "burn/wgpu", "burn/autodiff", "burn/train", "burn/tui"]
 ```
 
@@ -446,7 +449,7 @@ families). Supports `--task {level_hold|orbit|residual_orbit|lstm_orbit}` and, f
 default = ["visual"]
 visual = ["bevy/default", "bevy_egui", "rfd"]
 wasm = ["visual", "inference"]
-inference = ["burn/std", "burn/ndarray"]
+inference = ["burn/std", "burn/ndarray", "bevy/bevy_log"]
 training = ["inference", "burn/wgpu", "burn/autodiff", "burn/train", "burn/tui"]
 
 [dependencies]

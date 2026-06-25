@@ -5,6 +5,7 @@ pub mod controllers;
 pub mod environment;
 #[cfg(feature = "net")]
 pub mod net;
+pub mod notifications;
 pub mod plane;
 pub mod scenario;
 pub mod sim_speed;

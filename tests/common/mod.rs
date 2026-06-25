@@ -15,6 +15,7 @@ use ml_planes::plane::{PlaneConfig, PlanePlugin};
 /// `app.finish()` is called before returning so that plugins which initialize
 /// resources in their `finish()` impl are properly set up (required when
 /// driving the app manually via `app.update()` instead of `app.run()`).
+#[allow(dead_code)]
 pub fn build_headless_app() -> App {
     build_headless_app_with(|_| {})
 }

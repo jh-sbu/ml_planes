@@ -21,6 +21,7 @@ pub mod rl_orbit;
 #[cfg(feature = "inference")]
 pub mod rl_orbit_residual;
 pub mod selected_model;
+pub mod sim_control;
 pub mod traits;
 pub mod tuning;
 pub mod wingman;
@@ -50,6 +51,7 @@ pub use rl_orbit::{RlOrbitConfig, RlOrbitController};
 #[cfg(feature = "inference")]
 pub use rl_orbit_residual::{RlOrbitResidualConfig, RlOrbitResidualController};
 pub use selected_model::{ModelLibrary, SelectedModel};
+pub use sim_control::SimControlPlugin;
 pub use traits::FlightController;
 pub use tuning::{
     ControllerTuning, HeadingHoldTuning, LevelHoldTuning, OrbitTuning, PlaneTuning,
