@@ -14,7 +14,12 @@ pub struct UiPlugin;
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         // The menu plugin owns the AppState machine + scenario spawn/teardown.
+        // The HUD's model dropdown reads `ModelLibrary`. `SimControlPlugin`
+        // (which also inits it) is compiled out of the pure networked client, so
+        // the visual UI must own it too. `init_resource` is idempotent, so this
+        // is harmless in builds where both plugins are present.
         app.add_plugins(MenuPlugin)
+            .init_resource::<crate::controllers::ModelLibrary>()
             .init_resource::<PendingLoads>()
             .init_resource::<MapState>()
             .init_resource::<SimSpeed>()

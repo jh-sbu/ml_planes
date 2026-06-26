@@ -58,14 +58,23 @@ pub fn spawn_visual_ground(
 }
 
 pub fn draw_plane_gizmos(
-    query: Query<(&FlightState, &PhysicsInterp)>,
+    // Local-sim planes carry `PhysicsInterp` and are interpolated here against the
+    // fixed-step overstep. Networked-client planes have no local physics, so they
+    // lack `PhysicsInterp`; their `Transform` is already interpolated from replicated
+    // state by `crate::net::client::render_net_interpolation`, so fall back to it.
+    query: Query<(&FlightState, Option<&PhysicsInterp>, &Transform)>,
     mut gizmos: Gizmos,
     time_fixed: Res<Time<Fixed>>,
 ) {
     let alpha = time_fixed.overstep_fraction();
-    for (state, interp) in &query {
-        let pos = interp.prev_pos.lerp(interp.curr_pos, alpha);
-        let rot = interp.prev_rot.slerp(interp.curr_rot, alpha);
+    for (state, interp, transform) in &query {
+        let (pos, rot) = match interp {
+            Some(interp) => (
+                interp.prev_pos.lerp(interp.curr_pos, alpha),
+                interp.prev_rot.slerp(interp.curr_rot, alpha),
+            ),
+            None => (transform.translation, transform.rotation),
+        };
 
         // Velocity arrow — world frame, scaled so 100 m/s → 20 m arrow
         let vel_tip = pos + state.velocity * 0.2;
