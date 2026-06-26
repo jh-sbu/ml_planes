@@ -25,11 +25,15 @@ pub fn draw_flight_hud(
         &FlightState,
         &ControlInputs,
         &mut ControllerKind,
-        &mut ActiveController,
+        // Optional: a networked client renders replicated planes, which carry
+        // neither the (server-only) `ActiveController` nor a `PlaneConfigHandle`.
+        // The flight readout is driven entirely by replicated state; the per-kind
+        // control panels and the fuel readout below degrade gracefully when absent.
+        Option<&mut ActiveController>,
         Option<&mut SelectedTuningProfile>,
         Option<&PlaneTuningHandle>,
         Option<&mut SelectedModel>,
-        &PlaneConfigHandle,
+        Option<&PlaneConfigHandle>,
     )>,
     all_planes: Query<(Entity, &PlaneId, &PlaneIndex), With<FlightState>>,
     plane_configs: Res<Assets<PlaneConfig>>,
@@ -110,7 +114,9 @@ pub fn draw_flight_hud(
             ));
 
             // Fuel / charge — label and units depend on the plane's powerplant.
-            if let Some(cfg) = plane_configs.get(&config_handle.0) {
+            // `config_handle` is absent on a networked client (config isn't
+            // replicated), so the readout is simply omitted there.
+            if let Some(cfg) = config_handle.and_then(|h| plane_configs.get(&h.0)) {
                 let cap = cfg.powerplant.capacity();
                 let rem = state.consumable_remaining;
                 if rem.is_finite() && cap > 0.0 {
@@ -160,6 +166,14 @@ pub fn draw_flight_hud(
                 *kind = selected;
             }
             ui.label("(C to cycle)");
+
+            // Everything below edits the live controller. On a networked client the
+            // `ActiveController` isn't replicated, so skip the per-kind panels and
+            // the RL model picker — the flight data above is already live. (Phase 6
+            // converts these into network commands; see `plans/client_server.md`.)
+            let Some(mut controller) = controller else {
+                return;
+            };
 
             if *kind == ControllerKind::Wingman {
                 if let Some(wc) = controller

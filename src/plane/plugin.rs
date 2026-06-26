@@ -1,8 +1,14 @@
 use bevy::asset::io::Reader;
 use bevy::asset::{AssetApp, AssetLoader, LoadContext};
 use bevy::prelude::*;
+// The 6-DOF sim chain (and its `PhysicsSet` ordering) is compiled only into builds
+// that run the simulation locally — i.e. not networked at all (tests / local-sim /
+// WASM), or the authoritative server. The thin networked client (`net` without
+// `server`) renders replicated state instead of stepping physics.
+#[cfg(any(not(feature = "net"), feature = "server"))]
 use bevy_rapier3d::prelude::PhysicsSet;
 
+#[cfg(any(not(feature = "net"), feature = "server"))]
 use super::systems::{
     apply_aerodynamic_forces, consume_fuel, run_flight_controllers, sync_flight_state,
     update_plane_mass,
@@ -228,6 +234,11 @@ impl Plugin for PlanePlugin {
         app.init_resource::<NextPlaneId>();
         app.register_type::<PlaneId>();
 
+        // The 6-DOF sim chain runs everywhere except the thin networked client,
+        // which renders replicated state and runs no physics (see
+        // `plans/client_server.md` Phase 4). The asset loaders above stay on so the
+        // client can still load `.plane.ron`/`.tuning.ron` for display.
+        #[cfg(any(not(feature = "net"), feature = "server"))]
         app.add_systems(
             FixedUpdate,
             (

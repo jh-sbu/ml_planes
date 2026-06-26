@@ -6,6 +6,13 @@ pub mod protocol;
 
 pub use protocol::*;
 
+pub mod client;
+
+pub use client::{
+    connect_to_server, interpolate, start_renet_client, ClientNetPlugin, ConnectTarget,
+    NetInterpolation,
+};
+
 #[cfg(feature = "server")]
 pub mod server;
 

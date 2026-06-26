@@ -1,9 +1,13 @@
 use bevy::prelude::*;
+// Rapier is only used by the local-sim / WASM build; the pure networked client
+// (`feature = "client"`) runs no physics and renders replicated state instead.
+#[cfg(any(not(feature = "net"), feature = "server"))]
 use bevy_rapier3d::prelude::*;
 
 // The binary wires the core plugins; the controller-rebuild systems live in
-// `SimControlPlugin` (shared with the headless server). Only the client-side
-// input/hotkey systems remain here, gated to the visual build.
+// `SimControlPlugin` (shared with the headless server). The client has no
+// `ActiveController` to rebuild, so `SimControlPlugin` is compiled out there.
+#[cfg(any(not(feature = "net"), feature = "server"))]
 use ml_planes::controllers::SimControlPlugin;
 use ml_planes::environment::{EnvironmentPlugin, LifecyclePlugin};
 use ml_planes::plane::PlanePlugin;
@@ -45,19 +49,26 @@ fn main() {
         bevy::transform::TransformPlugin,
     ));
 
-    app.insert_resource(TimestepMode::Fixed {
-        dt: 1.0 / 64.0,
-        substeps: 1,
-    });
-    app.add_plugins(RapierPhysicsPlugin::<NoUserData>::default().in_fixed_schedule());
+    // Local physics + the controller-rebuild systems run in every build except the
+    // pure networked client, which renders replicated state (see
+    // `plans/client_server.md` Phase 4). `PlanePlugin`/`EnvironmentPlugin`/
+    // `LifecyclePlugin` are still added on the client for the asset loaders, the
+    // plane gizmos, and the (Phase 6) lifecycle observers.
+    #[cfg(any(not(feature = "net"), feature = "server"))]
+    {
+        app.insert_resource(TimestepMode::Fixed {
+            dt: 1.0 / 64.0,
+            substeps: 1,
+        });
+        app.add_plugins(RapierPhysicsPlugin::<NoUserData>::default().in_fixed_schedule());
+    }
     app.add_plugins(PlanePlugin);
     app.add_plugins(EnvironmentPlugin);
     app.add_plugins(LifecyclePlugin);
     // The controller-rebuild systems (apply_initial_tuning / apply_controller_switch /
-    // apply_flight_plan + the RL load arms) live here so the headless server runs them
-    // too. The visual app boots into the main menu; the scenario it picks is spawned on
-    // `OnEnter(AppState::InGame)` by the `MenuPlugin` (added via `UiPlugin`). The headless
-    // build has no menu, so it spawns nothing automatically.
+    // apply_flight_plan + the RL load arms) live in `SimControlPlugin` so the headless
+    // server runs them too. The client has no `ActiveController` to rebuild.
+    #[cfg(any(not(feature = "net"), feature = "server"))]
     app.add_plugins(SimControlPlugin);
 
     #[cfg(feature = "visual")]
@@ -65,6 +76,34 @@ fn main() {
         app.add_plugins(EguiPlugin::default());
         app.add_plugins(CameraPlugin);
         app.add_plugins(UiPlugin);
+    }
+
+    // Client networking: the shared replication protocol + the renet client
+    // transport + replicated-state rendering. The transport is opened only when a
+    // server address is supplied via `--connect` (a temporary bridge; Phase 5 wires
+    // Start New Server / Connect into the menu).
+    #[cfg(feature = "client")]
+    {
+        use bevy_replicon::prelude::RepliconPlugins;
+        use bevy_replicon_renet::RepliconRenetPlugins;
+        use ml_planes::net::{
+            start_renet_client, ClientNetPlugin, ConnectTarget, NetProtocolPlugin,
+        };
+
+        app.add_plugins(RepliconPlugins)
+            .add_plugins(RepliconRenetPlugins)
+            .add_plugins(NetProtocolPlugin)
+            .add_plugins(ClientNetPlugin);
+
+        if let Some(addr) = parse_connect_arg() {
+            app.insert_resource(ConnectTarget(addr));
+            app.add_systems(Startup, start_renet_client);
+            // Skip the menu and drop straight into the in-game render state so the
+            // HUD/camera (gated to `InGame`) come up against the replicated scene.
+            app.add_systems(Startup, |mut next: ResMut<NextState<AppState>>| {
+                next.set(AppState::InGame)
+            });
+        }
     }
 
     // Client-side input/hotkey systems only run while a scenario is flying, so the menu
@@ -85,6 +124,27 @@ fn main() {
     app.add_systems(Update, cycle_rl_model.run_if(in_state(AppState::InGame)));
 
     app.run();
+}
+
+/// Parse `--connect <host:port>` from argv into a resolved socket address. Returns
+/// `None` (and the client stays on the menu) when the flag is absent or the address
+/// can't be resolved. Temporary Phase 4 bridge — Phase 5 replaces it with the menu's
+/// Connect / Start New Server flow.
+#[cfg(feature = "client")]
+fn parse_connect_arg() -> Option<std::net::SocketAddr> {
+    use std::net::ToSocketAddrs;
+    let args: Vec<String> = std::env::args().collect();
+    let raw = args
+        .windows(2)
+        .find(|pair| pair[0] == "--connect")
+        .map(|pair| pair[1].clone())?;
+    match raw.to_socket_addrs() {
+        Ok(mut addrs) => addrs.next(),
+        Err(e) => {
+            eprintln!("--connect: cannot resolve '{raw}': {e}");
+            None
+        }
+    }
 }
 
 #[cfg(feature = "visual")]

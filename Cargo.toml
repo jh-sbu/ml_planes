@@ -4,8 +4,15 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-default = ["visual"]
+default = ["client"]
+# The desktop networked client: the renderer plus the replicon/renet client
+# transport. Physics runs in every build *except* this one (see the
+# `cfg(not(feature = "client"))` gates in main.rs / plane / environment) — the
+# client is a pure renderer driven by replicated state.
+client = ["visual", "net"]
 visual = ["bevy/default", "bevy_egui", "rfd"]
+# Browser build: the renderer with CPU inference but no networking (deferred).
+# Keeps local physics, so the `ml_planes` bin must stay buildable without `client`.
 wasm = ["visual", "inference"]
 # `bevy/bevy_log` gives the `warn!`/`info!` macros to the headless RL controller-load
 # systems (in `controllers::sim_control`); it's already on via `bevy/default` in visual builds.

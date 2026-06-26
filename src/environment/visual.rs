@@ -17,6 +17,9 @@ pub struct PhysicsInterp {
 }
 
 /// Run BEFORE PhysicsSet::SyncBackend — saves the last step's result as "prev".
+/// Physics-pose interpolation feeds the local-sim renderer; the networked client
+/// interpolates from replicated state instead (`crate::net::client`).
+#[cfg(any(not(feature = "net"), feature = "server"))]
 pub fn save_prev_physics_pose(mut query: Query<(&Transform, &mut PhysicsInterp)>) {
     for (transform, mut interp) in query.iter_mut() {
         interp.prev_pos = transform.translation;
@@ -25,6 +28,7 @@ pub fn save_prev_physics_pose(mut query: Query<(&Transform, &mut PhysicsInterp)>
 }
 
 /// Run AFTER PhysicsSet::Writeback — saves the just-completed step's result as "curr".
+#[cfg(any(not(feature = "net"), feature = "server"))]
 pub fn save_curr_physics_pose(mut query: Query<(&Transform, &mut PhysicsInterp)>) {
     for (transform, mut interp) in query.iter_mut() {
         interp.curr_pos = transform.translation;

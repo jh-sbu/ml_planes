@@ -208,6 +208,9 @@ pub fn load_spawn_config(config_path: &str) -> PlaneConfig {
     }
 }
 
+// Ground-contact detection reads the Rapier context, absent on the thin networked
+// client (which never collides locally — see `plans/client_server.md` Phase 4).
+#[cfg(any(not(feature = "net"), feature = "server"))]
 pub fn detect_ground_contact(
     plane_query: Query<Entity, With<FlightState>>,
     rapier_context: ReadRapierContext,

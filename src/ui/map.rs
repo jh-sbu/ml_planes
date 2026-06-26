@@ -172,7 +172,10 @@ pub fn draw_map(
         &FlightState,
         &PlaneIndex,
         &ControllerKind,
-        &mut ActiveController,
+        // Optional: the networked client renders replicated planes that carry no
+        // `ActiveController` (it lives only on the authoritative server). Map dots
+        // still draw from the replicated state; plan/orbit overlays just skip.
+        Option<&mut ActiveController>,
     )>,
 ) {
     if keys.just_pressed(KeyCode::KeyM) {
@@ -190,15 +193,15 @@ pub fn draw_map(
     // Snapshot every plane (clone plan legs so the query borrow ends here).
     let mut rends: Vec<PlaneRender> = Vec::new();
     for (entity, state, index, kind, mut ctrl) in planes.iter_mut() {
-        let plan = if *kind == ControllerKind::FlightPlan {
-            ctrl.0
-                .as_any_mut()
-                .downcast_mut::<L1Controller>()
-                .map(|l1| (l1.plan.legs.clone(), l1.leg_index))
-        } else {
-            None
-        };
-        let orbit_center = active_orbit_center(ctrl.0.as_mut()).map(|m| m.center);
+        let plan = ctrl
+            .as_mut()
+            .filter(|_| *kind == ControllerKind::FlightPlan)
+            .and_then(|c| c.0.as_any_mut().downcast_mut::<L1Controller>())
+            .map(|l1| (l1.plan.legs.clone(), l1.leg_index));
+        let orbit_center = ctrl
+            .as_mut()
+            .and_then(|c| active_orbit_center(c.0.as_mut()))
+            .map(|m| m.center);
         rends.push(PlaneRender {
             entity,
             pos: Vec2::new(state.position.x, state.position.z),

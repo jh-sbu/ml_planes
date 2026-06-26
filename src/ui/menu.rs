@@ -15,11 +15,18 @@
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPrimaryContextPass};
 
+// Local scenario spawning is compiled out when networking is on: the dedicated
+// server owns scenario spawning and the client renders the replicated result.
+#[cfg(not(feature = "net"))]
 use std::path::Path;
 
 use crate::camera::CameraMode;
+#[cfg(not(feature = "net"))]
 use crate::environment::spawn_resolved_scenario;
-use crate::plane::{NextPlaneId, PlaneId};
+#[cfg(not(feature = "net"))]
+use crate::plane::NextPlaneId;
+use crate::plane::PlaneId;
+#[cfg(not(feature = "net"))]
 use crate::scenario::Scenario;
 use crate::ui::map::MapState;
 use crate::ui::notifications::Notifications;
@@ -167,6 +174,7 @@ fn draw_scenario_select(
 /// `OnEnter(InGame)`: load + resolve + spawn the chosen scenario. Planes whose
 /// controller can't be built (e.g. a missing RL model) are skipped with a HUD
 /// notification rather than aborting the whole scene.
+#[cfg(not(feature = "net"))]
 fn spawn_selected_scenario(
     mut commands: Commands,
     mut ids: ResMut<NextPlaneId>,
@@ -255,7 +263,6 @@ impl Plugin for MenuPlugin {
             .init_resource::<ScenarioList>()
             .init_resource::<SelectedScenario>()
             .add_systems(OnEnter(AppState::MainMenu), scan_scenarios)
-            .add_systems(OnEnter(AppState::InGame), spawn_selected_scenario)
             .add_systems(OnExit(AppState::InGame), despawn_in_game_planes)
             .add_systems(
                 EguiPrimaryContextPass,
@@ -269,6 +276,12 @@ impl Plugin for MenuPlugin {
                 Update,
                 menu_escape_to_main.run_if(in_state(AppState::InGame)),
             );
+
+        // Spawn the chosen scenario locally only in non-networked builds (WASM /
+        // local-sim). With `net`, planes come from the authoritative server, so the
+        // client must not spawn its own (see `plans/client_server.md` Phase 4).
+        #[cfg(not(feature = "net"))]
+        app.add_systems(OnEnter(AppState::InGame), spawn_selected_scenario);
     }
 }
 
