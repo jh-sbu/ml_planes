@@ -79,31 +79,19 @@ fn main() {
     }
 
     // Client networking: the shared replication protocol + the renet client
-    // transport + replicated-state rendering. The transport is opened only when a
-    // server address is supplied via `--connect` (a temporary bridge; Phase 5 wires
-    // Start New Server / Connect into the menu).
+    // transport + replicated-state rendering. The transport is opened by the menu's
+    // Start New Server / Connect to Server flow (`ui::menu`), which inserts a
+    // `ConnectTarget` and enters `AppState::Connecting`.
     #[cfg(feature = "client")]
     {
         use bevy_replicon::prelude::RepliconPlugins;
         use bevy_replicon_renet::RepliconRenetPlugins;
-        use ml_planes::net::{
-            start_renet_client, ClientNetPlugin, ConnectTarget, NetProtocolPlugin,
-        };
+        use ml_planes::net::{ClientNetPlugin, NetProtocolPlugin};
 
         app.add_plugins(RepliconPlugins)
             .add_plugins(RepliconRenetPlugins)
             .add_plugins(NetProtocolPlugin)
             .add_plugins(ClientNetPlugin);
-
-        if let Some(addr) = parse_connect_arg() {
-            app.insert_resource(ConnectTarget(addr));
-            app.add_systems(Startup, start_renet_client);
-            // Skip the menu and drop straight into the in-game render state so the
-            // HUD/camera (gated to `InGame`) come up against the replicated scene.
-            app.add_systems(Startup, |mut next: ResMut<NextState<AppState>>| {
-                next.set(AppState::InGame)
-            });
-        }
     }
 
     // Client-side input/hotkey systems only run while a scenario is flying, so the menu
@@ -124,27 +112,6 @@ fn main() {
     app.add_systems(Update, cycle_rl_model.run_if(in_state(AppState::InGame)));
 
     app.run();
-}
-
-/// Parse `--connect <host:port>` from argv into a resolved socket address. Returns
-/// `None` (and the client stays on the menu) when the flag is absent or the address
-/// can't be resolved. Temporary Phase 4 bridge — Phase 5 replaces it with the menu's
-/// Connect / Start New Server flow.
-#[cfg(feature = "client")]
-fn parse_connect_arg() -> Option<std::net::SocketAddr> {
-    use std::net::ToSocketAddrs;
-    let args: Vec<String> = std::env::args().collect();
-    let raw = args
-        .windows(2)
-        .find(|pair| pair[0] == "--connect")
-        .map(|pair| pair[1].clone())?;
-    match raw.to_socket_addrs() {
-        Ok(mut addrs) => addrs.next(),
-        Err(e) => {
-            eprintln!("--connect: cannot resolve '{raw}': {e}");
-            None
-        }
-    }
 }
 
 #[cfg(feature = "visual")]

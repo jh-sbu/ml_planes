@@ -304,19 +304,40 @@ Planes can be added/removed at runtime via observer commands (`environment/lifec
 ### Visual App Flow (Main Menu + Scenarios)
 
 The visual app boots into a **main menu** instead of a hardcoded scene. State is a
-Bevy `States` enum `AppState { MainMenu, ScenarioSelect, InGame }` (`ui/menu.rs`,
-registered by `MenuPlugin` via `UiPlugin`) — the only `States` in the codebase.
+Bevy `States` enum `AppState` (`ui/menu.rs`, registered by `MenuPlugin` via `UiPlugin`)
+— the only app-level `States` in the codebase. The menu flow differs by build:
 
-- **Main menu** (`MainMenu`): **Start Scenario** → `ScenarioSelect`; **Train** (only under
-  `feature = "training"`, a no-op placeholder); **Quit** (`MessageWriter<AppExit>` — note Bevy
-  0.18 uses `MessageWriter`, not `EventWriter`).
-- **Scenario select** (`ScenarioSelect`): lists `assets/scenarios/*.scenario.ron` (native scans
-  the dir, `default` first; wasm falls back to the embedded default). Picking one sets
-  `SelectedScenario` and enters `InGame`; **Back** returns to the menu.
-- **In game** (`InGame`): `OnEnter` loads + resolves the selected scenario and spawns it via
-  `environment::spawn_resolved_scenario` (build-failure planes, e.g. missing RL `.mpk`, are
-  skipped with a `Notifications` banner). `OnExit` despawns all `PlaneId` entities and resets the
-  camera to `FreeLook`. **`Esc`** returns to the menu (suppressed while egui wants keyboard).
+**Networked client build (`feature = "net"`, the default `client`):** `AppState { MainMenu,
+ScenarioSelect, ConnectEntry, Connecting, InGame }`. The client never simulates — physics +
+spawning live on the dedicated server (`plans/client_server.md` Phase 5).
+
+- **Main menu** (`MainMenu`): **Start New Server** → `ScenarioSelect`; **Connect to Server** →
+  `ConnectEntry`; **Train** (only under `feature = "training"`, no-op placeholder); **Quit**
+  (`MessageWriter<AppExit>` — Bevy 0.18 uses `MessageWriter`, not `EventWriter`).
+- **Scenario select** (`ScenarioSelect`, host path): picking a scenario launches a local
+  `ml_planes_server` child process (`launch_local_server`, stored in the `LocalServer` resource)
+  hosting that scenario on `DEFAULT_PORT`, inserts `ConnectTarget(127.0.0.1:DEFAULT_PORT)`, and
+  enters `Connecting`.
+- **Connect entry** (`ConnectEntry`, join path): a `host:port` text field (`ConnectForm`,
+  default `127.0.0.1:5555`); **Connect** parses via `parse_addr`, inserts `ConnectTarget`, and
+  enters `Connecting`. `LocalServer` stays `None` (remote join).
+- **Connecting** (`Connecting`): `OnEnter` runs `start_renet_client` (opens the renet transport
+  to `ConnectTarget`) + `arm_connect_deadline`. `poll_connecting` advances to `InGame` once
+  replicon's `ClientState == Connected`, or tears the attempt down (`teardown_connection`) and
+  returns to `MainMenu` with a `Notifications` banner after `CONNECT_TIMEOUT_SECS` (5 s).
+  **Cancel** also tears down + returns.
+- **In game** (`InGame`): the client renders replicated planes (no local spawn). `OnExit`
+  (`despawn_in_game_planes`, net variant) calls `teardown_connection` (disconnect the renet
+  client, kill any `LocalServer` child), despawns all `PlaneId` entities, and resets the camera
+  to `FreeLook`. **`Esc`** / the in-game **Main Menu** button return to the menu (Esc suppressed
+  while egui wants keyboard).
+
+**Non-net visual build (`wasm` / local-sim, `not(feature = "net")`):** `AppState { MainMenu,
+ScenarioSelect, InGame }` — the original local single-player flow, unchanged. **Start Scenario**
+→ `ScenarioSelect` → picking one sets `SelectedScenario` and enters `InGame`, where
+`spawn_selected_scenario` spawns the resolved scenario locally via `spawn_resolved_scenario`;
+`OnExit` despawns `PlaneId` entities and resets the camera.
+
 - All gameplay HUD/input/`apply_*` systems are gated `run_if(in_state(AppState::InGame))` (in
   `ui/plugin.rs` and `main.rs`), so the menu screens stay clean. `main.rs::setup` no longer
   exists — the former hardcoded demo scene is now `assets/scenarios/default.scenario.ron`.
