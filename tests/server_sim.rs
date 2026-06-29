@@ -18,7 +18,7 @@ use bevy_replicon::prelude::{ClientId, FromClient, Replicated, RepliconPlugins};
 
 use common::build_headless_app_with;
 use ml_planes::controllers::{
-    ActiveController, ControllerKind, ManualController, SimControlPlugin,
+    ActiveController, ControllerKind, ControllerTelemetry, ManualController, SimControlPlugin,
 };
 use ml_planes::environment::{EnvironmentPlugin, LifecyclePlugin};
 use ml_planes::net::{
@@ -114,6 +114,39 @@ fn switch_controller_command_rebuilds_active_controller() {
             .downcast_mut::<ManualController>()
             .is_some(),
         "SimControlPlugin should have rebuilt a ManualController"
+    );
+}
+
+#[test]
+fn server_populates_replicated_controller_telemetry() {
+    let mut app = build_server_app();
+    settle(&mut app);
+
+    // Switch the first plane to Orbit so the server steps an OrbitController, which
+    // publishes radial-error telemetry the copy system snapshots each fixed tick.
+    let (entity, plane) = planes(&mut app)[0];
+    app.world_mut().trigger(FromClient {
+        client_id: ClientId::Server,
+        message: SwitchControllerCommand {
+            plane,
+            kind: ControllerKind::Orbit,
+        },
+    });
+    settle(&mut app);
+
+    // The telemetry component exists, is registered for replication (the plane is
+    // marked Replicated), and carries Orbit telemetry once the controller has run.
+    assert!(
+        app.world().get::<Replicated>(entity).is_some(),
+        "telemetry rides on the replicated plane entity"
+    );
+    let tel = app
+        .world()
+        .get::<ControllerTelemetry>(entity)
+        .expect("plane carries a ControllerTelemetry component");
+    assert!(
+        matches!(tel, ControllerTelemetry::Orbit { .. }),
+        "expected Orbit telemetry after the server stepped the controller, got {tel:?}"
     );
 }
 

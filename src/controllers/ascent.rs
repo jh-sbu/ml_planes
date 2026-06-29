@@ -65,6 +65,14 @@ impl FlightController for AscentController {
     fn name(&self) -> &'static str {
         "Ascent"
     }
+    fn telemetry(
+        &self,
+        _state: &FlightState,
+    ) -> crate::controllers::telemetry::ControllerTelemetry {
+        crate::controllers::telemetry::ControllerTelemetry::Ascent {
+            complete: self.complete,
+        }
+    }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }

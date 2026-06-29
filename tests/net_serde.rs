@@ -6,7 +6,9 @@
 #![cfg(feature = "net")]
 
 use bevy::math::{Quat, Vec3};
-use ml_planes::controllers::ControllerKind;
+use ml_planes::controllers::{
+    ControllerKind, ControllerTelemetry, L1Status, OrbitDirection, WingmanDiagnostics,
+};
 use ml_planes::plane::{ControlInputs, FlightState, PlaneId, PlaneIndex};
 use ml_planes::training::SpawnSpec;
 
@@ -79,6 +81,48 @@ fn spawn_spec_roundtrips_all_none() {
 fn plane_id_and_index_roundtrip() {
     assert_ron_roundtrip(&PlaneId(7));
     assert_ron_roundtrip(&PlaneIndex(3));
+}
+
+#[test]
+fn controller_telemetry_roundtrips() {
+    assert_ron_roundtrip(&ControllerTelemetry::None);
+    assert_ron_roundtrip(&ControllerTelemetry::Ascent { complete: true });
+    assert_ron_roundtrip(&ControllerTelemetry::Orbit {
+        radial_error: -42.5,
+    });
+    assert_ron_roundtrip(&ControllerTelemetry::Wingman(WingmanDiagnostics {
+        leader_found: true,
+        pos_error: Vec3::new(1.0, -2.0, 3.0),
+        pos_error_mag: 3.74,
+        cross_track: 0.5,
+        range_error: -1.5,
+        altitude_error: -2.0,
+    }));
+    assert_ron_roundtrip(&ControllerTelemetry::FlightPlan {
+        leg_index: 1,
+        leg_count: 3,
+        status: L1Status::Orbit {
+            center_x: 0.0,
+            center_z: 3000.0,
+            radius: 1000.0,
+            radial_error: 12.5,
+            direction: OrbitDirection::CounterClockwise,
+            turns_done: 0.25,
+            turns_total: Some(2.0),
+        },
+    });
+    assert_ron_roundtrip(&ControllerTelemetry::FlightPlan {
+        leg_index: 0,
+        leg_count: 2,
+        status: L1Status::Waypoint {
+            x: 3000.0,
+            z: 0.0,
+            distance: 1200.0,
+            capture_radius: 200.0,
+            eta: 0.1,
+            xtrack: -5.0,
+        },
+    });
 }
 
 #[test]

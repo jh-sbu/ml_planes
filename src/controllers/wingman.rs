@@ -33,7 +33,8 @@ impl Default for FormationOffset {
 /// The three component fields are the projections each cascade channel actually
 /// drives on (leader-right, leader-forward, world-Y); they are a channel-relevant
 /// view, not a strict orthogonal decomposition of `pos_error_mag`.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "net", derive(serde::Serialize, serde::Deserialize))]
 pub struct WingmanDiagnostics {
     /// Was the leader present in `ControllerContext` this tick? When false, the
     /// geometric fields below are stale (last good value).
@@ -198,6 +199,13 @@ impl FlightController for WingmanController {
 
     fn name(&self) -> &'static str {
         "Wingman"
+    }
+
+    fn telemetry(
+        &self,
+        _state: &FlightState,
+    ) -> crate::controllers::telemetry::ControllerTelemetry {
+        crate::controllers::telemetry::ControllerTelemetry::Wingman(self.diagnostics.clone())
     }
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {

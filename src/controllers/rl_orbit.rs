@@ -170,6 +170,13 @@ impl FlightController for RlOrbitController {
         "RlOrbit"
     }
 
+    fn telemetry(&self, state: &FlightState) -> crate::controllers::telemetry::ControllerTelemetry {
+        let rx = state.position.x - self.center_x;
+        let rz = state.position.z - self.center_z;
+        let radial_error = (rx * rx + rz * rz).sqrt() - self.target_radius;
+        crate::controllers::telemetry::ControllerTelemetry::Orbit { radial_error }
+    }
+
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }

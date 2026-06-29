@@ -324,6 +324,12 @@ impl FlightController for OrbitController {
     fn name(&self) -> &'static str {
         "Orbit"
     }
+    fn telemetry(&self, state: &FlightState) -> crate::controllers::telemetry::ControllerTelemetry {
+        let rx = state.position.x - self.center_x;
+        let rz = state.position.z - self.center_z;
+        let radial_error = (rx * rx + rz * rz).sqrt() - self.target_radius;
+        crate::controllers::telemetry::ControllerTelemetry::Orbit { radial_error }
+    }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }

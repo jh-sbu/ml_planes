@@ -43,6 +43,7 @@ pub enum L1Phase {
 /// display/inspection (e.g. the visual HUD). Describes the primitive currently
 /// being sought plus its tracking error.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "net", derive(serde::Serialize, serde::Deserialize))]
 pub enum L1Status {
     /// Seeking a straight-line waypoint via L1 lateral guidance.
     Waypoint {
@@ -325,6 +326,17 @@ impl FlightController for L1Controller {
 
     fn name(&self) -> &'static str {
         "Flight Plan (L1)"
+    }
+
+    fn telemetry(
+        &self,
+        _state: &FlightState,
+    ) -> crate::controllers::telemetry::ControllerTelemetry {
+        crate::controllers::telemetry::ControllerTelemetry::FlightPlan {
+            leg_index: self.leg_index,
+            leg_count: self.plan.legs.len(),
+            status: self.status,
+        }
     }
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {

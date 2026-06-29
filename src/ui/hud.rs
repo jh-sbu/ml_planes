@@ -4,9 +4,9 @@ use std::f32::consts::PI;
 
 use crate::camera::CameraMode;
 use crate::controllers::{
-    ActiveController, AscentController, ControllerKind, HeadingHoldController, L1Controller,
-    L1Status, LevelHoldController, ModelLibrary, OrbitController, OrbitDirection, PlaneTuning,
-    SelectedModel, SelectedTuningProfile, WingmanController,
+    ActiveController, AscentController, ControllerKind, ControllerTelemetry, HeadingHoldController,
+    L1Controller, L1Status, LevelHoldController, ModelLibrary, OrbitController, OrbitDirection,
+    PlaneTuning, SelectedModel, SelectedTuningProfile, WingmanController,
 };
 use crate::plane::{
     ControlInputs, FlightState, PlaneConfig, PlaneConfigHandle, PlaneId, PlaneIndex,
@@ -43,6 +43,9 @@ pub fn draw_flight_hud(
         Option<&PlaneTuningHandle>,
         Option<&mut SelectedModel>,
         Option<&PlaneConfigHandle>,
+        // Replicated read-only controller status — the only telemetry source on a
+        // networked client (where `ActiveController` isn't replicated).
+        Option<&ControllerTelemetry>,
     )>,
     all_planes: Query<(Entity, &PlaneId, &PlaneIndex), With<FlightState>>,
     plane_configs: Res<Assets<PlaneConfig>>,
@@ -74,6 +77,7 @@ pub fn draw_flight_hud(
         tuning_handle,
         mut selected_model,
         config_handle,
+        telemetry,
     )) = result
     else {
         return;
@@ -210,6 +214,15 @@ pub fn draw_flight_hud(
                 &model_lib,
                 &mut commands,
             );
+
+            // Networked client: `ActiveController` isn't replicated, so the per-kind
+            // panels below never run. Draw the read-only controller status from the
+            // replicated `ControllerTelemetry` snapshot instead (orbit radial error,
+            // L1 leg/status, wingman formation errors, ascent progress).
+            #[cfg(feature = "net")]
+            if controller.is_none() {
+                draw_replicated_telemetry(ui, telemetry);
+            }
 
             // Everything below edits the live controller. On a networked client the
             // `ActiveController` isn't replicated, so skip the per-kind panels and
@@ -914,6 +927,93 @@ fn draw_orbit_controls(
     let r = (rx * rx + rz * rz).sqrt();
     ui.label(format!("Radius err: {:.1} m", r - *target_radius));
     direction_changed
+}
+
+/// Render the read-only controller status on a networked client from the replicated
+/// [`ControllerTelemetry`] snapshot. Mirrors the label text the local-sim per-kind
+/// panels draw off the live controller, so the client HUD looks the same.
+#[cfg(feature = "net")]
+fn draw_replicated_telemetry(ui: &mut egui::Ui, telemetry: Option<&ControllerTelemetry>) {
+    let Some(telemetry) = telemetry else { return };
+    match telemetry {
+        ControllerTelemetry::None => {}
+        ControllerTelemetry::Ascent { complete } => {
+            ui.separator();
+            ui.label(if *complete {
+                "Status: Complete"
+            } else {
+                "Status: Climbing"
+            });
+        }
+        ControllerTelemetry::Orbit { radial_error } => {
+            ui.separator();
+            ui.label(format!("Radius err: {:.1} m", radial_error));
+        }
+        ControllerTelemetry::Wingman(d) => {
+            ui.separator();
+            if d.leader_found {
+                ui.label(format!("Pos error: {:.0} m", d.pos_error_mag));
+                ui.label(format!("Cross-track: {:+.0} m", d.cross_track));
+                ui.label(format!("Fore-aft: {:+.0} m", d.range_error));
+                ui.label(format!("Vertical: {:+.0} m", d.altitude_error));
+            } else {
+                ui.label("Leader: lost (holding)");
+            }
+        }
+        ControllerTelemetry::FlightPlan {
+            leg_index,
+            leg_count,
+            status,
+        } => {
+            ui.separator();
+            ui.label(format!("Leg {} / {}", leg_index + 1, leg_count));
+            match status {
+                L1Status::Waypoint {
+                    x,
+                    z,
+                    distance,
+                    capture_radius,
+                    eta,
+                    xtrack,
+                } => {
+                    ui.label(format!("Seeking: Waypoint ({:.0}, {:.0})", x, z));
+                    ui.label(format!(
+                        "Distance: {:.0} m  (capture {:.0} m)",
+                        distance, capture_radius
+                    ));
+                    ui.label(format!("Eta (η):  {:.1}°", eta.to_degrees()));
+                    ui.label(format!("Cross-track: {:+.0} m", xtrack));
+                }
+                L1Status::Orbit {
+                    center_x,
+                    center_z,
+                    radius,
+                    radial_error,
+                    direction,
+                    turns_done,
+                    turns_total,
+                } => {
+                    let dir = match direction {
+                        OrbitDirection::Clockwise => "CW",
+                        OrbitDirection::CounterClockwise => "CCW",
+                    };
+                    ui.label(format!(
+                        "Seeking: Orbit ({:.0}, {:.0})  r={:.0} m  {}",
+                        center_x, center_z, radius, dir
+                    ));
+                    let turns = match turns_total {
+                        Some(t) => format!("{:.2} / {:.1}", turns_done, t),
+                        None => format!("{:.2} / ∞", turns_done),
+                    };
+                    ui.label(format!("Turns: {}", turns));
+                    ui.label(format!("Radial err: {:+.0} m", radial_error));
+                }
+                L1Status::Finished => {
+                    ui.label("Plan complete — holding level");
+                }
+            }
+        }
+    }
 }
 
 fn add_surface_bar(

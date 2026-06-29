@@ -22,6 +22,7 @@ pub mod rl_orbit;
 pub mod rl_orbit_residual;
 pub mod selected_model;
 pub mod sim_control;
+pub mod telemetry;
 pub mod traits;
 pub mod tuning;
 pub mod wingman;
@@ -52,9 +53,10 @@ pub use rl_orbit::{RlOrbitConfig, RlOrbitController};
 pub use rl_orbit_residual::{RlOrbitResidualConfig, RlOrbitResidualController};
 pub use selected_model::{ModelLibrary, SelectedModel};
 pub use sim_control::SimControlPlugin;
+pub use telemetry::ControllerTelemetry;
 pub use traits::FlightController;
 pub use tuning::{
     ControllerTuning, HeadingHoldTuning, LevelHoldTuning, OrbitTuning, PlaneTuning,
     SelectedTuningProfile, TuningApplied,
 };
-pub use wingman::{FormationOffset, WingmanController};
+pub use wingman::{FormationOffset, WingmanController, WingmanDiagnostics};

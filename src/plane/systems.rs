@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use bevy_rapier3d::prelude::{AdditionalMassProperties, ExternalForce, Velocity};
 
 use crate::aerodynamics::{compute_aero_forces, engine_thrust};
-use crate::controllers::ActiveController;
+use crate::controllers::{ActiveController, ControllerTelemetry};
 use crate::plane::context::{ControllerContext, PlaneSnapshot};
 use crate::plane::plugin::PlaneConfigHandle;
 use crate::plane::{ControlInputs, FlightState, PlaneConfig, PlaneId};
@@ -56,6 +56,24 @@ pub fn run_flight_controllers(
         };
         *inputs = ctrl.0.update(state, &ctx, dt);
         inputs.clamp();
+    }
+}
+
+/// Snapshot each controller's read-only telemetry into its replicated
+/// [`ControllerTelemetry`] component, after the controller has run this tick.
+///
+/// `ControllerTelemetry` lives server-side only as a derived view; replicon carries
+/// it to clients (whose thin build never steps the controller) so the HUD can show
+/// orbit radial error, L1 leg/status, wingman/ascent state. The `PartialEq` guard
+/// keeps replicon's change detection quiet when nothing moved.
+pub fn sync_controller_telemetry(
+    mut query: Query<(&ActiveController, &FlightState, &mut ControllerTelemetry)>,
+) {
+    for (ctrl, state, mut telemetry) in query.iter_mut() {
+        let next = ctrl.0.telemetry(state);
+        if *telemetry != next {
+            *telemetry = next;
+        }
     }
 }
 

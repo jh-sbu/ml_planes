@@ -12,7 +12,7 @@ use bevy::prelude::*;
 use bevy_replicon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::controllers::{ControllerKind, SelectedTuningProfile};
+use crate::controllers::{ControllerKind, ControllerTelemetry, SelectedTuningProfile};
 use crate::plane::{ControlInputs, FlightState, PlaneId, PlaneIndex, PlaneTuningPath};
 use crate::sim_speed::SimSpeed;
 use crate::training::SpawnSpec;
@@ -26,7 +26,9 @@ pub const DEFAULT_PORT: u16 = 5555;
 /// Protocol identity/version. Bumped whenever the replicated component set or the
 /// command set changes incompatibly; the renet transport (Phase 3) uses it to reject
 /// mismatched peers.
-pub const PROTOCOL_ID: u64 = 1;
+///
+/// v2: added `ControllerTelemetry` to the replicated set (controller status display).
+pub const PROTOCOL_ID: u64 = 2;
 
 /// Switch the target plane's active controller (server rebuilds it).
 #[derive(Event, Serialize, Deserialize, Clone, Debug)]
@@ -98,7 +100,11 @@ impl Plugin for NetProtocolPlugin {
             // current tuning profile / RL model. `PlaneTuningPath` lets the client
             // rebuild a `PlaneTuningHandle` and reuse the existing enumeration.
             .replicate::<SelectedTuningProfile>()
-            .replicate::<PlaneTuningPath>();
+            .replicate::<PlaneTuningPath>()
+            // Read-only controller status (orbit radial error, L1 leg/status, wingman
+            // and ascent state) the server snapshots off the active controller each
+            // tick so the thin client — which never steps a controller — can display it.
+            .replicate::<ControllerTelemetry>();
 
         #[cfg(feature = "inference")]
         app.replicate::<SelectedModel>();

@@ -10,8 +10,8 @@ use bevy_rapier3d::prelude::PhysicsSet;
 
 #[cfg(any(not(feature = "net"), feature = "server"))]
 use super::systems::{
-    apply_aerodynamic_forces, consume_fuel, run_flight_controllers, sync_flight_state,
-    update_plane_mass,
+    apply_aerodynamic_forces, consume_fuel, run_flight_controllers, sync_controller_telemetry,
+    sync_flight_state, update_plane_mass,
 };
 use crate::controllers::flight_plan::FlightPlan;
 use crate::controllers::tuning::{LevelHoldTuning, OrbitTuning, PlaneTuning};
@@ -255,6 +255,7 @@ impl Plugin for PlanePlugin {
             (
                 sync_flight_state,
                 run_flight_controllers,
+                sync_controller_telemetry,
                 consume_fuel,
                 update_plane_mass,
                 apply_aerodynamic_forces,
