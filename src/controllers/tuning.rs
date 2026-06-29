@@ -200,6 +200,7 @@ impl PlaneTuning {
 /// Tracks which named tuning profile is selected for this plane entity.
 /// Changing this component triggers `apply_controller_switch` to rebuild the controller.
 #[derive(bevy::prelude::Component, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "net", derive(serde::Serialize, serde::Deserialize))]
 pub struct SelectedTuningProfile(pub String);
 
 /// Marker inserted by `apply_initial_tuning` once the PlaneTuning asset has loaded and the

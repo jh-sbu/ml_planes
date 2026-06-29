@@ -29,7 +29,7 @@ use bevy_replicon_renet::renet::ConnectionConfig;
 use bevy_replicon_renet::{RenetChannelsExt, RenetClient};
 
 use crate::net::protocol::PROTOCOL_ID;
-use crate::plane::{FlightState, PlaneId};
+use crate::plane::{FlightState, PlaneId, PlaneTuningHandle, PlaneTuningPath};
 
 /// How far behind the latest received snapshot the rendered pose is held, so a
 /// prev/curr pair is always available to interpolate between. ~2 server ticks at
@@ -115,6 +115,26 @@ fn buffer_net_pose(
     }
 }
 
+/// Rebuild a [`PlaneTuningHandle`] on the client from the replicated
+/// [`PlaneTuningPath`] (a `Handle<T>` cannot be replicated). Once the handle is
+/// present the asset loads via the usual `.tuning.ron` loader, so the HUD's tuning
+/// dropdown / `T`-key cycler enumerate profiles exactly as in the local-sim build.
+fn reconstruct_tuning_handle(
+    mut commands: Commands,
+    // `Option` so the system is a no-op in a headless test app that registers the
+    // protocol without an `AssetPlugin`; the real client always has one.
+    asset_server: Option<Res<AssetServer>>,
+    planes: Query<(Entity, &PlaneTuningPath), Without<PlaneTuningHandle>>,
+) {
+    let Some(asset_server) = asset_server else {
+        return;
+    };
+    for (entity, path) in &planes {
+        let handle: Handle<crate::controllers::PlaneTuning> = asset_server.load(path.0.clone());
+        commands.entity(entity).insert(PlaneTuningHandle(handle));
+    }
+}
+
 /// Write the interpolated render pose into each plane's [`Transform`] every frame.
 fn render_net_interpolation(
     time: Res<Time>,
@@ -186,8 +206,19 @@ impl Plugin for ClientNetPlugin {
         app.add_systems(PreUpdate, buffer_net_pose.after(ClientSystems::Receive));
         app.add_systems(
             Update,
-            (decorate_replicated_plane, render_net_interpolation).chain(),
+            (
+                decorate_replicated_plane,
+                reconstruct_tuning_handle,
+                render_net_interpolation,
+            )
+                .chain(),
         );
+
+        // Populate `ModelLibrary` for the HUD model dropdown / `T`-key cycler. On
+        // the client `SimControlPlugin` (which normally scans) is compiled out, so
+        // run the scan here. Only relevant in an inference-enabled client build.
+        #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
+        app.add_systems(Startup, crate::controllers::sim_control::scan_models);
     }
 }
 

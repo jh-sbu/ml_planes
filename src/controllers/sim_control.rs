@@ -69,8 +69,10 @@ impl Plugin for SimControlPlugin {
 }
 
 /// Scan `models/<category>/` subdirectories at startup and populate `ModelLibrary`.
+/// `pub(crate)` so the networked client (which omits `SimControlPlugin`) can run it
+/// too, giving its HUD model dropdown / cycler data to enumerate.
 #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
-fn scan_models(mut commands: Commands) {
+pub(crate) fn scan_models(mut commands: Commands) {
     let mut lib: std::collections::HashMap<String, Vec<String>> = Default::default();
     if let Ok(categories) = std::fs::read_dir("models/") {
         for cat in categories.flatten() {

@@ -3,7 +3,8 @@ use std::collections::HashMap;
 
 /// Path stem of the active RL model (without `.mpk` extension).
 /// Example: `"models/level_hold/ppo_level_hold"`
-#[derive(Component, Clone)]
+#[derive(Component, Clone, PartialEq)]
+#[cfg_attr(feature = "net", derive(serde::Serialize, serde::Deserialize))]
 pub struct SelectedModel(pub String);
 
 /// Models discovered at startup, keyed by the `models/` subdirectory name.

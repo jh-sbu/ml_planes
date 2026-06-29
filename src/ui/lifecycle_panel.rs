@@ -11,10 +11,48 @@ use bevy_egui::{egui, EguiContexts};
 
 use crate::camera::CameraMode;
 use crate::controllers::ControllerKind;
+#[cfg(not(feature = "net"))]
 use crate::environment::{RemovePlaneCommand, SpawnPlaneCommand};
-use crate::plane::{FlightState, PlaneIndex};
+use crate::plane::{FlightState, PlaneId, PlaneIndex};
 use crate::training::SpawnSpec;
 use crate::ui::map::MapState;
+
+#[cfg(feature = "net")]
+use crate::net::{RemovePlaneNetCommand, SpawnPlaneNetCommand};
+#[cfg(feature = "net")]
+use bevy_replicon::prelude::ClientTriggerExt;
+
+/// Spawn a plane: the local-sim build fires the headless [`SpawnPlaneCommand`]
+/// observer; the networked client sends a [`SpawnPlaneNetCommand`] so the server
+/// (authoritative) spawns the replicated plane.
+#[cfg(not(feature = "net"))]
+fn send_spawn(commands: &mut Commands, spec: SpawnSpec, kind: ControllerKind, config_path: String) {
+    commands.trigger(SpawnPlaneCommand {
+        spec,
+        kind,
+        config_path,
+    });
+}
+
+#[cfg(feature = "net")]
+fn send_spawn(commands: &mut Commands, spec: SpawnSpec, kind: ControllerKind, config_path: String) {
+    commands.client_trigger(SpawnPlaneNetCommand {
+        config_path,
+        kind,
+        spec,
+    });
+}
+
+/// Remove a plane by entity (local) / id (networked).
+#[cfg(not(feature = "net"))]
+fn send_remove(commands: &mut Commands, entity: Entity, _plane: PlaneId) {
+    commands.trigger(RemovePlaneCommand(entity));
+}
+
+#[cfg(feature = "net")]
+fn send_remove(commands: &mut Commands, _entity: Entity, plane: PlaneId) {
+    commands.client_trigger(RemovePlaneNetCommand { plane });
+}
 
 const DEFAULT_CONFIG: &str = "planes/generic_jet.plane.ron";
 
@@ -101,7 +139,7 @@ pub fn draw_plane_panel(
     mut state: ResMut<PlanePanelState>,
     mut pending: ResMut<crate::ui::file_load::PendingLoads>,
     mut commands: Commands,
-    planes: Query<(Entity, &PlaneIndex, &ControllerKind, &FlightState)>,
+    planes: Query<(Entity, &PlaneIndex, &ControllerKind, &FlightState, &PlaneId)>,
     camera: Query<&Transform, With<Camera3d>>,
 ) {
     // The full-screen map replaces the 3D view (and this panel) while open.
@@ -114,16 +152,16 @@ pub fn draw_plane_panel(
         .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(10.0, -10.0))
         .collapsible(true)
         .show(ctx, |ui| {
-            let mut rows: Vec<(Entity, u32, ControllerKind, f32, f32)> = planes
+            let mut rows: Vec<(Entity, u32, ControllerKind, f32, f32, PlaneId)> = planes
                 .iter()
-                .map(|(e, idx, kind, st)| (e, idx.0, *kind, st.altitude, st.airspeed))
+                .map(|(e, idx, kind, st, pid)| (e, idx.0, *kind, st.altitude, st.airspeed, *pid))
                 .collect();
             rows.sort_by_key(|r| r.1);
-            for (entity, idx, kind, alt, spd) in rows {
+            for (entity, idx, kind, alt, spd, plane) in rows {
                 ui.horizontal(|ui| {
                     ui.label(format!("#{idx}  {}  {alt:.0} m  {spd:.0} m/s", kind.name()));
                     if ui.small_button("Remove").clicked() {
-                        commands.trigger(RemovePlaneCommand(entity));
+                        send_remove(&mut commands, entity, plane);
                     }
                 });
             }
@@ -147,15 +185,16 @@ pub fn draw_plane_panel(
             if ui.button("Spawn ahead of camera").clicked() {
                 if let Ok(cam) = camera.single() {
                     let (pos, vel) = spawn_pose_ahead(cam);
-                    commands.trigger(SpawnPlaneCommand {
-                        spec: SpawnSpec {
+                    send_spawn(
+                        &mut commands,
+                        SpawnSpec {
                             position: Some(pos),
                             velocity: Some(vel),
                             ..Default::default()
                         },
-                        kind: state.selected_kind,
-                        config_path: state.config_path.clone(),
-                    });
+                        state.selected_kind,
+                        state.config_path.clone(),
+                    );
                 }
             }
         });
@@ -170,6 +209,8 @@ pub fn plane_lifecycle_hotkeys(
     mut commands: Commands,
     mode: Res<CameraMode>,
     camera: Query<&Transform, With<Camera3d>>,
+    // Only the networked Delete path needs to resolve the followed entity → id.
+    #[cfg(feature = "net")] planes: Query<&PlaneId>,
 ) {
     if let Ok(ctx) = contexts.ctx_mut() {
         if ctx.wants_keyboard_input() {
@@ -180,12 +221,26 @@ pub fn plane_lifecycle_hotkeys(
     if keys.just_pressed(KeyCode::KeyN) {
         if let Ok(cam) = camera.single() {
             let (pos, vel) = spawn_pose_ahead(cam);
-            commands.trigger(SpawnPlaneCommand::at(pos, vel, ControllerKind::LevelHold));
+            send_spawn(
+                &mut commands,
+                SpawnSpec {
+                    position: Some(pos),
+                    velocity: Some(vel),
+                    ..Default::default()
+                },
+                ControllerKind::LevelHold,
+                DEFAULT_CONFIG.to_string(),
+            );
         }
     }
     if keys.just_pressed(KeyCode::Delete) {
         if let CameraMode::Follow(entity) = *mode {
-            commands.trigger(RemovePlaneCommand(entity));
+            #[cfg(feature = "net")]
+            if let Ok(plane) = planes.get(entity) {
+                send_remove(&mut commands, entity, *plane);
+            }
+            #[cfg(not(feature = "net"))]
+            send_remove(&mut commands, entity, PlaneId(0));
         }
     }
 }

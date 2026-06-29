@@ -8,7 +8,9 @@ pub mod systems;
 pub use config::{FuelProperties, FuelType, PlaneConfig, Powerplant};
 pub use context::{ControllerContext, NextPlaneId, PlaneId, PlaneSnapshot, SpawnedPlane};
 pub use inputs::ControlInputs;
-pub use plugin::{FlightPlanHandle, PlaneConfigHandle, PlanePlugin, PlaneTuningHandle};
+pub use plugin::{
+    FlightPlanHandle, PlaneConfigHandle, PlanePlugin, PlaneTuningHandle, PlaneTuningPath,
+};
 pub use state::{FlightState, FUEL_OBS_SCALE};
 
 /// Explicit stable ordering for plane entities (1 = leader, 2 = wingman, …).

@@ -12,10 +12,13 @@ use bevy::prelude::*;
 use bevy_replicon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::controllers::ControllerKind;
-use crate::plane::{ControlInputs, FlightState, PlaneId, PlaneIndex};
+use crate::controllers::{ControllerKind, SelectedTuningProfile};
+use crate::plane::{ControlInputs, FlightState, PlaneId, PlaneIndex, PlaneTuningPath};
 use crate::sim_speed::SimSpeed;
 use crate::training::SpawnSpec;
+
+#[cfg(feature = "inference")]
+use crate::controllers::SelectedModel;
 
 /// Default UDP port the dedicated server binds to and clients connect to.
 pub const DEFAULT_PORT: u16 = 5555;
@@ -90,7 +93,15 @@ impl Plugin for NetProtocolPlugin {
             .replicate::<ControlInputs>()
             .replicate::<PlaneId>()
             .replicate::<PlaneIndex>()
-            .replicate::<ControllerKind>();
+            .replicate::<ControllerKind>()
+            // Selection state (Phase 6) so the client can display + enumerate the
+            // current tuning profile / RL model. `PlaneTuningPath` lets the client
+            // rebuild a `PlaneTuningHandle` and reuse the existing enumeration.
+            .replicate::<SelectedTuningProfile>()
+            .replicate::<PlaneTuningPath>();
+
+        #[cfg(feature = "inference")]
+        app.replicate::<SelectedModel>();
 
         // Client → server commands. Reliable + ordered so a command is never dropped
         // or applied out of order (manual input is latest-wins, but ordered delivery

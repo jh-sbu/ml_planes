@@ -35,6 +35,17 @@ pub struct PlaneConfigHandle(pub Handle<PlaneConfig>);
 #[reflect(Component)]
 pub struct PlaneTuningHandle(pub Handle<PlaneTuning>);
 
+// --- PlaneTuningPath component ---
+
+/// Asset-relative path of a plane's `.tuning.ron` (e.g.
+/// `planes/generic_jet.tuning.ron`). A serializable companion to
+/// [`PlaneTuningHandle`]: the dedicated server replicates this to the client
+/// (`Handle<T>` itself cannot be replicated), which rebuilds its own
+/// `PlaneTuningHandle` from the path so the HUD can enumerate tuning profiles.
+#[derive(Component, Clone, Debug)]
+#[cfg_attr(feature = "net", derive(serde::Serialize, serde::Deserialize))]
+pub struct PlaneTuningPath(pub String);
+
 // --- FlightPlanHandle component ---
 
 /// Component that stores a handle to a plane's [`FlightPlan`] asset.

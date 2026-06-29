@@ -92,6 +92,32 @@ fn remove_plane_net_command_roundtrips() {
     assert_ron_roundtrip(&RemovePlaneNetCommand { plane: PlaneId(9) });
 }
 
+/// Phase 6: selection state is replicated server→client so the client can display
+/// and enumerate the current tuning profile / RL model. These components must be
+/// serde under `net`.
+#[test]
+fn selected_tuning_profile_roundtrips() {
+    use ml_planes::controllers::SelectedTuningProfile;
+    assert_ron_roundtrip(&SelectedTuningProfile("aggressive".to_string()));
+}
+
+/// Phase 6: the tuning-asset path is replicated so the client can rebuild a
+/// `PlaneTuningHandle` and reuse the existing profile-name enumeration.
+#[test]
+fn plane_tuning_path_roundtrips() {
+    use ml_planes::plane::PlaneTuningPath;
+    assert_ron_roundtrip(&PlaneTuningPath(
+        "planes/generic_jet.tuning.ron".to_string(),
+    ));
+}
+
+#[cfg(feature = "inference")]
+#[test]
+fn selected_model_roundtrips() {
+    use ml_planes::controllers::SelectedModel;
+    assert_ron_roundtrip(&SelectedModel("models/orbit/ppo_orbit_1".to_string()));
+}
+
 #[test]
 fn set_sim_speed_command_roundtrips() {
     for speed in [SimSpeed::Paused, SimSpeed::X1, SimSpeed::X5, SimSpeed::X10] {

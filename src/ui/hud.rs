@@ -15,6 +15,15 @@ use crate::plane::{
 use crate::ui::file_load::{self, PendingLoads};
 use crate::ui::map::MapState;
 
+// Phase 6: on the networked client the HUD sends commands instead of mutating
+// local (replicated) components.
+#[cfg(all(feature = "net", feature = "inference"))]
+use crate::net::SetModelCommand;
+#[cfg(feature = "net")]
+use crate::net::{SetTuningProfileCommand, SwitchControllerCommand};
+#[cfg(feature = "net")]
+use bevy_replicon::prelude::ClientTriggerExt;
+
 #[allow(unused_variables, unused_mut)]
 pub fn draw_flight_hud(
     mode: Res<CameraMode>,
@@ -40,6 +49,9 @@ pub fn draw_flight_hud(
     tuning_assets: Res<Assets<PlaneTuning>>,
     model_lib: Res<ModelLibrary>,
     mut pending: ResMut<PendingLoads>,
+    // Used only by the networked client to send commands; unused in local-sim
+    // (covered by the `#[allow(unused_variables, unused_mut)]` on this system).
+    mut commands: Commands,
 ) {
     // The full-screen map replaces the 3D view (and this HUD) while open.
     if map.open {
@@ -163,9 +175,41 @@ pub fn draw_flight_hud(
                     }
                 });
             if selected != current {
-                *kind = selected;
+                // Local sim mutates the component (SimControlPlugin rebuilds); the
+                // networked client asks the authoritative server to switch.
+                #[cfg(not(feature = "net"))]
+                {
+                    *kind = selected;
+                }
+                #[cfg(feature = "net")]
+                if let Some(plane) = plane_id_of(&pairs, current_entity) {
+                    commands.client_trigger(SwitchControllerCommand {
+                        plane,
+                        kind: selected,
+                    });
+                }
             }
             ui.label("(C to cycle)");
+
+            // Networked client: the tuning/model combos below live inside the
+            // `ActiveController` block, which never runs on a client (that component
+            // isn't replicated). Draw command-sending equivalents here instead,
+            // reading the replicated selection + client-reconstructed handles.
+            #[cfg(feature = "net")]
+            net_selection_combos(
+                ui,
+                &pairs,
+                current_entity,
+                *kind,
+                profile.as_deref(),
+                tuning_handle,
+                &tuning_assets,
+                #[cfg(feature = "inference")]
+                selected_model.as_deref(),
+                #[cfg(feature = "inference")]
+                &model_lib,
+                &mut commands,
+            );
 
             // Everything below edits the live controller. On a networked client the
             // `ActiveController` isn't replicated, so skip the per-kind panels and
@@ -690,6 +734,109 @@ fn camera_follow_index(pairs: &[(Entity, PlaneId, u32)], entity: Entity) -> u32 
 #[cfg(feature = "inference")]
 fn path_stem(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
+}
+
+/// The `PlaneId` for a followed entity (looked up from the sorted roster).
+#[cfg(feature = "net")]
+fn plane_id_of(pairs: &[(Entity, PlaneId, u32)], entity: Entity) -> Option<PlaneId> {
+    pairs
+        .iter()
+        .find(|&&(e, _, _)| e == entity)
+        .map(|&(_, pid, _)| pid)
+}
+
+/// Sorted tuning-profile names for a controller kind's family (mirrors
+/// `main::tuning_profile_names`), or `None` if the kind has no tuning pool.
+#[cfg(feature = "net")]
+fn net_tuning_names(kind: ControllerKind, pt: &PlaneTuning) -> Option<Vec<String>> {
+    let mut names: Vec<String> = match kind {
+        ControllerKind::LevelHold | ControllerKind::RlLevelHold => {
+            pt.level_hold.keys().cloned().collect()
+        }
+        ControllerKind::Orbit | ControllerKind::RlOrbit => pt.orbit.keys().cloned().collect(),
+        ControllerKind::HeadingHold => pt.heading_hold.keys().cloned().collect(),
+        _ => return None,
+    };
+    names.sort();
+    (!names.is_empty()).then_some(names)
+}
+
+/// Networked-client tuning/model selection combos. Reads the replicated
+/// `SelectedTuningProfile` / `SelectedModel` and the client-reconstructed
+/// `PlaneTuningHandle`, and sends a command on change (the server is
+/// authoritative). Mirrors the local-sim combos that live in the
+/// `ActiveController` block (which never runs on a client).
+#[cfg(feature = "net")]
+#[allow(clippy::too_many_arguments)]
+fn net_selection_combos(
+    ui: &mut egui::Ui,
+    pairs: &[(Entity, PlaneId, u32)],
+    current_entity: Entity,
+    kind: ControllerKind,
+    profile: Option<&SelectedTuningProfile>,
+    tuning_handle: Option<&PlaneTuningHandle>,
+    tuning_assets: &Assets<PlaneTuning>,
+    #[cfg(feature = "inference")] selected_model: Option<&SelectedModel>,
+    #[cfg(feature = "inference")] model_lib: &ModelLibrary,
+    commands: &mut Commands,
+) {
+    let Some(plane) = plane_id_of(pairs, current_entity) else {
+        return;
+    };
+
+    // Tuning profile.
+    if let (Some(profile), Some(handle)) = (profile, tuning_handle) {
+        if let Some(pt) = tuning_assets.get(&handle.0) {
+            if let Some(names) = net_tuning_names(kind, pt) {
+                let current = profile.0.clone();
+                let mut selected = current.clone();
+                egui::ComboBox::from_label("Tune Profile")
+                    .selected_text(&selected)
+                    .show_ui(ui, |ui| {
+                        for name in &names {
+                            ui.selectable_value(&mut selected, name.clone(), name);
+                        }
+                    });
+                if selected != current {
+                    commands.client_trigger(SetTuningProfileCommand {
+                        plane,
+                        profile: selected,
+                    });
+                }
+                ui.label("(T / Shift+T to cycle)");
+            }
+        }
+    }
+
+    // RL model.
+    #[cfg(feature = "inference")]
+    if let (Some(dir_key), Some(sel)) = (kind.model_dir(), selected_model) {
+        if let Some(available) = model_lib.0.get(dir_key) {
+            let current = sel.0.clone();
+            let mut chosen = if available.iter().any(|p| p == &current) {
+                current.clone()
+            } else {
+                available
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| current.clone())
+            };
+            egui::ComboBox::from_label("Model")
+                .selected_text(path_stem(&chosen))
+                .show_ui(ui, |ui| {
+                    for path in available {
+                        ui.selectable_value(&mut chosen, path.clone(), path_stem(path));
+                    }
+                });
+            if chosen != current {
+                commands.client_trigger(SetModelCommand {
+                    plane,
+                    model_stem: chosen,
+                });
+            }
+            ui.label("(T / Shift+T to cycle)");
+        }
+    }
 }
 
 fn draw_orbit_controls(

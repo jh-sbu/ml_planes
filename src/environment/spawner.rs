@@ -6,7 +6,7 @@ use crate::controllers::{
 };
 use crate::plane::{
     ControlInputs, FlightState, NextPlaneId, PlaneConfig, PlaneConfigHandle, PlaneId, PlaneIndex,
-    PlaneTuningHandle, SpawnedPlane,
+    PlaneTuningHandle, PlaneTuningPath, SpawnedPlane,
 };
 use crate::training::SpawnSpec;
 
@@ -147,10 +147,13 @@ pub fn spawn_plane(
     // system applies the airframe's PID gains once the asset loads. Skipped when
     // the config ships no `.tuning.ron` sibling, leaving `build()` defaults.
     if let Some(tuning_path) = tuning_path_for_config(config_path) {
-        let tuning_handle: Handle<PlaneTuning> = asset_server.load(tuning_path);
+        let tuning_handle: Handle<PlaneTuning> = asset_server.load(tuning_path.clone());
         commands.entity(entity).insert((
             PlaneTuningHandle(tuning_handle),
             SelectedTuningProfile("normal".to_string()),
+            // Replicated companion to the handle so a networked client can rebuild
+            // its own `PlaneTuningHandle` and enumerate profiles (Phase 6).
+            PlaneTuningPath(tuning_path),
         ));
     }
 
