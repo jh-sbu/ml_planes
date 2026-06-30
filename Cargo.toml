@@ -24,6 +24,11 @@ net = ["dep:bevy_replicon", "dep:bevy_replicon_renet", "bevy/serialize"]
 # Headless authoritative sim. `bevy_asset` is already on the base bevy dep, so the
 # server build only needs networking on top of the headless core.
 server = ["net"]
+# MCP control client: a headless renet/replicon client (built on `net`) plus an rmcp
+# stdio server. Joins a running `ml_planes_server`, mirrors the live sim, and exposes
+# it to an LLM agent over MCP. See `plans/mcp_server.md`. Feature parity with the server
+# is required for protocol alignment: `mcp` ↔ `server`, `mcp,inference` ↔ `server,inference`.
+mcp = ["net", "dep:rmcp", "dep:tokio", "dep:crossbeam-channel", "dep:tracing-subscriber"]
 
 [dependencies]
 bevy = { version = "0.18", default-features = false, features = ["bevy_asset"] }
@@ -36,11 +41,26 @@ burn = { version = "0.20", optional = true, default-features = false }
 naga = { version = "26", features = ["termcolor"] }
 bevy_replicon = { version = "0.40", optional = true }
 bevy_replicon_renet = { version = "0.16", optional = true }
+# MCP stdio server SDK. rmcp breaks every minor (0.1→0.2→0.3→1.x→2.0), so pin tilde:
+# 2.0.x patches allowed, a breaking 2.1+ is not. `server` pulls in schemars + the
+# async-rw transport; derive `JsonSchema` via `rmcp::schemars` (no separate schemars dep).
+rmcp = { version = "~2.0.0", optional = true, features = ["server", "transport-io", "macros"] }
+tokio = { version = "1", optional = true, features = ["rt-multi-thread", "macros", "io-std", "sync"] }
+# Declared now; the sync command-bridge channel between rmcp tools and Bevy lands in Phase 3.
+crossbeam-channel = { version = "0.5", optional = true }
+# stderr-only log routing — the stdio binary must keep stdout clean for the MCP JSON-RPC stream.
+# `env-filter` lets the binary honour RUST_LOG (default INFO).
+tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter"] }
 
 [[bin]]
 name = "ml_planes_server"
 path = "src/bin/server.rs"
 required-features = ["server"]
+
+[[bin]]
+name = "ml_planes_mcp"
+path = "src/bin/mcp.rs"
+required-features = ["mcp"]
 
 [[bin]]
 name = "train_ppo"

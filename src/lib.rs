@@ -3,6 +3,8 @@ pub mod aerodynamics;
 pub mod camera;
 pub mod controllers;
 pub mod environment;
+#[cfg(feature = "mcp")]
+pub mod mcp;
 #[cfg(feature = "net")]
 pub mod net;
 pub mod notifications;
