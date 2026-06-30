@@ -8,9 +8,11 @@
 //!     (`MinimalPlugins` + `RepliconPlugins` + `RepliconRenetPlugins` + `NetProtocolPlugin`),
 //!   * an `rmcp` stdio server on the tokio main thread (`PlanesService`).
 //!
-//! In Phase 0 the two runtimes share nothing yet — this proves the dual-runtime boots,
-//! the renet handshake succeeds, and the MCP `initialize` + `tools/list` round-trip works.
-//! The snapshot mirror and command bridge that connect them land in later phases.
+//! Phase 1 adds the read-path bridge: the Bevy thread runs `McpBridgePlugin`, which mirrors
+//! the replicated world into a shared `SnapshotHandle` (`Arc<RwLock<SimSnapshot>>`) every
+//! frame. The rmcp side does not read it yet (the stub `ping` service is unchanged); Phase 2
+//! hands the service a clone of this `Arc` to back the read tools. The command bridge
+//! (write path) lands in Phases 3–4.
 //!
 //! **stdout is the MCP JSON-RPC channel** — all logging goes to **stderr** only. Run from
 //! the project root:
@@ -31,7 +33,7 @@ use bevy_replicon::prelude::RepliconPlugins;
 use bevy_replicon_renet::RepliconRenetPlugins;
 use rmcp::{transport::stdio, ServiceExt};
 
-use ml_planes::mcp::{McpArgs, PlanesService};
+use ml_planes::mcp::{McpArgs, McpBridgePlugin, PlanesService, SnapshotHandle};
 use ml_planes::net::{start_renet_client, ConnectTarget, NetProtocolPlugin};
 
 #[tokio::main]
@@ -48,8 +50,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let args = McpArgs::parse();
 
+    // Shared snapshot mirror: the Bevy thread rewrites it each frame; Phase 2 hands a clone
+    // of this `Arc` to the rmcp service so read tools can serve the latest state.
+    let snapshot = SnapshotHandle::new();
+
     // Headless replicon client on its own thread — it owns the `app.run()` loop.
-    spawn_sim_client(args);
+    spawn_sim_client(args, snapshot.clone());
 
     // rmcp stdio server on the tokio main thread.
     let service = PlanesService::new().serve(stdio()).await?;
@@ -62,7 +68,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 /// Mirrors `src/bin/server.rs`'s minimal headless stack, swapping the server pieces for
 /// the client: insert [`ConnectTarget`] and register [`start_renet_client`] at `Startup`.
 /// No Rapier / sim plugins — the client never simulates, it only mirrors replicated state.
-fn spawn_sim_client(args: McpArgs) {
+fn spawn_sim_client(args: McpArgs, snapshot: SnapshotHandle) {
     std::thread::spawn(move || {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins.set(ScheduleRunnerPlugin::run_loop(
@@ -74,6 +80,7 @@ fn spawn_sim_client(args: McpArgs) {
         .add_plugins(RepliconPlugins)
         .add_plugins(RepliconRenetPlugins)
         .add_plugins(NetProtocolPlugin)
+        .add_plugins(McpBridgePlugin::new(snapshot))
         .insert_resource(ConnectTarget(args.connect))
         .add_systems(Startup, start_renet_client);
         app.run();
