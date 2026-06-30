@@ -90,13 +90,19 @@ spawned thread while the main thread owns stdio + the tokio runtime that `rmcp` 
 [features]
 # Existing: default/client/visual/wasm/inference/training/net/server …
 # MCP control client: a headless replicon client + the rmcp stdio server. Builds on
-# `net` (protocol + transport). Inference is optional — only the set-model tool needs it.
+# `net` (protocol + transport). `inference` is layered on for the set-model tool — but it
+# also changes the wire protocol, so the client's feature set must match the server's:
+# `mcp` ↔ `server`, `mcp,inference` ↔ `server,inference` (see "Feature parity" below).
 mcp = ["net", "dep:rmcp", "dep:tokio", "dep:crossbeam-channel"]
 
 [dependencies]
-# rmcp is at 2.0.0 (a recent major bump). Pin the exact 2.0.x and verify its feature
-# names — stdio/macros gating moved across versions (see "rmcp 2.0 API" below).
-rmcp = { version = "2", optional = true, features = ["server", "transport-io", "macros"] }
+# rmcp is at 2.0.0 (a recent major bump). Pin to 2.0.x and verify its feature names —
+# stdio/macros gating moved across versions (see "rmcp 2.0 API" below). `~2.0.0` allows
+# 2.0.x patch updates but NOT a breaking 2.1+ minor; rmcp has broken every minor
+# (0.1→0.2→0.3→1.x→2.0), so a bare `"2"` (= `^2`, which permits 2.1, 2.9, …) would
+# reintroduce exactly the churn risk this plan is trying to fence off. Use `=2.0.0` instead
+# if you want to forbid even patch bumps.
+rmcp = { version = "~2.0.0", optional = true, features = ["server", "transport-io", "macros"] }
 tokio = { version = "1", optional = true, features = ["rt-multi-thread", "macros", "io-std", "sync"] }
 crossbeam-channel = { version = "0.5", optional = true }
 ```
@@ -156,19 +162,23 @@ handle is what Phase 5 uses for clean shutdown). Confirm whether name/version co
 - The **set-model** tool is additionally gated `#[cfg(feature = "inference")]` because
   `SetModelCommand` only exists under `inference`. `mcp` alone ⇒ all tools except set-model;
   `mcp,inference` ⇒ + set-model.
+- **Feature parity with the server is mandatory.** `inference` is *not* a free-floating
+  option: it changes the **wire protocol**. `NetProtocolPlugin` registers `SelectedModel`
+  replication and the `SetModelCommand` client event behind `#[cfg(feature = "inference")]`
+  (`src/net/protocol.rs`), and replicon assigns replication-fn / event IDs by registration
+  order, so client and server must register the **same** set. `PROTOCOL_ID` is a constant
+  (currently `2`) that does **not** vary with features, so a feature-mismatched pair still
+  completes the renet handshake and then mis-aligns replication **silently** — the worst
+  failure mode. Therefore build the MCP client to match the server it talks to: **`mcp` ↔
+  `server`** and **`mcp,inference` ↔ `server,inference`**. (If we instead want the mismatch
+  rejected at handshake, make `PROTOCOL_ID` feature-dependent — a deliberate protocol change
+  that this plan's non-goals currently forbid; revisit if the parity rule proves too fragile
+  to rely on operationally.)
 
 > **Quarantine rmcp in `service.rs`.** Keep every rmcp type (macros, `Parameters`,
 > `CallToolResult`, `ErrorData`) inside `src/mcp/service.rs`. The snapshot
 > (`Arc<RwLock<SimSnapshot>>`) and the `ControlRequest` channel are plain Rust, so a future
 > rmcp bump's blast radius is one file and the Bevy/bridge tests keep passing.
-- `bevy/serialize` is already enabled by `net`; reuse it. `SimSnapshot` is a fresh plain
-  struct (its own `Serialize`) so it does not depend on Bevy components being serde.
-- `mcp` is **purely additive** — it does not touch `client`, `server`, or test builds.
-- Tests still run `--no-default-features`; MCP-specific tests run under `--features mcp`
-  (headless; the snapshot/bridge logic is socket-free and unit-testable).
-- The **set-model** tool is additionally gated `#[cfg(feature = "inference")]` because
-  `SetModelCommand` only exists under `inference`. `mcp` alone ⇒ all tools except set-model;
-  `mcp,inference` ⇒ + set-model.
 
 New module: `src/mcp/` (gated `#[cfg(feature = "mcp")]`, declared from `lib.rs`):
 
@@ -193,9 +203,21 @@ arg structs). `plane_id` is the `PlaneId(u32)` value.
 
 | Tool | Input | Output |
 |---|---|---|
-| `get_sim_status` | — | `{ connected, server_addr, protocol_id, sim_speed, plane_count, sim_time }` |
+| `get_sim_status` | — | `{ connected, server_addr, protocol_id, plane_count, requested_sim_speed, speed_authority }` |
 | `list_planes` | — | `[{ plane_id, plane_index, controller_kind, position:[x,y,z], altitude, airspeed, fuel_remaining }]` |
 | `get_plane_state` | `{ plane_id }` | full `PlaneSnapshot`: position, velocity, attitude (quat), angular_velocity, alpha, beta, airspeed, altitude, consumable_remaining, control_inputs `{aileron,elevator,rudder,throttle}`, controller_kind, tuning_profile?, model?, telemetry |
+
+> **`sim_speed` is *not* authoritative on the client.** `SimSpeed` is a server-side
+> `Resource` (`src/net/server.rs`) and is **not** in the replicated component set
+> (`src/net/protocol.rs` replicates only the per-plane components). The MCP client therefore
+> cannot read the server's true playback speed; it can only echo the value *it last requested*
+> via `set_sim_speed`. So `get_sim_status` reports **`requested_sim_speed`** (the MCP's
+> last-sent value, or `null` if it never set one) plus **`speed_authority: "requested"`** to
+> make the non-authoritative nature explicit — never a field implying the server's actual
+> speed. If a future protocol change replicates `SimSpeed`, switch `speed_authority` to
+> `"authoritative"` and report the replicated value. **`sim_time` is dropped** from the
+> output: no wall/sim clock is replicated either, so there is no honest source for it. (Add it
+> only if/when the protocol gains a replicated sim-time field.)
 
 **Write (channel-backed → `client_trigger`):**
 
@@ -206,12 +228,31 @@ arg structs). `plane_id` is the `PlaneId(u32)` value.
 | `switch_controller` | `{ plane_id, controller_kind }` | `SwitchControllerCommand { plane, kind }` |
 | `set_tuning_profile` | `{ plane_id, profile }` | `SetTuningProfileCommand { plane, profile }` |
 | `set_sim_speed` | `{ speed: "Paused"\|"X1"\|"X5"\|"X10" }` | `SetSimSpeedCommand { speed }` |
-| `set_model` *(inference only)* | `{ plane_id, model_stem }` | `SetModelCommand { plane, model_stem }` |
+| `set_model` *(inference only)* | `{ plane_id, model_path_stem }` | `SetModelCommand { plane, model_stem: model_path_stem }` |
 
-`controller_kind` accepts the `ControllerKind` variant names (`"Manual"`, `"LevelHold"`,
-`"Orbit"`, `"Wingman"`, `"Ascent"`, `"HeadingHold"`, `"FlightPlan"`, `"RlLevelHold"`,
-`"RlOrbit"`, `"RlOrbitResidual"`, `"RlLstmOrbit"`). Validation maps unknown names to a
-descriptive MCP tool error rather than a panic.
+`controller_kind` accepts the **spawnable** `ControllerKind` variant names: `"Manual"`,
+`"LevelHold"`, `"HeadingHold"`, `"Ascent"`, `"Orbit"`, and — under `inference` —
+`"RlLevelHold"`, `"RlOrbit"`, `"RlOrbitResidual"`, `"RlLstmOrbit"`. These mirror the visual
+spawn UI's `SPAWNABLE_KINDS` allow-list (`src/ui/lifecycle_panel.rs`). **`"Wingman"` and
+`"FlightPlan"` are rejected** with a descriptive tool error: the generic
+`ControllerKind::build()` cannot construct either (a wingman needs a leader-entity reference,
+a flight plan needs the `.plan.ron` asset), so it silently substitutes `LevelHold` / `Orbit`
+respectively (`src/controllers/kind.rs`) — accepting them over MCP would spawn / switch to a
+plane flying a *different* controller than requested. Validation also maps unknown names to a
+descriptive MCP tool error rather than a panic. RL kinds are accepted only against an
+`inference` server; on a non-inference server they fall back to their PID baseline (see
+Phase 4).
+
+`set_model`'s `model_path_stem` is a **full path stem rooted at `models/`**, e.g.
+`"models/orbit/ppo_orbit_1"` (no `.mpk` extension) — the shape documented on `SelectedModel`
+(`src/controllers/selected_model.rs`). The server's `apply_model_switch`
+(`src/controllers/sim_control.rs`) **silently ignores** any value that does not start with
+`models/<dir>/` for the plane's controller kind (it only `warn!`s server-side), so a bare file
+stem like `"ppo_orbit_1"` would be dropped with no MCP-visible feedback — hence the explicit
+`_path_` naming. Alternatively, MCP may accept a bare stem and expand it to
+`models/<model_dir>/<stem>` using `ControllerKind::model_dir()` for the plane's current kind
+before sending; if so, document that expansion and reject stems for non-RL kinds (whose
+`model_dir()` is `None`). Pick one convention and state it in the tool doc string.
 
 **Confirmation semantics:** writes are asynchronous round-trips through the server. Tools
 return immediately with `{ status: "sent" }` by default; `spawn_plane` and `remove_plane`
@@ -263,20 +304,26 @@ live `ml_planes_server` connects (renet handshake logs to stderr) and an MCP `in
 Mirror the replicated world into a shared, serde-friendly snapshot.
 
 1. `src/mcp/snapshot.rs` — define `SimSnapshot { connected: bool, server_addr: String,
-   sim_speed: SimSpeed, sim_time: f32, planes: Vec<PlaneSnapshot> }` and `PlaneSnapshot`
-   (all fields from the tool catalog). Plain `#[derive(Clone, Serialize, Default)]` structs
-   — independent of Bevy component serde so they are trivially unit-testable.
+   requested_sim_speed: Option<SimSpeed>, planes: Vec<PlaneSnapshot> }` and `PlaneSnapshot`
+   (all fields from the tool catalog). `requested_sim_speed` is the MCP's last-sent value
+   (`None` until `set_sim_speed` is called); `get_sim_status` surfaces it with
+   `speed_authority: "requested"` (see the catalog note — `SimSpeed` is not replicated, and no
+   sim-time field is replicated, so neither an authoritative speed nor a `sim_time` is mirrored
+   here). Plain `#[derive(Clone, Serialize, Default)]` structs — independent of Bevy component
+   serde so they are trivially unit-testable.
 2. `SnapshotHandle(Arc<RwLock<SimSnapshot>>)` Bevy `Resource` (clone of the Arc the rmcp
    side also holds).
 3. `collect_snapshot` system (Update): query
    `(&PlaneId, &PlaneIndex, &FlightState, &ControlInputs, &ControllerKind,
    Option<&SelectedTuningProfile>, Option<&ControllerTelemetry>, Option<&SelectedModel>)`,
-   read `State<ClientState>` for `connected`, `Res<SimSpeed>`-equivalent (or the replicated
-   value if exposed) for `sim_speed`, and write a freshly-built `SimSnapshot` under the
-   write lock once per frame.
-   - Note: the server owns `SimSpeed`; if it is not replicated, report the **last value the
-     MCP set** (track locally) and mark it `requested` vs `authoritative`. Confirm during
-     implementation whether `SimSpeed` arrives on the client; adjust the field accordingly.
+   read `State<ClientState>` for `connected`, and write a freshly-built `SimSnapshot` under the
+   write lock once per frame. `requested_sim_speed` is carried separately from the per-plane
+   query — the `set_sim_speed` tool records the last requested value (e.g. a small shared
+   cell / resource the drain system updates) and `collect_snapshot` copies it in.
+   - Note: the server owns `SimSpeed` and does **not** replicate it (confirmed against
+     `src/net/protocol.rs`), so the snapshot can only ever report the MCP's last request,
+     flagged `requested`. If a future protocol change replicates `SimSpeed`, add an
+     authoritative field and flip `speed_authority` accordingly.
 4. `McpBridgePlugin` adds `collect_snapshot` and holds the `SnapshotHandle`.
 
 **TDD:** unit-test a `build_snapshot(planes, connected, …)` pure helper (feed synthetic
@@ -353,10 +400,20 @@ Complete the selected write scope.
 1. Implement `switch_controller`, `set_tuning_profile`, `set_sim_speed`, and (under
    `inference`) `set_model`, each pushing its `ControlRequest` and returning `{status:
    "sent"}`.
-2. `controller_kind` parsing: a `&str` → `ControllerKind` map with a clear error for unknown
-   names; reuse `ControllerKind::ALL`/`name()` so the tool description can enumerate valid
-   values. Note RL kinds only *build* server-side under `inference` (the server falls back to
-   the PID equivalent otherwise) — surface this in the tool doc string.
+2. `controller_kind` parsing: a `&str` → `ControllerKind` map keyed on the **serde variant
+   names** (`"LevelHold"`, `"HeadingHold"`, `"FlightPlan"`, …) — the same identifiers replicon
+   serializes (`ControllerKind` derives `Serialize`/`Deserialize` under `net`). **Do not use
+   `ControllerKind::name()`**, which returns spaced display labels (`"Level Hold"`, `"Flight
+   Plan (L1)"`) that do **not** round-trip through the parser; the doc-string enumeration must
+   advertise the exact strings the parser accepts. A clear error for unknown names **and an
+   explicit rejection of `Wingman`/`FlightPlan`** (the generic `build()` substitutes
+   `LevelHold`/`Orbit` for them, so accepting either would silently mis-spawn / mis-switch) —
+   enforce the same allow-list as the UI's `SPAWNABLE_KINDS`. This single parser backs both
+   `spawn_plane` and `switch_controller`, so the rejection covers both paths. Iterate
+   `ControllerKind::ALL` for the valid *set*, but render each entry via its serde name (not
+   `name()`) in the tool description. Note RL kinds only *build* server-side under `inference`
+   (the server falls back to the PID equivalent
+   otherwise) — surface this in the tool doc string.
 3. `set_sim_speed`: parse the `SimSpeed` variant name; document that pause/accel is global
    (server authoritative).
 4. Snapshot feedback: after `switch_controller`/`set_tuning_profile`/`set_model`, the agent
