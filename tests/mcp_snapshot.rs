@@ -18,7 +18,7 @@ use bevy_replicon::prelude::RepliconPlugins;
 
 use common::build_headless_app_with;
 use ml_planes::controllers::{ControllerKind, ControllerTelemetry, SelectedTuningProfile};
-use ml_planes::mcp::{McpBridgePlugin, SnapshotHandle};
+use ml_planes::mcp::{control_channel, McpBridgePlugin, SnapshotHandle};
 use ml_planes::net::{ConnectTarget, NetProtocolPlugin, PROTOCOL_ID};
 use ml_planes::plane::{ControlInputs, FlightState, PlaneId, PlaneIndex};
 
@@ -27,11 +27,12 @@ use ml_planes::plane::{ControlInputs, FlightState, PlaneId, PlaneIndex};
 fn build_bridge_app() -> (App, SnapshotHandle) {
     let handle = SnapshotHandle::new();
     let handle_for_app = handle.clone();
+    let (_tx, rx) = control_channel();
     let app = build_headless_app_with(move |app| {
         app.add_plugins(StatesPlugin)
             .add_plugins(RepliconPlugins)
             .add_plugins(NetProtocolPlugin)
-            .add_plugins(McpBridgePlugin::new(handle_for_app))
+            .add_plugins(McpBridgePlugin::new(handle_for_app, rx))
             .insert_resource(ConnectTarget("127.0.0.1:5555".parse().unwrap()));
     });
     (app, handle)

@@ -45,7 +45,7 @@ bevy_replicon_renet = { version = "0.16", optional = true }
 # 2.0.x patches allowed, a breaking 2.1+ is not. `server` pulls in schemars + the
 # async-rw transport; derive `JsonSchema` via `rmcp::schemars` (no separate schemars dep).
 rmcp = { version = "~2.0.0", optional = true, features = ["server", "transport-io", "macros"] }
-tokio = { version = "1", optional = true, features = ["rt-multi-thread", "macros", "io-std", "sync"] }
+tokio = { version = "1", optional = true, features = ["rt-multi-thread", "macros", "io-std", "sync", "time"] }
 # Declared now; the sync command-bridge channel between rmcp tools and Bevy lands in Phase 3.
 crossbeam-channel = { version = "0.5", optional = true }
 # stderr-only log routing — the stdio binary must keep stdout clean for the MCP JSON-RPC stream.

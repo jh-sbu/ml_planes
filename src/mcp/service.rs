@@ -4,32 +4,50 @@
 //! (rmcp has broken every minor: 0.1→0.2→0.3→1.x→2.0) has a one-file blast radius; the
 //! shared snapshot + command-bridge primitives added in later phases stay plain Rust.
 //!
-//! Phase 2 surface: the read tools `get_sim_status`, `list_planes`, and `get_plane_state`,
-//! backed by the shared [`SnapshotHandle`] the Bevy thread rewrites each frame. Each tool
-//! takes a `read()` lock, clones the [`SimSnapshot`], releases, then shapes JSON via the pure
-//! `*_value` helpers below (unit-testable without rmcp or sockets). Write tools (Phases 3–4)
-//! will add a `ControlSender` field alongside `snapshot`.
+//! Read tools (`get_sim_status`, `list_planes`, `get_plane_state`) are backed by the shared
+//! [`SnapshotHandle`] the Bevy thread rewrites each frame: each takes a `read()` lock, clones
+//! the [`SimSnapshot`], releases, then shapes JSON via the pure `*_value` helpers below
+//! (unit-testable without rmcp or sockets). Write tools (Phase 3: `spawn_plane`, `remove_plane`)
+//! enqueue a [`ControlRequest`] on the [`ControlSender`] the Bevy thread drains; they guard on
+//! `connected`, then poll the snapshot to confirm the eventually-consistent result.
 
+use std::collections::HashSet;
+use std::time::{Duration, Instant};
+
+use bevy::math::{Quat, Vec3};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock};
 use rmcp::serde_json::{json, to_value, Value};
 use rmcp::{schemars, tool, tool_handler, tool_router, ServerHandler};
 
+use crate::controllers::ControllerKind;
+use crate::mcp::bridge::{parse_spawnable_controller_kind, ControlRequest, ControlSender};
 use crate::mcp::snapshot::{PlaneSnapshot, SimSnapshot, SnapshotHandle};
+use crate::plane::PlaneId;
+use crate::training::SpawnSpec;
+
+/// Deadline for spawn/remove confirmation polling — the round-trip through the server
+/// (command → apply → replicate back) is eventually consistent, so tools poll the snapshot
+/// this long before giving up with `{ status: "timeout" }`.
+const CONFIRM_DEADLINE: Duration = Duration::from_secs(1);
+/// Interval between confirmation-poll snapshot reads.
+const CONFIRM_INTERVAL: Duration = Duration::from_millis(50);
 
 /// MCP server handler for the live `ml_planes` simulation.
 ///
-/// Holds a clone of the shared [`SnapshotHandle`]; the Bevy thread rewrites the same `Arc`
-/// each frame. Later phases add the command channel for the write path.
+/// Holds a clone of the shared [`SnapshotHandle`] (read path; the Bevy thread rewrites the same
+/// `Arc` each frame) and a [`ControlSender`] (write path; the Bevy thread drains it into
+/// `client_trigger` commands).
 #[derive(Clone)]
 pub struct PlanesService {
     snapshot: SnapshotHandle,
+    control: ControlSender,
 }
 
 impl PlanesService {
-    /// Build a service backed by the shared snapshot mirror.
-    pub fn new(snapshot: SnapshotHandle) -> Self {
-        Self { snapshot }
+    /// Build a service backed by the shared snapshot mirror and the command channel.
+    pub fn new(snapshot: SnapshotHandle, control: ControlSender) -> Self {
+        Self { snapshot, control }
     }
 
     /// Clone the latest [`SimSnapshot`] out of the shared lock, holding it only briefly.
@@ -41,6 +59,97 @@ impl PlanesService {
             Err(poisoned) => (**poisoned.get_ref()).clone(),
         }
     }
+
+    /// Live plane ids in the latest snapshot.
+    fn plane_ids(&self) -> HashSet<u32> {
+        self.read_snapshot()
+            .planes
+            .iter()
+            .map(|p| p.plane_id)
+            .collect()
+    }
+
+    /// Push a [`ControlRequest`] onto the command channel; a closed channel (Bevy thread gone)
+    /// degrades to a tool error rather than a panic.
+    fn send(&self, req: ControlRequest) -> Result<(), CallToolResult> {
+        self.control
+            .0
+            .send(req)
+            .map_err(|e| tool_error(format!("command channel closed: {e}")))
+    }
+
+    /// Guard + parse + enqueue a spawn, returning the pre-spawn id set for confirmation polling.
+    /// Synchronous (no polling) so the send path is unit-testable without the 1 s confirm wait.
+    fn dispatch_spawn(&self, args: &SpawnPlaneArgs) -> Result<HashSet<u32>, CallToolResult> {
+        let snap = self.read_snapshot();
+        if !snap.connected {
+            return Err(tool_error(
+                "not connected to ml_planes_server; retry shortly",
+            ));
+        }
+        let (config_path, kind, spec) = spawn_spec_from_args(args).map_err(tool_error)?;
+        let before: HashSet<u32> = snap.planes.iter().map(|p| p.plane_id).collect();
+        self.send(ControlRequest::Spawn {
+            config_path,
+            kind,
+            spec,
+        })?;
+        Ok(before)
+    }
+
+    /// Guard + existence-check + enqueue a remove. Synchronous, like [`Self::dispatch_spawn`].
+    fn dispatch_remove(&self, plane_id: u32) -> Result<(), CallToolResult> {
+        let snap = self.read_snapshot();
+        if !snap.connected {
+            return Err(tool_error(
+                "not connected to ml_planes_server; retry shortly",
+            ));
+        }
+        if !snap.planes.iter().any(|p| p.plane_id == plane_id) {
+            return Err(tool_error(format!("no plane with id {plane_id}")));
+        }
+        self.send(ControlRequest::Remove {
+            plane: PlaneId(plane_id),
+        })
+    }
+
+    /// Poll the snapshot until a new plane id appears (vs `before`) or the deadline elapses.
+    async fn await_new_plane(&self, before: HashSet<u32>) -> CallToolResult {
+        let deadline = Instant::now() + CONFIRM_DEADLINE;
+        loop {
+            tokio::time::sleep(CONFIRM_INTERVAL).await;
+            if let Some(new_id) = newest_added(&before, &self.plane_ids()) {
+                return CallToolResult::structured(
+                    json!({ "status": "confirmed", "plane_id": new_id }),
+                );
+            }
+            if Instant::now() >= deadline {
+                return CallToolResult::structured(json!({ "status": "timeout" }));
+            }
+        }
+    }
+
+    /// Poll the snapshot until `plane_id` disappears or the deadline elapses.
+    async fn await_removed_plane(&self, plane_id: u32) -> CallToolResult {
+        let deadline = Instant::now() + CONFIRM_DEADLINE;
+        loop {
+            tokio::time::sleep(CONFIRM_INTERVAL).await;
+            if !self.plane_ids().contains(&plane_id) {
+                return CallToolResult::structured(
+                    json!({ "status": "confirmed", "plane_id": plane_id }),
+                );
+            }
+            if Instant::now() >= deadline {
+                return CallToolResult::structured(json!({ "status": "timeout" }));
+            }
+        }
+    }
+}
+
+/// The highest plane id present in `after` but not `before` — the freshly-spawned plane (with a
+/// documented race if several spawns are in flight at once). Pure confirmation seam.
+fn newest_added(before: &HashSet<u32>, after: &HashSet<u32>) -> Option<u32> {
+    after.difference(before).copied().max()
 }
 
 /// Typed arguments for [`PlanesService::get_plane_state`].
@@ -48,6 +157,55 @@ impl PlanesService {
 struct GetPlaneStateArgs {
     /// The `PlaneId(u32)` of the plane to inspect (as reported by `list_planes`).
     plane_id: u32,
+}
+
+/// Typed arguments for [`PlanesService::spawn_plane`].
+///
+/// `controller_kind` is a serde variant name of a *spawnable* `ControllerKind` (`"Manual"`,
+/// `"LevelHold"`, `"HeadingHold"`, `"Ascent"`, `"Orbit"`, and — on inference builds —
+/// `"RlLevelHold"`/`"RlOrbit"`/`"RlOrbitResidual"`/`"RlLstmOrbit"`). Spatial fields are optional;
+/// omitting one uses the server's spawn default.
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct SpawnPlaneArgs {
+    /// Asset-relative `.plane.ron` path, e.g. `"planes/generic_jet.plane.ron"`.
+    config_path: String,
+    /// Serde variant name of the controller kind to spawn with.
+    controller_kind: String,
+    /// World-frame position `[x, y, z]` (m). `None` ⇒ spawn default.
+    position: Option<[f32; 3]>,
+    /// World-frame velocity `[x, y, z]` (m/s). `None` ⇒ spawn default.
+    velocity: Option<[f32; 3]>,
+    /// Attitude quaternion `[x, y, z, w]`. `None` ⇒ spawn default.
+    attitude: Option<[f32; 4]>,
+    /// Body-frame angular velocity `[x, y, z]` (rad/s). `None` ⇒ spawn default.
+    angular_velocity: Option<[f32; 3]>,
+    /// Powerplant fill fraction in `[0, 1]`. `None` ⇒ full tanks.
+    fuel_fraction: Option<f32>,
+}
+
+/// Typed arguments for [`PlanesService::remove_plane`].
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct RemovePlaneArgs {
+    /// The `PlaneId(u32)` of the plane to remove (as reported by `list_planes`).
+    plane_id: u32,
+}
+
+/// Pure mapping from `spawn_plane`'s JSON args to a [`ControlRequest::Spawn`] payload. The
+/// TDD seam for spawn: array→`Vec3`/`Quat` conversion and controller-kind validation, no rmcp
+/// or sockets. Fixed-size arrays make the JSON schema enforce element counts, so the only
+/// failure path here is an unknown / non-spawnable `controller_kind`.
+fn spawn_spec_from_args(
+    args: &SpawnPlaneArgs,
+) -> Result<(String, ControllerKind, SpawnSpec), String> {
+    let kind = parse_spawnable_controller_kind(&args.controller_kind)?;
+    let spec = SpawnSpec {
+        position: args.position.map(Vec3::from_array),
+        velocity: args.velocity.map(Vec3::from_array),
+        attitude: args.attitude.map(Quat::from_array),
+        angular_velocity: args.angular_velocity.map(Vec3::from_array),
+        fuel_fraction: args.fuel_fraction,
+    };
+    Ok((args.config_path.clone(), kind, spec))
 }
 
 /// A tool-level error the caller's MCP client renders (vs a protocol `Err(ErrorData)`, which
@@ -154,15 +312,52 @@ impl PlanesService {
             None => tool_error(format!("no plane with id {}", args.plane_id)),
         }
     }
+
+    /// Spawn a new plane on the server.
+    #[tool(
+        description = "Spawn a plane on the server: { config_path, controller_kind, position?, \
+                       velocity?, attitude?, angular_velocity?, fuel_fraction? }. \
+                       `config_path` is an asset-relative `.plane.ron` (e.g. \
+                       \"planes/generic_jet.plane.ron\"); `controller_kind` is a serde variant \
+                       name — one of Manual, LevelHold, HeadingHold, Ascent, Orbit (and, on \
+                       inference builds, RlLevelHold, RlOrbit, RlOrbitResidual, RlLstmOrbit). \
+                       Wingman and FlightPlan are rejected. position/velocity/angular_velocity \
+                       are [x,y,z]; attitude is a quaternion [x,y,z,w]; omitted fields use spawn \
+                       defaults. Asynchronous: polls up to ~1s and returns { status: \
+                       \"confirmed\", plane_id } (the new id) or { status: \"timeout\" }."
+    )]
+    async fn spawn_plane(&self, Parameters(args): Parameters<SpawnPlaneArgs>) -> CallToolResult {
+        match self.dispatch_spawn(&args) {
+            Ok(before) => self.await_new_plane(before).await,
+            Err(err) => err,
+        }
+    }
+
+    /// Remove a plane from the server by id.
+    #[tool(
+        description = "Remove a plane by id: { plane_id }. Errors if not connected or if no \
+                       plane carries that id. Asynchronous: polls up to ~1s and returns \
+                       { status: \"confirmed\", plane_id } once the plane is gone, or \
+                       { status: \"timeout\" }."
+    )]
+    async fn remove_plane(&self, Parameters(args): Parameters<RemovePlaneArgs>) -> CallToolResult {
+        match self.dispatch_remove(args.plane_id) {
+            Ok(()) => self.await_removed_plane(args.plane_id).await,
+            Err(err) => err,
+        }
+    }
 }
 
 #[tool_handler(
     name = "ml_planes_mcp",
-    instructions = "Inspect a running ml_planes flight simulation. Read tools: \
+    instructions = "Inspect and control a running ml_planes flight simulation. Read tools: \
                     `get_sim_status` (connection + plane count), `list_planes` (roster), and \
-                    `get_plane_state { plane_id }` (full per-plane state). State tracks the \
-                    live sim and updates across calls. Mutating tools (spawn/remove/switch \
-                    controller/…) arrive in a later phase."
+                    `get_plane_state { plane_id }` (full per-plane state). Write tools: \
+                    `spawn_plane` (add a plane) and `remove_plane { plane_id }`. State tracks \
+                    the live sim and updates across calls; writes are eventually-consistent \
+                    round-trips through the server (spawn/remove poll briefly and report \
+                    confirmed/timeout). More mutating tools (switch controller / tuning / sim \
+                    speed) arrive in a later phase."
 )]
 impl ServerHandler for PlanesService {}
 
@@ -219,10 +414,17 @@ mod tests {
         )
     }
 
-    fn service_with(snap: SimSnapshot) -> PlanesService {
+    /// Build a service over a fixed snapshot plus a fresh command channel, returning the
+    /// service and the receiving end so tests can assert what a write tool enqueued.
+    fn service_and_rx(snap: SimSnapshot) -> (PlanesService, crate::mcp::bridge::ControlReceiver) {
         let handle = SnapshotHandle::new();
         *handle.0.write().unwrap() = snap;
-        PlanesService::new(handle)
+        let (tx, rx) = crate::mcp::bridge::control_channel();
+        (PlanesService::new(handle, tx), rx)
+    }
+
+    fn service_with(snap: SimSnapshot) -> PlanesService {
+        service_and_rx(snap).0
     }
 
     #[test]
@@ -331,5 +533,139 @@ mod tests {
             .get_plane_state(Parameters(GetPlaneStateArgs { plane_id: 9999 }))
             .await;
         assert_eq!(result.is_error, Some(true));
+    }
+
+    // ---- Phase 3: write path ----
+
+    fn spawn_args(kind: &str) -> SpawnPlaneArgs {
+        SpawnPlaneArgs {
+            config_path: "planes/generic_jet.plane.ron".to_string(),
+            controller_kind: kind.to_string(),
+            position: Some([100.0, 1500.0, -50.0]),
+            velocity: Some([120.0, 0.0, 0.0]),
+            attitude: None,
+            angular_velocity: None,
+            fuel_fraction: Some(0.5),
+        }
+    }
+
+    #[test]
+    fn spawn_spec_from_args_maps_arrays_and_kind() {
+        let (config, kind, spec) = spawn_spec_from_args(&spawn_args("LevelHold")).unwrap();
+        assert_eq!(config, "planes/generic_jet.plane.ron");
+        assert_eq!(kind, ControllerKind::LevelHold);
+        assert_eq!(spec.position, Some(Vec3::new(100.0, 1500.0, -50.0)));
+        assert_eq!(spec.velocity, Some(Vec3::new(120.0, 0.0, 0.0)));
+        assert_eq!(spec.attitude, None);
+        assert_eq!(spec.angular_velocity, None);
+        assert_eq!(spec.fuel_fraction, Some(0.5));
+    }
+
+    #[test]
+    fn spawn_spec_from_args_maps_attitude_quat() {
+        let mut args = spawn_args("Orbit");
+        args.attitude = Some([0.0, 0.0, 0.0, 1.0]);
+        let (_, _, spec) = spawn_spec_from_args(&args).unwrap();
+        assert_eq!(spec.attitude, Some(Quat::from_array([0.0, 0.0, 0.0, 1.0])));
+    }
+
+    #[test]
+    fn spawn_spec_from_args_rejects_bad_kind() {
+        assert!(spawn_spec_from_args(&spawn_args("Wingman")).is_err());
+        assert!(spawn_spec_from_args(&spawn_args("Nonsense")).is_err());
+    }
+
+    #[test]
+    fn newest_added_reports_highest_new_id() {
+        let before: HashSet<u32> = [1, 2].into_iter().collect();
+        let after: HashSet<u32> = [1, 2, 5, 7].into_iter().collect();
+        assert_eq!(newest_added(&before, &after), Some(7));
+        assert_eq!(newest_added(&after, &after), None);
+    }
+
+    #[test]
+    fn dispatch_spawn_enqueues_spawn_request() {
+        let (service, rx) = service_and_rx(connected_snapshot());
+        let before = service.dispatch_spawn(&spawn_args("LevelHold")).unwrap();
+        assert_eq!(before, [7].into_iter().collect::<HashSet<u32>>());
+        match rx.0.try_recv().expect("a spawn request should be queued") {
+            ControlRequest::Spawn {
+                config_path, kind, ..
+            } => {
+                assert_eq!(config_path, "planes/generic_jet.plane.ron");
+                assert_eq!(kind, ControllerKind::LevelHold);
+            }
+            other => panic!("unexpected request: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_spawn_errors_while_disconnected() {
+        let snap = build_snapshot(vec![], false, "127.0.0.1:5555".to_string(), None);
+        let (service, rx) = service_and_rx(snap);
+        let err = service
+            .dispatch_spawn(&spawn_args("LevelHold"))
+            .unwrap_err();
+        assert_eq!(err.is_error, Some(true));
+        assert!(
+            rx.0.try_recv().is_err(),
+            "nothing enqueued when disconnected"
+        );
+    }
+
+    #[test]
+    fn dispatch_remove_enqueues_remove_for_known_id() {
+        let (service, rx) = service_and_rx(connected_snapshot());
+        service.dispatch_remove(7).unwrap();
+        match rx.0.try_recv().expect("a remove request should be queued") {
+            ControlRequest::Remove { plane } => assert_eq!(plane, PlaneId(7)),
+            other => panic!("unexpected request: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_remove_errors_on_unknown_id() {
+        let (service, rx) = service_and_rx(connected_snapshot());
+        assert_eq!(
+            service.dispatch_remove(9999).unwrap_err().is_error,
+            Some(true)
+        );
+        assert!(
+            rx.0.try_recv().is_err(),
+            "nothing enqueued for a missing id"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_plane_tool_errors_while_disconnected() {
+        let snap = build_snapshot(vec![], false, "127.0.0.1:5555".to_string(), None);
+        let result = service_with(snap)
+            .spawn_plane(Parameters(spawn_args("LevelHold")))
+            .await;
+        assert_eq!(result.is_error, Some(true));
+    }
+
+    #[tokio::test]
+    async fn await_new_plane_confirms_when_a_new_id_appears() {
+        // The snapshot already carries plane 7; polling against an empty `before` sees it.
+        let service = service_with(connected_snapshot());
+        let result = service.await_new_plane(HashSet::new()).await;
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(
+            result.structured_content.expect("structured")["plane_id"],
+            json!(7)
+        );
+    }
+
+    #[tokio::test]
+    async fn await_removed_plane_confirms_when_id_is_gone() {
+        // Empty snapshot ⇒ id 7 is already absent, so removal confirms immediately.
+        let snap = build_snapshot(vec![], true, "127.0.0.1:5555".to_string(), None);
+        let result = service_with(snap).await_removed_plane(7).await;
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(
+            result.structured_content.expect("structured")["status"],
+            json!("confirmed")
+        );
     }
 }

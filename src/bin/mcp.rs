@@ -11,8 +11,9 @@
 //! The read path is a shared snapshot: the Bevy thread runs `McpBridgePlugin`, which mirrors
 //! the replicated world into a `SnapshotHandle` (`Arc<RwLock<SimSnapshot>>`) every frame, and
 //! the rmcp `PlanesService` holds a clone of the same `Arc` to back its read tools
-//! (`get_sim_status`, `list_planes`, `get_plane_state`). The command bridge (write path) lands
-//! in Phases 3–4.
+//! (`get_sim_status`, `list_planes`, `get_plane_state`). The write path is a command channel:
+//! write tools (`spawn_plane`, `remove_plane`) push `ControlRequest`s that the Bevy thread's
+//! `drain_control_requests` system fires as `client_trigger` commands.
 //!
 //! **stdout is the MCP JSON-RPC channel** — all logging goes to **stderr** only. Run from
 //! the project root:
@@ -33,7 +34,9 @@ use bevy_replicon::prelude::RepliconPlugins;
 use bevy_replicon_renet::RepliconRenetPlugins;
 use rmcp::{transport::stdio, ServiceExt};
 
-use ml_planes::mcp::{McpArgs, McpBridgePlugin, PlanesService, SnapshotHandle};
+use ml_planes::mcp::{
+    control_channel, ControlReceiver, McpArgs, McpBridgePlugin, PlanesService, SnapshotHandle,
+};
 use ml_planes::net::{start_renet_client, ConnectTarget, NetProtocolPlugin};
 
 #[tokio::main]
@@ -54,11 +57,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // clone of the same `Arc` so its read tools serve the latest state.
     let snapshot = SnapshotHandle::new();
 
-    // Headless replicon client on its own thread — it owns the `app.run()` loop.
-    spawn_sim_client(args, snapshot.clone());
+    // Command channel (write path): rmcp write tools push `ControlRequest`s onto the sender; the
+    // Bevy thread drains the receiver into `client_trigger` commands.
+    let (control_tx, control_rx) = control_channel();
 
-    // rmcp stdio server on the tokio main thread, backed by the shared snapshot.
-    let service = PlanesService::new(snapshot).serve(stdio()).await?;
+    // Headless replicon client on its own thread — it owns the `app.run()` loop.
+    spawn_sim_client(args, snapshot.clone(), control_rx);
+
+    // rmcp stdio server on the tokio main thread, backed by the shared snapshot + command sender.
+    let service = PlanesService::new(snapshot, control_tx)
+        .serve(stdio())
+        .await?;
     service.waiting().await?;
     Ok(())
 }
@@ -68,7 +77,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 /// Mirrors `src/bin/server.rs`'s minimal headless stack, swapping the server pieces for
 /// the client: insert [`ConnectTarget`] and register [`start_renet_client`] at `Startup`.
 /// No Rapier / sim plugins — the client never simulates, it only mirrors replicated state.
-fn spawn_sim_client(args: McpArgs, snapshot: SnapshotHandle) {
+fn spawn_sim_client(args: McpArgs, snapshot: SnapshotHandle, control_rx: ControlReceiver) {
     std::thread::spawn(move || {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins.set(ScheduleRunnerPlugin::run_loop(
@@ -80,7 +89,7 @@ fn spawn_sim_client(args: McpArgs, snapshot: SnapshotHandle) {
         .add_plugins(RepliconPlugins)
         .add_plugins(RepliconRenetPlugins)
         .add_plugins(NetProtocolPlugin)
-        .add_plugins(McpBridgePlugin::new(snapshot))
+        .add_plugins(McpBridgePlugin::new(snapshot, control_rx))
         .insert_resource(ConnectTarget(args.connect))
         .add_systems(Startup, start_renet_client);
         app.run();
