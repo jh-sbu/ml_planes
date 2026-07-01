@@ -8,11 +8,11 @@
 //!     (`MinimalPlugins` + `RepliconPlugins` + `RepliconRenetPlugins` + `NetProtocolPlugin`),
 //!   * an `rmcp` stdio server on the tokio main thread (`PlanesService`).
 //!
-//! Phase 1 adds the read-path bridge: the Bevy thread runs `McpBridgePlugin`, which mirrors
-//! the replicated world into a shared `SnapshotHandle` (`Arc<RwLock<SimSnapshot>>`) every
-//! frame. The rmcp side does not read it yet (the stub `ping` service is unchanged); Phase 2
-//! hands the service a clone of this `Arc` to back the read tools. The command bridge
-//! (write path) lands in Phases 3–4.
+//! The read path is a shared snapshot: the Bevy thread runs `McpBridgePlugin`, which mirrors
+//! the replicated world into a `SnapshotHandle` (`Arc<RwLock<SimSnapshot>>`) every frame, and
+//! the rmcp `PlanesService` holds a clone of the same `Arc` to back its read tools
+//! (`get_sim_status`, `list_planes`, `get_plane_state`). The command bridge (write path) lands
+//! in Phases 3–4.
 //!
 //! **stdout is the MCP JSON-RPC channel** — all logging goes to **stderr** only. Run from
 //! the project root:
@@ -50,15 +50,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let args = McpArgs::parse();
 
-    // Shared snapshot mirror: the Bevy thread rewrites it each frame; Phase 2 hands a clone
-    // of this `Arc` to the rmcp service so read tools can serve the latest state.
+    // Shared snapshot mirror: the Bevy thread rewrites it each frame; the rmcp service holds a
+    // clone of the same `Arc` so its read tools serve the latest state.
     let snapshot = SnapshotHandle::new();
 
     // Headless replicon client on its own thread — it owns the `app.run()` loop.
     spawn_sim_client(args, snapshot.clone());
 
-    // rmcp stdio server on the tokio main thread.
-    let service = PlanesService::new().serve(stdio()).await?;
+    // rmcp stdio server on the tokio main thread, backed by the shared snapshot.
+    let service = PlanesService::new(snapshot).serve(stdio()).await?;
     service.waiting().await?;
     Ok(())
 }
