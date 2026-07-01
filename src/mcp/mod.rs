@@ -24,8 +24,8 @@ use bevy::prelude::*;
 
 pub use args::McpArgs;
 pub use bridge::{
-    control_channel, drain_control_requests, parse_spawnable_controller_kind, ControlReceiver,
-    ControlRequest, ControlSender,
+    control_channel, drain_control_requests, parse_sim_speed, parse_spawnable_controller_kind,
+    ControlReceiver, ControlRequest, ControlSender,
 };
 pub use service::PlanesService;
 pub use snapshot::{

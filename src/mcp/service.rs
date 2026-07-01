@@ -21,7 +21,9 @@ use rmcp::serde_json::{json, to_value, Value};
 use rmcp::{schemars, tool, tool_handler, tool_router, ServerHandler};
 
 use crate::controllers::ControllerKind;
-use crate::mcp::bridge::{parse_spawnable_controller_kind, ControlRequest, ControlSender};
+use crate::mcp::bridge::{
+    parse_sim_speed, parse_spawnable_controller_kind, ControlRequest, ControlSender,
+};
 use crate::mcp::snapshot::{PlaneSnapshot, SimSnapshot, SnapshotHandle};
 use crate::plane::PlaneId;
 use crate::training::SpawnSpec;
@@ -97,8 +99,20 @@ impl PlanesService {
         Ok(before)
     }
 
-    /// Guard + existence-check + enqueue a remove. Synchronous, like [`Self::dispatch_spawn`].
-    fn dispatch_remove(&self, plane_id: u32) -> Result<(), CallToolResult> {
+    /// Guard: the client is connected. Non-plane-targeted writes (e.g. `set_sim_speed`) use this.
+    fn require_connected(&self) -> Result<(), CallToolResult> {
+        if self.read_snapshot().connected {
+            Ok(())
+        } else {
+            Err(tool_error(
+                "not connected to ml_planes_server; retry shortly",
+            ))
+        }
+    }
+
+    /// Guard: connected **and** a plane with `plane_id` is live. Shared by every plane-targeted
+    /// write dispatcher so they all reject an unknown id (and a disconnected client) uniformly.
+    fn require_live_plane(&self, plane_id: u32) -> Result<(), CallToolResult> {
         let snap = self.read_snapshot();
         if !snap.connected {
             return Err(tool_error(
@@ -108,8 +122,61 @@ impl PlanesService {
         if !snap.planes.iter().any(|p| p.plane_id == plane_id) {
             return Err(tool_error(format!("no plane with id {plane_id}")));
         }
+        Ok(())
+    }
+
+    /// Guard + existence-check + enqueue a remove. Synchronous, like [`Self::dispatch_spawn`].
+    fn dispatch_remove(&self, plane_id: u32) -> Result<(), CallToolResult> {
+        self.require_live_plane(plane_id)?;
         self.send(ControlRequest::Remove {
             plane: PlaneId(plane_id),
+        })
+    }
+
+    /// Guard + parse + enqueue a controller switch for a live plane.
+    fn dispatch_switch_controller(
+        &self,
+        plane_id: u32,
+        controller_kind: &str,
+    ) -> Result<(), CallToolResult> {
+        self.require_live_plane(plane_id)?;
+        let kind = parse_spawnable_controller_kind(controller_kind).map_err(tool_error)?;
+        self.send(ControlRequest::SwitchController {
+            plane: PlaneId(plane_id),
+            kind,
+        })
+    }
+
+    /// Guard + enqueue a tuning-profile selection for a live plane. The profile is a free-form
+    /// string — the server overwrites any existing profile and rebuilds the controller.
+    fn dispatch_set_tuning_profile(
+        &self,
+        plane_id: u32,
+        profile: String,
+    ) -> Result<(), CallToolResult> {
+        self.require_live_plane(plane_id)?;
+        self.send(ControlRequest::SetTuningProfile {
+            plane: PlaneId(plane_id),
+            profile,
+        })
+    }
+
+    /// Guard + parse + enqueue a global sim-speed change (not plane-targeted).
+    fn dispatch_set_sim_speed(&self, speed: &str) -> Result<(), CallToolResult> {
+        self.require_connected()?;
+        let speed = parse_sim_speed(speed).map_err(tool_error)?;
+        self.send(ControlRequest::SetSimSpeed { speed })
+    }
+
+    /// Guard + enqueue an RL model selection for a live plane. `model_stem` is a full path stem
+    /// rooted at `models/` (see the tool doc); the server silently drops a stem that does not
+    /// match the plane's controller kind.
+    #[cfg(feature = "inference")]
+    fn dispatch_set_model(&self, plane_id: u32, model_stem: String) -> Result<(), CallToolResult> {
+        self.require_live_plane(plane_id)?;
+        self.send(ControlRequest::SetModel {
+            plane: PlaneId(plane_id),
+            model_stem,
         })
     }
 
@@ -190,6 +257,41 @@ struct RemovePlaneArgs {
     plane_id: u32,
 }
 
+/// Typed arguments for [`PlanesService::switch_controller`].
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct SwitchControllerArgs {
+    /// The `PlaneId(u32)` of the plane whose controller to switch.
+    plane_id: u32,
+    /// Serde variant name of the controller kind to switch to (same allow-list as `spawn_plane`).
+    controller_kind: String,
+}
+
+/// Typed arguments for [`PlanesService::set_tuning_profile`].
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct SetTuningProfileArgs {
+    /// The `PlaneId(u32)` of the plane to retune.
+    plane_id: u32,
+    /// The tuning-profile name to select (free-form; must exist in the plane's `.tuning.ron`).
+    profile: String,
+}
+
+/// Typed arguments for [`PlanesService::set_sim_speed`].
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct SetSimSpeedArgs {
+    /// Serde variant name of the playback speed: `"Paused"`, `"X1"`, `"X5"`, or `"X10"`.
+    speed: String,
+}
+
+/// Typed arguments for [`PlanesService::set_model`].
+#[cfg(feature = "inference")]
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct SetModelArgs {
+    /// The `PlaneId(u32)` of the plane (must be running an RL controller kind).
+    plane_id: u32,
+    /// Full path stem rooted at `models/`, e.g. `"models/orbit/ppo_orbit_1"` (no `.mpk`).
+    model_path_stem: String,
+}
+
 /// Pure mapping from `spawn_plane`'s JSON args to a [`ControlRequest::Spawn`] payload. The
 /// TDD seam for spawn: array→`Vec3`/`Quat` conversion and controller-kind validation, no rmcp
 /// or sockets. Fixed-size arrays make the JSON schema enforce element counts, so the only
@@ -212,6 +314,13 @@ fn spawn_spec_from_args(
 /// clients show opaquely). Right for "the tool ran but produced no useful result".
 fn tool_error(message: impl Into<String>) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(message)])
+}
+
+/// The immediate `{ status: "sent" }` result for fire-and-forget writes (no confirmation poll).
+/// The change is eventually consistent — the agent re-reads `get_plane_state` / `get_sim_status`
+/// to observe it applied.
+fn sent() -> CallToolResult {
+    CallToolResult::structured(json!({ "status": "sent" }))
 }
 
 /// Connection-status object: `connected` + the net identity + plane count + the MCP's
@@ -346,18 +455,123 @@ impl PlanesService {
             Err(err) => err,
         }
     }
+
+    /// Switch a plane's active controller.
+    #[tool(
+        description = "Switch a plane's active controller: { plane_id, controller_kind }. \
+                       `controller_kind` is a serde variant name — one of Manual, LevelHold, \
+                       HeadingHold, Ascent, Orbit (and, on inference builds, RlLevelHold, \
+                       RlOrbit, RlOrbitResidual, RlLstmOrbit); RL kinds only take effect against \
+                       an inference-capable server (PID fallback otherwise). Wingman and \
+                       FlightPlan are rejected (the generic builder would substitute a different \
+                       controller). Errors if not connected or if no plane carries that id. \
+                       Fire-and-forget: returns { status: \"sent\" }; re-read get_plane_state to \
+                       observe the applied controller_kind (eventually consistent)."
+    )]
+    async fn switch_controller(
+        &self,
+        Parameters(args): Parameters<SwitchControllerArgs>,
+    ) -> CallToolResult {
+        match self.dispatch_switch_controller(args.plane_id, &args.controller_kind) {
+            Ok(()) => sent(),
+            Err(err) => err,
+        }
+    }
+
+    /// Select a named PID tuning profile for a plane.
+    #[tool(
+        description = "Select a plane's PID tuning profile: { plane_id, profile }. `profile` is \
+                       a free-form name that must exist in the plane's `.tuning.ron` gain pool; \
+                       the server overwrites any current profile and rebuilds the controller. \
+                       Errors if not connected or if no plane carries that id. Fire-and-forget: \
+                       returns { status: \"sent\" }; re-read get_plane_state to observe the \
+                       applied tuning_profile (eventually consistent)."
+    )]
+    async fn set_tuning_profile(
+        &self,
+        Parameters(args): Parameters<SetTuningProfileArgs>,
+    ) -> CallToolResult {
+        match self.dispatch_set_tuning_profile(args.plane_id, args.profile) {
+            Ok(()) => sent(),
+            Err(err) => err,
+        }
+    }
+
+    /// Set the global simulation playback speed.
+    #[tool(
+        description = "Set the global simulation playback speed: { speed }. `speed` is a serde \
+                       variant name — one of Paused, X1, X5, X10 (not the display labels like \
+                       \"1x\"). Pause/accel is server-authoritative and affects the whole sim. \
+                       Errors if not connected. Fire-and-forget: returns { status: \"sent\" }; \
+                       get_sim_status echoes it back as requested_sim_speed (SimSpeed is not \
+                       replicated, so this is the MCP's last request, not the server's true \
+                       speed)."
+    )]
+    async fn set_sim_speed(&self, Parameters(args): Parameters<SetSimSpeedArgs>) -> CallToolResult {
+        match self.dispatch_set_sim_speed(&args.speed) {
+            Ok(()) => sent(),
+            Err(err) => err,
+        }
+    }
+}
+
+/// The `set_model` tool lives in its own `inference`-gated router: rmcp 2.0's `#[tool_router]`
+/// cannot `#[cfg]` a *single* tool (it emits an unconditional `with_route` for every `#[tool]`
+/// method it sees, so a stripped method leaves a dangling reference). Gating the whole router
+/// block instead and merging it in [`PlanesService::all_tools`] keeps set_model out of the tool
+/// list on a non-inference build.
+#[cfg(feature = "inference")]
+#[tool_router(router = inference_tool_router)]
+impl PlanesService {
+    /// Select a trained RL model for a plane running an RL controller.
+    #[tool(
+        description = "Select a trained RL model for a plane: { plane_id, model_path_stem }. \
+                       `model_path_stem` is a full path stem rooted at `models/`, e.g. \
+                       \"models/orbit/ppo_orbit_1\" (no `.mpk` extension). The plane must be \
+                       running the matching RL controller kind — the server silently drops a \
+                       stem that does not match `models/<dir>/` for that kind. Errors if not \
+                       connected or if no plane carries that id. Fire-and-forget: returns \
+                       { status: \"sent\" }; re-read get_plane_state to observe the applied \
+                       model (eventually consistent)."
+    )]
+    async fn set_model(&self, Parameters(args): Parameters<SetModelArgs>) -> CallToolResult {
+        match self.dispatch_set_model(args.plane_id, args.model_path_stem) {
+            Ok(()) => sent(),
+            Err(err) => err,
+        }
+    }
+}
+
+impl PlanesService {
+    /// The full tool router. The base `tool_router()` (all always-available tools) is merged
+    /// with the `inference`-gated `inference_tool_router()` (just `set_model`) — see the note on
+    /// the inference router block for why set_model must live in its own router.
+    fn all_tools() -> rmcp::handler::server::router::tool::ToolRouter<Self> {
+        #[allow(unused_mut)]
+        let mut router = Self::tool_router();
+        #[cfg(feature = "inference")]
+        {
+            router += Self::inference_tool_router();
+        }
+        router
+    }
 }
 
 #[tool_handler(
+    router = Self::all_tools(),
     name = "ml_planes_mcp",
     instructions = "Inspect and control a running ml_planes flight simulation. Read tools: \
                     `get_sim_status` (connection + plane count), `list_planes` (roster), and \
                     `get_plane_state { plane_id }` (full per-plane state). Write tools: \
-                    `spawn_plane` (add a plane) and `remove_plane { plane_id }`. State tracks \
-                    the live sim and updates across calls; writes are eventually-consistent \
-                    round-trips through the server (spawn/remove poll briefly and report \
-                    confirmed/timeout). More mutating tools (switch controller / tuning / sim \
-                    speed) arrive in a later phase."
+                    `spawn_plane` (add a plane), `remove_plane { plane_id }`, \
+                    `switch_controller { plane_id, controller_kind }`, \
+                    `set_tuning_profile { plane_id, profile }`, `set_sim_speed { speed }`, and \
+                    (on inference builds) `set_model { plane_id, model_path_stem }`. State \
+                    tracks the live sim and updates across calls; writes are \
+                    eventually-consistent round-trips through the server. spawn_plane/\
+                    remove_plane poll briefly and report confirmed/timeout; the other writes \
+                    return { status: \"sent\" } immediately — re-read get_plane_state / \
+                    get_sim_status to observe the applied change."
 )]
 impl ServerHandler for PlanesService {}
 
@@ -667,5 +881,171 @@ mod tests {
             result.structured_content.expect("structured")["status"],
             json!("confirmed")
         );
+    }
+
+    // ---- Phase 4: controller / tuning / sim-speed / model write tools ----
+
+    #[test]
+    fn dispatch_switch_controller_enqueues_for_known_id() {
+        let (service, rx) = service_and_rx(connected_snapshot());
+        service.dispatch_switch_controller(7, "Ascent").unwrap();
+        match rx.0.try_recv().expect("a switch request should be queued") {
+            ControlRequest::SwitchController { plane, kind } => {
+                assert_eq!(plane, PlaneId(7));
+                assert_eq!(kind, ControllerKind::Ascent);
+            }
+            other => panic!("unexpected request: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_switch_controller_rejects_bad_kind() {
+        let (service, rx) = service_and_rx(connected_snapshot());
+        assert!(service.dispatch_switch_controller(7, "Wingman").is_err());
+        assert!(service.dispatch_switch_controller(7, "Nonsense").is_err());
+        assert!(rx.0.try_recv().is_err(), "nothing enqueued for a bad kind");
+    }
+
+    #[test]
+    fn dispatch_switch_controller_errors_on_unknown_id() {
+        let (service, rx) = service_and_rx(connected_snapshot());
+        assert_eq!(
+            service
+                .dispatch_switch_controller(9999, "Orbit")
+                .unwrap_err()
+                .is_error,
+            Some(true)
+        );
+        assert!(
+            rx.0.try_recv().is_err(),
+            "nothing enqueued for a missing id"
+        );
+    }
+
+    #[test]
+    fn dispatch_switch_controller_errors_while_disconnected() {
+        let snap = build_snapshot(vec![], false, "127.0.0.1:5555".to_string(), None);
+        let (service, rx) = service_and_rx(snap);
+        assert!(service.dispatch_switch_controller(7, "Orbit").is_err());
+        assert!(rx.0.try_recv().is_err());
+    }
+
+    #[test]
+    fn dispatch_set_tuning_profile_enqueues_for_known_id() {
+        let (service, rx) = service_and_rx(connected_snapshot());
+        service
+            .dispatch_set_tuning_profile(7, "aggressive".to_string())
+            .unwrap();
+        match rx.0.try_recv().expect("a tuning request should be queued") {
+            ControlRequest::SetTuningProfile { plane, profile } => {
+                assert_eq!(plane, PlaneId(7));
+                assert_eq!(profile, "aggressive");
+            }
+            other => panic!("unexpected request: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_set_tuning_profile_errors_on_unknown_id() {
+        let (service, rx) = service_and_rx(connected_snapshot());
+        assert!(service
+            .dispatch_set_tuning_profile(9999, "x".to_string())
+            .is_err());
+        assert!(rx.0.try_recv().is_err());
+    }
+
+    #[test]
+    fn dispatch_set_sim_speed_enqueues_parsed_speed() {
+        let (service, rx) = service_and_rx(connected_snapshot());
+        service.dispatch_set_sim_speed("X10").unwrap();
+        match rx
+            .0
+            .try_recv()
+            .expect("a sim-speed request should be queued")
+        {
+            ControlRequest::SetSimSpeed { speed } => assert_eq!(speed, SimSpeed::X10),
+            other => panic!("unexpected request: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_set_sim_speed_rejects_bad_name() {
+        let (service, rx) = service_and_rx(connected_snapshot());
+        assert!(service.dispatch_set_sim_speed("1x").is_err());
+        assert!(rx.0.try_recv().is_err());
+    }
+
+    #[test]
+    fn dispatch_set_sim_speed_errors_while_disconnected() {
+        let snap = build_snapshot(vec![], false, "127.0.0.1:5555".to_string(), None);
+        let (service, rx) = service_and_rx(snap);
+        assert!(service.dispatch_set_sim_speed("X5").is_err());
+        assert!(rx.0.try_recv().is_err());
+    }
+
+    #[cfg(feature = "inference")]
+    #[test]
+    fn dispatch_set_model_enqueues_for_known_id() {
+        let (service, rx) = service_and_rx(connected_snapshot());
+        service
+            .dispatch_set_model(7, "models/orbit/ppo_orbit_1".to_string())
+            .unwrap();
+        match rx.0.try_recv().expect("a model request should be queued") {
+            ControlRequest::SetModel { plane, model_stem } => {
+                assert_eq!(plane, PlaneId(7));
+                assert_eq!(model_stem, "models/orbit/ppo_orbit_1");
+            }
+            other => panic!("unexpected request: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "inference")]
+    #[test]
+    fn dispatch_set_model_errors_on_unknown_id() {
+        let (service, rx) = service_and_rx(connected_snapshot());
+        assert!(service
+            .dispatch_set_model(9999, "models/orbit/ppo_orbit_1".to_string())
+            .is_err());
+        assert!(rx.0.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn switch_controller_tool_returns_sent_when_connected() {
+        // Hold the receiver: dropping it closes the channel and `send` would fail.
+        let (service, _rx) = service_and_rx(connected_snapshot());
+        let result = service
+            .switch_controller(Parameters(SwitchControllerArgs {
+                plane_id: 7,
+                controller_kind: "Orbit".to_string(),
+            }))
+            .await;
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(
+            result.structured_content.expect("structured")["status"],
+            json!("sent")
+        );
+    }
+
+    #[tokio::test]
+    async fn set_sim_speed_tool_errors_while_disconnected() {
+        let snap = build_snapshot(vec![], false, "127.0.0.1:5555".to_string(), None);
+        let result = service_with(snap)
+            .set_sim_speed(Parameters(SetSimSpeedArgs {
+                speed: "X5".to_string(),
+            }))
+            .await;
+        assert_eq!(result.is_error, Some(true));
+    }
+
+    #[tokio::test]
+    async fn set_tuning_profile_tool_returns_sent_when_connected() {
+        let (service, _rx) = service_and_rx(connected_snapshot());
+        let result = service
+            .set_tuning_profile(Parameters(SetTuningProfileArgs {
+                plane_id: 7,
+                profile: "aggressive".to_string(),
+            }))
+            .await;
+        assert_eq!(result.is_error, Some(false));
     }
 }

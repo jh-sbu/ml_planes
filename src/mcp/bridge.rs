@@ -183,6 +183,23 @@ pub fn parse_spawnable_controller_kind(name: &str) -> Result<ControllerKind, Str
     }
 }
 
+/// Parse a [`SimSpeed`] name (serde variant identifier) into the enum.
+///
+/// Backs the `set_sim_speed` tool. Keyed on the exact variant names replicon serializes
+/// (`SimSpeed` derives `Serialize`/`Deserialize` under `net`); unknown names return an `Err`
+/// (never a panic). Note `"X1"` — not `"1x"`, which is the display label (`SimSpeed::label`).
+pub fn parse_sim_speed(name: &str) -> Result<SimSpeed, String> {
+    match name {
+        "Paused" => Ok(SimSpeed::Paused),
+        "X1" => Ok(SimSpeed::X1),
+        "X5" => Ok(SimSpeed::X5),
+        "X10" => Ok(SimSpeed::X10),
+        other => Err(format!(
+            "unknown sim speed `{other}`; expected one of: Paused, X1, X5, X10"
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,6 +263,22 @@ mod tests {
     #[test]
     fn rl_kinds_are_unknown_without_inference() {
         assert!(parse_spawnable_controller_kind("RlOrbit").is_err());
+    }
+
+    #[test]
+    fn parses_sim_speed_variant_names() {
+        assert_eq!(parse_sim_speed("Paused").unwrap(), SimSpeed::Paused);
+        assert_eq!(parse_sim_speed("X1").unwrap(), SimSpeed::X1);
+        assert_eq!(parse_sim_speed("X5").unwrap(), SimSpeed::X5);
+        assert_eq!(parse_sim_speed("X10").unwrap(), SimSpeed::X10);
+    }
+
+    #[test]
+    fn rejects_unknown_sim_speed_names() {
+        // The display label "1x" is not the serde variant name — must not round-trip.
+        let err = parse_sim_speed("1x").unwrap_err();
+        assert!(err.contains("unknown sim speed"));
+        assert!(err.contains("1x"));
     }
 
     #[test]
