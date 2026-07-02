@@ -14,8 +14,10 @@ use crate::net::DEFAULT_PORT;
 pub struct McpArgs {
     /// Address of the `ml_planes_server` to join. Default: `127.0.0.1:DEFAULT_PORT`.
     pub connect: SocketAddr,
-    /// How long to wait for the renet connection to come up before giving up. Default: 5 s.
+    /// Connection/handshake window and the initial reconnect backoff. Default: 5 s.
     pub connect_timeout: Duration,
+    /// Silence non-error logging (unless `RUST_LOG` overrides). Default: `false`.
+    pub quiet: bool,
 }
 
 impl Default for McpArgs {
@@ -23,6 +25,7 @@ impl Default for McpArgs {
         Self {
             connect: SocketAddr::from(([127, 0, 0, 1], DEFAULT_PORT)),
             connect_timeout: Duration::from_secs(5),
+            quiet: false,
         }
     }
 }
@@ -47,6 +50,7 @@ impl McpArgs {
     /// Recognised flags:
     ///   `--connect host:port`   server address (default `127.0.0.1:DEFAULT_PORT`)
     ///   `--connect-timeout SECS` connect deadline in whole seconds (default `5`)
+    ///   `--quiet`               silence non-error logging (presence flag; `RUST_LOG` wins)
     pub fn parse_from(args: &[String]) -> Result<Self, String> {
         let mut parsed = Self::default();
 
@@ -61,6 +65,8 @@ impl McpArgs {
                 .map_err(|_| format!("--connect-timeout expects whole seconds, got '{raw}'"))?;
             parsed.connect_timeout = Duration::from_secs(secs);
         }
+
+        parsed.quiet = args.iter().any(|a| a == "--quiet");
 
         Ok(parsed)
     }
@@ -137,5 +143,23 @@ mod tests {
     fn rejects_non_numeric_timeout() {
         let err = McpArgs::parse_from(&argv(&["--connect-timeout", "soon"])).unwrap_err();
         assert!(err.contains("--connect-timeout"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn quiet_defaults_false() {
+        assert!(!McpArgs::parse_from(&argv(&[])).unwrap().quiet);
+    }
+
+    #[test]
+    fn quiet_flag_sets_quiet() {
+        assert!(McpArgs::parse_from(&argv(&["--quiet"])).unwrap().quiet);
+    }
+
+    #[test]
+    fn quiet_combines_with_other_flags() {
+        let parsed =
+            McpArgs::parse_from(&argv(&["--connect", "127.0.0.1:7777", "--quiet"])).unwrap();
+        assert_eq!(parsed.connect, "127.0.0.1:7777".parse().unwrap());
+        assert!(parsed.quiet);
     }
 }

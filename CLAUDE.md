@@ -59,7 +59,16 @@ src/
     ppo/            # MLP track: model.rs/trainer.rs/buffer.rs (ActorCritic, PpoTrainer)
                     # LSTM track: lstm_model.rs/lstm_trainer.rs/lstm_buffer.rs
                     # csv_log.rs — training-metric CSV logging
-  bin/              # train_ppo, train_bc (required-features = training); evaluate_policy (required-features = inference)
+  mcp/              # MCP control client (feature = "mcp"): headless replicon client + rmcp
+                    #   stdio server exposing the live sim to an LLM agent
+                    #   snapshot.rs — SimSnapshot read-path mirror (collect_snapshot)
+                    #   bridge.rs — ControlRequest write-path channel (drain_control_requests)
+                    #   lifecycle.rs — poll_reconnect (auto-reconnect) + check_shutdown
+                    #   service.rs — rmcp ServerHandler + #[tool] methods (rmcp quarantined here)
+                    #   args.rs — --connect / --connect-timeout / --quiet
+  bin/              # train_ppo, train_bc (required-features = training); evaluate_policy
+                    #   (required-features = inference); ml_planes_server (server);
+                    #   ml_planes_mcp (mcp)
 ```
 
 ### Key Types
@@ -467,11 +476,17 @@ families). Supports `--task {level_hold|orbit|residual_orbit|lstm_orbit}` and, f
 
 ```toml
 [features]
-default = ["visual"]
+default = ["client"]                              # networked renderer (no local physics)
+client = ["visual", "net"]
 visual = ["bevy/default", "bevy_egui", "rfd"]
 wasm = ["visual", "inference"]
 inference = ["burn/std", "burn/ndarray", "bevy/bevy_log"]
 training = ["inference", "burn/wgpu", "burn/autodiff", "burn/train", "burn/tui"]
+net = ["dep:bevy_replicon", "dep:bevy_replicon_renet", "bevy/serialize"]
+server = ["net"]                                  # headless authoritative sim
+# MCP control client (headless replicon client + rmcp stdio server). Feature parity with
+# the server is required: `mcp` ↔ `server`, `mcp,inference` ↔ `server,inference`.
+mcp = ["net", "dep:rmcp", "dep:tokio", "dep:crossbeam-channel", "dep:tracing-subscriber"]
 
 [dependencies]
 bevy = { version = "0.18", default-features = false, features = ["bevy_asset"] }
@@ -481,17 +496,29 @@ serde = { version = "1", features = ["derive"] }
 bevy_egui = { version = "0.39", optional = true }
 rfd = { version = "0.15", optional = true }
 burn = { version = "0.20", optional = true, default-features = false }
+bevy_replicon = { version = "0.40", optional = true }
+bevy_replicon_renet = { version = "0.16", optional = true }
+rmcp = { version = "~2.0.0", optional = true, features = ["server", "transport-io", "macros"] }
+tokio = { version = "1", optional = true }
+crossbeam-channel = { version = "0.5", optional = true }
+tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter"] }
 naga = { version = "26", features = ["termcolor"] }
 
 [[bin]]
-name = "train_ppo"        # required-features = ["training"]
+name = "train_ppo"         # required-features = ["training"]
 path = "src/bin/train_ppo.rs"
 [[bin]]
-name = "train_bc"         # required-features = ["training"] — BC pretraining
+name = "train_bc"          # required-features = ["training"] — BC pretraining
 path = "src/bin/train_bc.rs"
 [[bin]]
-name = "evaluate_policy"  # required-features = ["inference"] — policy rollout/metrics
+name = "evaluate_policy"   # required-features = ["inference"] — policy rollout/metrics
 path = "src/bin/evaluate_policy.rs"
+[[bin]]
+name = "ml_planes_server"  # required-features = ["server"] — headless authoritative sim
+path = "src/bin/server.rs"
+[[bin]]
+name = "ml_planes_mcp"     # required-features = ["mcp"] — MCP control client
+path = "src/bin/mcp.rs"
 ```
 
 > `burn` features are selected per crate-feature (`default-features = false`): `ndarray` =
@@ -599,6 +626,10 @@ app.add_plugins(EguiPlugin { enable_multipass_for_primary_context: false });
 - `fuel.rs` — live-sim fuel: spawn-time tank load (`fuel_fraction`), `consume_fuel` burn + `update_plane_mass`, shipped-asset powerplant parse
 - `rl_inference.rs` — RL controller load + deterministic inference (`inference`/`training`-gated)
 - `ppo_training.rs` — RL trainer instantiation (training-gated; run with `--features training`)
+- `mcp_snapshot.rs` — MCP read-path snapshot mirror, transport-free (`mcp`-gated)
+- `mcp_bridge.rs` — MCP write-path command bridge drain, transport-free (`mcp`-gated)
+- `mcp_lifecycle.rs` — MCP auto-reconnect (`poll_reconnect`) + clean shutdown (`check_shutdown`), transport-free (`mcp`-gated)
+- `mcp_e2e.rs` — MCP end-to-end over real UDP: boots an `ml_planes_server` child, inspect + spawn/remove round-trip (`mcp`+`server`-gated, `#[ignore]`; run with `--features "mcp server" -- --ignored`)
 
 ### Rules
 - All tests must pass with `cargo test --no-default-features`

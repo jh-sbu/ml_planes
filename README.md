@@ -84,6 +84,80 @@ pub trait FlightController: Send + Sync {
 }
 ```
 
+## MCP Server
+
+`ml_planes_mcp` (built with `--features mcp`) is a headless control client that joins a running
+`ml_planes_server` and exposes the live simulation to an LLM agent over the **Model Context
+Protocol** (MCP stdio). An agent can inspect plane state and spawn/remove/reconfigure planes; it
+does **not** fly manually. The binary reuses the net protocol verbatim — no server changes.
+
+**Launch** (from the project root, so relative `assets/` paths resolve):
+
+```bash
+# 1. Start the authoritative sim server
+cargo run --features server --bin ml_planes_server -- \
+  --scenario assets/scenarios/default.scenario.ron --port 5555 &
+
+# 2. Start the MCP client (normally launched by the MCP host, not by hand)
+cargo run --features mcp --bin ml_planes_mcp -- --connect 127.0.0.1:5555
+```
+
+Options: `--connect host:port` (default `127.0.0.1:5555`), `--connect-timeout SECS` (connect +
+handshake window and initial reconnect backoff, default 5), `--quiet` (drop logging to errors;
+`RUST_LOG` still wins). stdout is the MCP JSON-RPC channel — all logs go to stderr. The client
+**auto-reconnects** if the server restarts, and exits cleanly when the MCP host closes stdin.
+
+**Register with Claude Code / Desktop** (example MCP config entry):
+
+```json
+{
+  "mcpServers": {
+    "ml_planes": {
+      "command": "cargo",
+      "args": ["run", "--features", "mcp", "--bin", "ml_planes_mcp", "--",
+               "--connect", "127.0.0.1:5555"]
+    }
+  }
+}
+```
+
+Point `command` at a prebuilt `target/release/ml_planes_mcp` for a faster start.
+
+**Tools**
+
+| Tool | Kind | Input → effect |
+|---|---|---|
+| `get_sim_status` | read | connection + plane count + last-requested sim speed |
+| `list_planes` | read | roster: id, index, controller, position, altitude, airspeed, fuel |
+| `get_plane_state` | read | `{ plane_id }` → full per-plane state (attitude, α/β, inputs, telemetry) |
+| `spawn_plane` | write | `{ config_path, controller_kind, position?, … }` → add a plane (confirms new id) |
+| `remove_plane` | write | `{ plane_id }` → remove (confirms gone) |
+| `switch_controller` | write | `{ plane_id, controller_kind }` |
+| `set_tuning_profile` | write | `{ plane_id, profile }` |
+| `set_sim_speed` | write | `{ speed: Paused\|X1\|X5\|X10 }` (server-global) |
+| `set_model` | write | `{ plane_id, model_path_stem }` — inference builds only |
+
+`controller_kind` uses serde variant names (`Manual`, `LevelHold`, `HeadingHold`, `Ascent`,
+`Orbit`, and under inference `RlLevelHold`/`RlOrbit`/`RlOrbitResidual`/`RlLstmOrbit`); `Wingman`
+and `FlightPlan` are rejected. Writes are eventually-consistent — re-read after a write to observe
+the applied change.
+
+> **Feature parity with the server is mandatory:** `inference` changes the wire protocol, so the
+> MCP client's features must match the server's — `mcp` ↔ `server`, `mcp,inference` ↔
+> `server,inference`. A mismatched pair still completes the renet handshake and then mis-aligns
+> replication silently.
+
+**Manual stdio smoke check** (no MCP host needed) — pipe a handshake and one read tool:
+
+```bash
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_planes","arguments":{}}}' \
+  | cargo run --features mcp --bin ml_planes_mcp -- --connect 127.0.0.1:5555
+```
+
 ## Maneuver Roadmap
 
 1. **Level hold** — pitch/throttle PID to maintain altitude and airspeed (complete)
