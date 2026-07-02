@@ -339,7 +339,10 @@ spawning live on the dedicated server (`plans/client_server.md` Phase 5).
   (`despawn_in_game_planes`, net variant) calls `teardown_connection` (disconnect the renet
   client, kill any `LocalServer` child), despawns all `PlaneId` entities, and resets the camera
   to `FreeLook`. **`Esc`** / the in-game **Main Menu** button return to the menu (Esc suppressed
-  while egui wants keyboard).
+  while egui wants keyboard). A client-launched local server is *also* killed on full client
+  exit (window close / **Quit**, which skip `OnExit(InGame)`): `LocalServer` wraps a
+  `net::ServerProcess` whose `Drop` kills+reaps the child when the resource is dropped at app
+  shutdown, so no orphaned server survives the client.
 
 **Non-net visual build (`wasm` / local-sim, `not(feature = "net")`):** `AppState { MainMenu,
 ScenarioSelect, InGame }` — the original local single-player flow, unchanged. **Start Scenario**

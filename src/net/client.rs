@@ -31,6 +31,20 @@ use bevy_replicon_renet::{RenetChannelsExt, RenetClient};
 use crate::net::protocol::PROTOCOL_ID;
 use crate::plane::{FlightState, PlaneId, PlaneTuningHandle, PlaneTuningPath};
 
+/// A child `ml_planes_server` process that is killed when this handle is dropped,
+/// so a server the client launched (Start New Server) dies with the client on every
+/// exit path — window close or Quit, which skip the `OnExit(InGame)` teardown.
+/// `std::process::Child::drop` does *not* kill the process, so orphaning is the
+/// default without this.
+pub struct ServerProcess(pub std::process::Child);
+
+impl Drop for ServerProcess {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait(); // reap the zombie
+    }
+}
+
 /// How far behind the latest received snapshot the rendered pose is held, so a
 /// prev/curr pair is always available to interpolate between. ~2 server ticks at
 /// 64 Hz.

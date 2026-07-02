@@ -36,8 +36,6 @@ use crate::ui::notifications::Notifications;
 // the replicated result (see `plans/client_server.md` Phase 5).
 #[cfg(feature = "net")]
 use std::net::{Ipv4Addr, SocketAddr};
-#[cfg(feature = "net")]
-use std::process::Child;
 
 #[cfg(feature = "net")]
 use bevy_replicon::prelude::ClientState;
@@ -47,7 +45,7 @@ use bevy_replicon_renet::netcode::NetcodeClientTransport;
 use bevy_replicon_renet::RenetClient;
 
 #[cfg(feature = "net")]
-use crate::net::{start_renet_client, ConnectTarget, DEFAULT_PORT};
+use crate::net::{start_renet_client, ConnectTarget, ServerProcess, DEFAULT_PORT};
 
 /// Top-level screen the app is currently showing.
 #[derive(States, Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -92,7 +90,7 @@ pub struct SelectedScenario(pub Option<String>);
 /// a remote join — only a server we spawned is killed on teardown.
 #[cfg(feature = "net")]
 #[derive(Resource, Default)]
-pub struct LocalServer(pub Option<Child>);
+pub struct LocalServer(pub Option<ServerProcess>);
 
 /// Net only: the `host:port` text buffer on the Connect-to-Server screen.
 #[cfg(feature = "net")]
@@ -331,7 +329,7 @@ fn draw_scenario_select(
 /// `target/<profile>` layout is used (the child inherits this process's CWD, so the
 /// `assets/...` scenario path resolves the same way the client sees it).
 #[cfg(feature = "net")]
-fn launch_local_server(scenario_path: &str, port: u16) -> std::io::Result<Child> {
+fn launch_local_server(scenario_path: &str, port: u16) -> std::io::Result<ServerProcess> {
     let exe = std::env::current_exe()?
         .with_file_name(format!("ml_planes_server{}", std::env::consts::EXE_SUFFIX));
     std::process::Command::new(exe)
@@ -340,6 +338,7 @@ fn launch_local_server(scenario_path: &str, port: u16) -> std::io::Result<Child>
         .arg("--port")
         .arg(port.to_string())
         .spawn()
+        .map(ServerProcess)
 }
 
 /// Parse a `host:port` string into a [`SocketAddr`], resolving DNS names. Returns
@@ -459,10 +458,8 @@ fn teardown_connection(
         commands.remove_resource::<RenetClient>();
         commands.remove_resource::<NetcodeClientTransport>();
     }
-    if let Some(mut child) = local_server.0.take() {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
+    // Dropping the taken `ServerProcess` kills + reaps the child (see its `Drop`).
+    let _ = local_server.0.take();
 }
 
 /// `OnEnter(InGame)`: load + resolve + spawn the chosen scenario. Planes whose
