@@ -602,6 +602,13 @@ app.add_plugins(EguiPlugin { enable_multipass_for_primary_context: false });
 
 ### Rules
 - All tests must pass with `cargo test --no-default-features`
+- **The complete supported test matrix is `just test-all`** (justfile at repo root): core
+  (`--no-default-features`), net parity (`--features "mcp server"`), and RL inference
+  (`--features inference`). `just test-training` covers the training-gated suite separately
+  (heavy wgpu build, needs a GPU). Feature combos outside the justfile are **not supported
+  test configurations** — a green ad-hoc run (e.g. bare `--features mcp`, where the sim tests
+  compile out) is not coverage. Run the full matrix before committing when net/mcp/RL code
+  was touched.
 - **Sim-dependent tests require the sim chain (`sim_enabled` cfg).** The 6-DOF FixedUpdate chain
   in `PlanePlugin` compiles in only under `any(not(feature = "net"), feature = "server")`. A
   `net`-without-`server` build (e.g. bare `--features mcp`, since `mcp` enables `net` but not
