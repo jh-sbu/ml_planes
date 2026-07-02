@@ -1,4 +1,10 @@
 //! Integration tests for the L1 flight-plan controller and its `.plan.ron` asset.
+//!
+//! Requires the 6-DOF sim chain (`PlanePlugin` FixedUpdate systems), which is compiled out on a
+//! `net`-without-`server` build (e.g. bare `--features mcp`). The `sim_enabled` cfg (see
+//! `build.rs`) gates the whole file so it skips there instead of failing on a default
+//! `FlightState`; test networked builds with `--no-default-features --features "…​ server"`.
+#![cfg(sim_enabled)]
 
 mod common;
 

@@ -602,6 +602,18 @@ app.add_plugins(EguiPlugin { enable_multipass_for_primary_context: false });
 
 ### Rules
 - All tests must pass with `cargo test --no-default-features`
+- **Sim-dependent tests require the sim chain (`sim_enabled` cfg).** The 6-DOF FixedUpdate chain
+  in `PlanePlugin` compiles in only under `any(not(feature = "net"), feature = "server")`. A
+  `net`-without-`server` build (e.g. bare `--features mcp`, since `mcp` enables `net` but not
+  `server`) runs no physics, leaving `FlightState` at its `Default`. `build.rs` derives a
+  `sim_enabled` cfg from that same condition, and the physics/controller integration tests
+  (`aero_physics`, `flight_plan`, `fuel`, `heading_hold`, `level_hold`, `wingman`) are gated
+  `#![cfg(sim_enabled)]`, so they **compile out** (not fail) on such a build. A spurious
+  "altitude=0 / plane reached ground" is this gating, **not** a physics bug — never touch the
+  aero model to chase it. To run these tests against a networked build add the server feature
+  (keep `--no-default-features` — the default `visual` feature loads rendering plugins that panic
+  headless): `cargo test --no-default-features --features "mcp server"` (mirrors the MCP↔server
+  feature-parity rule).
 - No rendering, no Bevy `App` window, no GPU resources in tests
 - Tests are deterministic (fixed seed where randomness is needed)
 - Run `cargo fmt` at the end of every editing session before committing — always run it, even if you believe the code is already correctly formatted. Never skip it based on visual inspection.

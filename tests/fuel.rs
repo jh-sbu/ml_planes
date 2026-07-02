@@ -1,6 +1,12 @@
 //! Live-sim (Bevy/Rapier) fuel system: spawn-time consumable load, the per-tick
 //! `consume_fuel` burn, and `update_plane_mass` keeping the Rapier body mass in
 //! sync with remaining fuel. Headless — no rendering.
+//!
+//! Requires the 6-DOF sim chain (`PlanePlugin` FixedUpdate systems), which is compiled out on a
+//! `net`-without-`server` build (e.g. bare `--features mcp`). The `sim_enabled` cfg (see
+//! `build.rs`) gates the whole file so it skips there instead of failing on a default
+//! `FlightState`; test networked builds with `--no-default-features --features "…​ server"`.
+#![cfg(sim_enabled)]
 
 mod common;
 

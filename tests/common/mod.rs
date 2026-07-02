@@ -8,6 +8,13 @@ use ml_planes::plane::{PlaneConfig, PlanePlugin};
 
 /// Build a headless Bevy app with Rapier physics and PlanePlugin.
 ///
+/// **Requires the sim chain.** `PlanePlugin` only adds the 6-DOF FixedUpdate systems (including
+/// `sync_flight_state`) under `any(not(feature = "net"), feature = "server")` — see
+/// `src/plane/plugin.rs`. On a `net`-without-`server` build the plane never simulates and
+/// `FlightState` stays at its `Default`, so tests using this helper gate on `#[cfg(sim_enabled)]`
+/// (see `build.rs`) and compile out there. Don't "fix" a spurious failure by touching physics —
+/// build with the server feature instead, e.g. `--no-default-features --features "mcp server"`.
+///
 /// Each `app.update()` advances virtual time by exactly 1/64 s,
 /// making FixedUpdate steps deterministic regardless of wall-clock speed.
 /// One update = one fixed tick = one Rapier step (no accumulator overflow).
