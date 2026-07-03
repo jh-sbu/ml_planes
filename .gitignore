@@ -1,6 +1,7 @@
 /target
 /scrap
 /.agents
+/.codex/
 /models
 /.cargo
 /training_logs
