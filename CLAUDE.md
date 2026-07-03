@@ -46,6 +46,18 @@ src/
                   #   lifecycle_panel.rs — "Planes" roster/spawn panel + N/Delete hotkeys
                   #   menu.rs — AppState (MainMenu/ScenarioSelect/InGame), main menu +
                   #     scenario-select screens, scenario spawn-on-enter / despawn-on-exit
+  net/            # shared client/server protocol (feature = "net"), compiled into both ends
+                  #   protocol.rs — NetProtocolPlugin: replicated components + client→server
+                  #     command events, registered in identical order on both peers
+                  #     (PROTOCOL_ID, DEFAULT_PORT)
+                  #   server.rs — ServerSimPlugin (scenario spawn, `Replicated` marker,
+                  #     sim-speed + FromClient command handlers; transport-free for tests) +
+                  #     start_renet_server (feature = "server")
+                  #   client.rs — ClientNetPlugin (NetInterpolation two-snapshot pose buffer →
+                  #     interpolated Transform, ~2-tick render delay) + renet client transport +
+                  #     ServerProcess (child-server kill-on-drop)
+  sim_speed.rs    # SimSpeed — authoritative sim playback speed (pause/1x/5x/10x), replicated
+  notifications.rs # Notifications resource — transient menu banner messages
   scenario.rs     # multi-plane .scenario.ron model + controller factory (drives
                   #   examples/observe_state.rs AND the visual menu's Start Scenario flow)
   training/
@@ -102,6 +114,8 @@ src/
 | `VecEnv<E>` | struct | Wraps any `TrainingEnv` to run N parallel episodes (seeds offset per env) |
 | `DemonstrationEnv` / `BcDataset` | trait / struct | Behavior cloning: `collect_demonstrations()` rolls out a PID expert into a supervised dataset for `train_bc` pretraining |
 | `EvaluationSummary` / `TaskMetrics` | structs | Policy-evaluation output from `evaluate_policy` (success rate + per-metric families) |
+| `ControllerTelemetry` | ECS component (enum) | Read-only per-controller status (`Orbit { radial_error }`, `FlightPlan { leg, status }`, `Ascent`, `Wingman`, `None`, …) the server snapshots off the active controller each tick and **replicates**, so the thin client — which never steps a controller — can show it on the HUD. Default `None` (`controllers/telemetry.rs`) |
+| `SimSpeed` | resource (enum) | Authoritative sim playback speed (pause/1×/5×/10×) in `src/sim_speed.rs`; replicated so the client displays server-side time acceleration rather than scaling its own clock. Set via `SetSimSpeedCommand` |
 | `Scenario` / `ResolvedScenario` | RON model (`src/scenario.rs`) | Multi-plane `.scenario.ron`: per-plane initial state, optional `fuel_fraction` (0–1; default full tank → loaded mass), `.plane.ron` config, and a `ControllerSpec` (incl. `Wingman` peer references by name, optional inline tuning, RL specs). `resolve()` assigns `PlaneId`s and computes initial states; `build_controller()` builds the boxed controller; `ControllerSpec::kind()` maps a spec to its `ControllerKind`. RL specs **always parse** (so `default.scenario.ron` loads in every build) but only *build* on a native `--features inference` build; otherwise `build_controller` returns `Err` and the live spawner skips that plane. Drives `examples/observe_state.rs` via `--scenario` and the visual menu's Start Scenario flow (`environment::spawn_resolved_scenario`). CSV output ends with a `fuel_remaining` column. |
 
 ### Physics Layering
@@ -205,22 +219,36 @@ learns corrections to a working baseline. Training environments emit direct acti
 
 ### Feature Flags
 
+See §5 for the authoritative feature/dependency list; the summary:
+
 ```toml
 [features]
-default = ["visual"]
+default = ["client"]                    # the networked renderer (no local physics)
+client = ["visual", "net"]
 visual = ["bevy/default", "bevy_egui", "rfd"]
-wasm = ["visual", "inference"]
+server = ["net"]                        # headless authoritative sim
+net = ["dep:bevy_replicon", "dep:bevy_replicon_renet", "bevy/serialize"]
+mcp = ["net", ...]                      # MCP control client (feature parity with `server`)
+wasm = ["visual", "inference"]          # browser build; no net (deferred)
 inference = ["burn/std", "burn/ndarray", "bevy/bevy_log"]
 training = ["inference", "burn/wgpu", "burn/autodiff", "burn/train", "burn/tui"]
 ```
 
-- `visual` (default): full Bevy rendering pipeline + egui HUD + `rfd` native file dialogs
+- `client` (**default**): `visual` + `net`. The renderer is a **pure client** — it runs no
+  physics; planes arrive via replication and all mutations go out as commands. Plain `cargo run`
+  is the networked client.
+- `server`: headless authoritative sim (`ml_planes_server` bin) — Rapier + controllers + fuel at
+  64 Hz, broadcasting replicated state and applying client commands. No rendering.
+- `net`: the shared `src/net/` protocol + `bevy_replicon`/renet transport, compiled into both
+  client and server. `bevy/serialize` gives `Vec3`/`Quat`/`Transform` serde for replication.
+- `visual`: full Bevy rendering pipeline + egui HUD + `rfd` native file dialogs
 - `inference`: `burn` CPU (`ndarray`) backend only — loads/runs trained RL policies
   headlessly, no training stack. Layered into both `visual` (via `wasm`) and `training`.
 - `training`: builds on `inference`, adds `burn` GPU (`wgpu`), `autodiff`, `train`, and
   `tui`; no rendering, max-speed simulation
-- `wasm`: `visual` + `inference` — browser build (CPU inference in the renderer)
-- All tests run with `--no-default-features` (headless); no rendering in CI
+- `wasm`: `visual` + `inference` — browser build (CPU inference in the renderer); no `net`
+- All tests run with `--no-default-features` (headless); no rendering in CI. Net/server tests
+  need `--features "mcp server"` (see §6)
 
 ### Orbit Controller Architecture
 
@@ -309,6 +337,44 @@ Planes can be added/removed at runtime via observer commands (`environment/lifec
   with Remove buttons and a spawn form (kind dropdown + config path), plus hotkeys **`N`**
   (spawn ahead of camera) and **`Delete`** (remove followed); both suppressed while egui has
   keyboard focus.
+- **Networked build (`net`):** the client never spawns locally. The panel/hotkeys instead send
+  `SpawnPlaneNetCommand` / `RemovePlaneNetCommand` (see Client/Server Networking); the server's
+  `FromClient` handlers re-issue the *same* local `SpawnPlaneCommand` / `RemovePlaneCommand`
+  triggers, so the observer logic above is the single authoritative spawn/remove path shared by
+  local and networked play.
+
+### Client/Server Networking (`net`)
+
+The visual app is a **pure client**: it runs no physics and never steps a controller. The
+authoritative 64 Hz Rapier sim, all `FlightController`s, and fuel burn live in the headless
+`ml_planes_server` (`--features server`). Planes arrive by replication; every client-side
+mutation goes out as a command. Shared code (`aerodynamics/`, `controllers/`, `plane/`,
+`environment/` core, `scenario.rs`) is unchanged and compiled into both. The protocol lives in
+`src/net/` and is registered identically on both peers by `NetProtocolPlugin` (same order, or
+replicon rejects the connection); `PROTOCOL_ID` (currently **2** — v2 added `ControllerTelemetry`)
+gates version-mismatched peers.
+
+- **Replicated (server → client), in registration order:** `Transform`, `FlightState`,
+  `ControlInputs`, `PlaneId`, `PlaneIndex`, `ControllerKind`, `SelectedTuningProfile`,
+  `PlaneTuningPath`, `ControllerTelemetry`, and (`inference`-gated) `SelectedModel`. The client
+  HUD/map/camera read these read-only. `PlaneTuningPath` lets the client rebuild a
+  `PlaneTuningHandle` and reuse the existing profile enumeration for its dropdown.
+- **Commands (client → server)** — all `add_client_event`, `Channel::Ordered`, received on the
+  server as `On<FromClient<…>>` observers: `SwitchControllerCommand`, `SetTuningProfileCommand`,
+  `ManualInputCommand` (sent every client frame while manually flying; latest-wins),
+  `SpawnPlaneNetCommand`, `RemovePlaneNetCommand`, `SetSimSpeedCommand`, and (`inference`-gated)
+  `SetModelCommand`. Each handler just mutates the component that `SimControlPlugin` (controller
+  rebuilds) or the `LifecyclePlugin` observers already react to, so there is **one authoritative
+  application path** shared with local play — no divergent server-only logic.
+- **Rendering:** the client never predicts (deferred — see the plan's Out of Scope). It only
+  **interpolates**: `ClientNetPlugin` buffers the last two replicated `FlightState` poses
+  (`NetInterpolation`) and blends `Transform` at `now − RENDER_DELAY` (≈ 2 server ticks at 64 Hz),
+  so a prev/curr pair is always available. Reading `FlightState` and writing `Transform` avoids
+  any replication self-write feedback.
+- **Transport:** renet UDP (`bevy_replicon_renet`). `start_renet_server` / `start_renet_client`
+  are added by the binaries, **not** the plugins, so tests (`ServerSimPlugin` is transport-free)
+  never bind a socket. `ServerProcess` wraps a client-launched local server child and kills+reaps
+  it on drop (covers window-close / Quit paths that skip `OnExit(InGame)`).
 
 ### Visual App Flow (Main Menu + Scenarios)
 
@@ -627,6 +693,13 @@ app.add_plugins(EguiPlugin { enable_multipass_for_primary_context: false });
 - `scenario.rs` — `.scenario.ron` parse/resolve/build, per-plane `fuel_fraction` carried through `resolve()`, `ControllerSpec::kind()` mapping, `spawn_resolved_scenario` live spawn, `default.scenario.ron` resolve, + CSV header pinning (`ml_planes::scenario::CSV_HEADER`, incl. trailing `fuel_remaining`)
 - `lifecycle.rs` — runtime spawn/remove commands, auto-indexing, orphaned-wingman + camera cleanup (camera case is `visual`-gated)
 - `fuel.rs` — live-sim fuel: spawn-time tank load (`fuel_fraction`), `consume_fuel` burn + `update_plane_mass`, shipped-asset powerplant parse
+- `net_serde.rs` — serde round-trips for the replicated types + command events (`net`-gated)
+- `net_protocol.rs` — `NetProtocolPlugin` registration / replication-rule invariants (`net`-gated)
+- `sim_control.rs` — relocated `SimControlPlugin` controller-rebuild systems, headless (runs in core)
+- `server_sim.rs` — `ServerSimPlugin` boot / scenario spawn / `FromClient` command handlers, transport-free (`server`-gated)
+- `client_net.rs` — client interpolation math (`NetInterpolation` buffer → interpolated `Transform`) (`net`-gated)
+- `controller_telemetry.rs` — each controller's `FlightController::telemetry()` accessor / `ControllerTelemetry` shape (runs in core)
+- `local_server.rs` — in-process replicon client↔server command + replicated-state round-trip (`server`-gated)
 - `rl_inference.rs` — RL controller load + deterministic inference (`inference`/`training`-gated)
 - `ppo_training.rs` — RL trainer instantiation (training-gated; run with `--features training`)
 - `mcp_snapshot.rs` — MCP read-path snapshot mirror, transport-free (`mcp`-gated)
@@ -669,7 +742,7 @@ app.add_plugins(EguiPlugin { enable_multipass_for_primary_context: false });
 - Every plane is a full 6-DOF Rapier `RigidBody` — no simplified kinematics.
 - `FlightController` is always `Box<dyn FlightController>` per entity — never hard-wired to a concrete type.
 - `PlaneConfig` is loaded at runtime via Bevy's asset server — no compile-time plane data.
-- All physics runs at Rapier's fixed timestep (64 Hz, `dt = 1/64 s`, set via `TimestepMode::Fixed` + `RapierPhysicsPlugin::in_fixed_schedule()` in `main.rs`); rendering interpolates between steps. The headless `observe_state` example and `tests/common/mod.rs` mirror this exact 64 Hz fixed-schedule setup.
+- All physics runs at Rapier's fixed timestep (64 Hz, `dt = 1/64 s`, set via `TimestepMode::Fixed` + `RapierPhysicsPlugin::in_fixed_schedule()`). In the client/server split the authoritative sim runs in the **server** (`ml_planes_server`, `src/bin/server.rs`); the `net` client (`main.rs`) runs no physics and renders interpolated replicated state. The headless `observe_state` example and `tests/common/mod.rs` mirror this exact 64 Hz fixed-schedule setup.
 - The ground is a flat infinite collider acting as a death plane — no terrain, no landing.
 
 ---
