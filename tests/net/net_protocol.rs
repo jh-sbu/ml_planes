@@ -5,7 +5,6 @@
 //!
 //! Gated on `net` (enabled by `--features server`); the command types and the
 //! replicon plugins only exist there.
-#![cfg(feature = "net")]
 
 use bevy::math::{Quat, Vec3};
 use bevy::prelude::*;

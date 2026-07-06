@@ -8,15 +8,12 @@
 //! `FromClient` events (exactly what the real transport produces server-side).
 //!
 //! Gated on `server` (`cargo test --features server`).
-#![cfg(feature = "server")]
-
-mod common;
 
 use bevy::prelude::*;
 use bevy::state::app::StatesPlugin;
 use bevy_replicon::prelude::{ClientId, FromClient, Replicated, RepliconPlugins};
 
-use common::build_headless_app_with;
+use crate::common::build_headless_app_with;
 use ml_planes::controllers::{
     ActiveController, ControllerKind, ControllerTelemetry, ManualController, SimControlPlugin,
 };

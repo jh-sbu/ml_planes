@@ -8,15 +8,12 @@
 //! `tests/server_sim.rs` and by the live-server Milestone 3 check.
 //!
 //! Gated on `mcp` (`cargo test --features mcp`).
-#![cfg(feature = "mcp")]
-
-mod common;
 
 use bevy::prelude::*;
 use bevy::state::app::StatesPlugin;
 use bevy_replicon::prelude::RepliconPlugins;
 
-use common::build_headless_app_with;
+use crate::common::build_headless_app_with;
 use ml_planes::mcp::{
     control_channel, ControlRequest, ControlSender, McpBridgePlugin, RequestedSimSpeed,
     SnapshotHandle,

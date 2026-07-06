@@ -3,7 +3,6 @@
 //!
 //! Gated on `net` (enabled by `--features server`) because the derives — and the
 //! `Vec3`/`Quat` serde impls they rely on (`bevy/serialize`) — only exist there.
-#![cfg(feature = "net")]
 
 use bevy::math::{Quat, Vec3};
 use ml_planes::controllers::{

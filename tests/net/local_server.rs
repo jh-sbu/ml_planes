@@ -6,7 +6,6 @@
 //! own drop does *not* kill the process, so an app exit that skips the `OnExit(InGame)`
 //! teardown (window close / Quit) would otherwise orphan the child. Dropping a
 //! `ServerProcess` must kill+reap it.
-#![cfg(feature = "net")]
 
 use ml_planes::net::ServerProcess;
 

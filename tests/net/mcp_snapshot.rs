@@ -8,15 +8,12 @@
 //! needed.
 //!
 //! Gated on `mcp` (`cargo test --features mcp`).
-#![cfg(feature = "mcp")]
-
-mod common;
 
 use bevy::prelude::*;
 use bevy::state::app::StatesPlugin;
 use bevy_replicon::prelude::RepliconPlugins;
 
-use common::build_headless_app_with;
+use crate::common::build_headless_app_with;
 use ml_planes::controllers::{ControllerKind, ControllerTelemetry, SelectedTuningProfile};
 use ml_planes::mcp::{control_channel, McpBridgePlugin, SnapshotHandle};
 use ml_planes::net::{ConnectTarget, NetProtocolPlugin, PROTOCOL_ID};

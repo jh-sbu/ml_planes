@@ -16,11 +16,10 @@
 //! covers the same round-trip without a brittle JSON-RPC-over-pipes harness.
 //!
 //! `#[ignore]` by default (binds sockets, spawns a child, runs a Rapier sim) — run explicitly:
-//!   cargo test --no-default-features --features "mcp server" -- --ignored mcp_e2e
+//!   cargo test --no-default-features --features "mcp server" --test net -- --ignored mcp_e2e
 //!
 //! Gated on both `mcp` (the client) and `server` (the `CARGO_BIN_EXE_ml_planes_server` bin +
-//! the sim chain).
-#![cfg(all(feature = "mcp", feature = "server"))]
+//! the sim chain); this module is gated from `tests/net/main.rs`.
 
 use std::collections::HashSet;
 use std::net::{SocketAddr, UdpSocket};

@@ -1,4 +1,3 @@
-#![cfg(feature = "net")]
 //! Phase 4 client-side networking (`plans/client_server.md`): the client renders
 //! replicated plane state. These tests cover the client-only logic headlessly
 //! (no socket), mirroring the style of `tests/server_sim.rs`. The pure

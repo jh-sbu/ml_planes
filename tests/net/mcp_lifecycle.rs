@@ -8,9 +8,6 @@
 //! over a real socket is covered by `tests/mcp_e2e.rs`.
 //!
 //! Gated on `mcp` (`cargo test --features mcp`).
-#![cfg(feature = "mcp")]
-
-mod common;
 
 use std::time::Duration;
 
@@ -19,7 +16,7 @@ use bevy::state::app::StatesPlugin;
 use bevy_replicon::prelude::RepliconPlugins;
 use bevy_replicon_renet::RenetClient;
 
-use common::build_headless_app_with;
+use crate::common::build_headless_app_with;
 use ml_planes::mcp::{
     check_shutdown, control_channel, McpBridgePlugin, ShutdownFlag, SnapshotHandle,
 };
