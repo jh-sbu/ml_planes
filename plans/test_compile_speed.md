@@ -1,9 +1,11 @@
 # Test-Matrix Compile-Speed Plan: Test Consolidation + Build-Profile Changes
 
-**Status:** Phase 5 complete (documentation sync, 2026-07-06 — CLAUDE.md §6 rewritten as
-per-module bullets under the 3 binaries + new `--test core <module>::` filter idiom, `sim_enabled`
-gating reworded to module-level, auto-memory paths updated; grep sweep clean, core parity
-228/0/0 held). Phases 6 (optional mold) / 7 (final remeasurement) remain
+**Status:** COMPLETE (Phase 7 final remeasurement + acceptance, 2026-07-06). Phase 6
+(optional mold) deliberately skipped — link time no longer dominates, so the incremental
+mold win is not worth the cache-invalidating rustflags change. All Phase 7 acceptance
+criteria met (parity oracle green: 228/0/0, 321/0/1, 257/0/0; mcp-server incremental
+rebuild down ~92 %; `just test-all` after a `src/` touch in ~1 min; `target/` at 17 G).
+See the Results Appendix **After (final)** column.
 **Written:** 2026-07-06
 **Scope:** reduce the compile cost of the supported test matrix (`just test-all`) without
 changing test coverage, test semantics, or the TDD workflow. Two mechanical changes:
@@ -412,15 +414,15 @@ documented with the follow-on recommendation; work committed.
 
 | Metric | Baseline (Phase 0) | After Phase 1 | After (final, Phase 7) |
 |---|---|---|---|
-| A: core incremental (`real`) | 10.6 s | 7.5 s | |
-| A: mcp server incremental (`real`) | 3 m 44.5 s | 25.6 s | |
-| A: inference incremental (`real`) | 1 m 11.1 s | 36.4 s | |
-| B: executables core / net / inference | 26 / 28 / 27 | 26 / 28 / 27 | |
-| C: `just test-all` wall after touch | 5 m 2.2 s | (n/m) | |
-| D: counts core (p/f/i) | 228 / 0 / 0 | 228 / 0 / 0 | |
-| D: counts mcp server (p/f/i) | 321 / 0 / 1 | 321 / 0 / 1 | |
-| D: counts inference (p/f/i) | 257 / 0 / 0 | 257 / 0 / 0 | |
-| E: `du -sh target` | 209 G | 14 G | |
+| A: core incremental (`real`) | 10.6 s | 7.5 s | 6.8 s |
+| A: mcp server incremental (`real`) | 3 m 44.5 s | 25.6 s | 17.5 s |
+| A: inference incremental (`real`) | 1 m 11.1 s | 36.4 s | 7.8 s |
+| B: executables core / net / inference | 26 / 28 / 27 | 26 / 28 / 27 | 5 / 7 / 6 |
+| C: `just test-all` wall after touch | 5 m 2.2 s | (n/m) | 1 m 2.9 s |
+| D: counts core (p/f/i) | 228 / 0 / 0 | 228 / 0 / 0 | 228 / 0 / 0 |
+| D: counts mcp server (p/f/i) | 321 / 0 / 1 | 321 / 0 / 1 | 321 / 0 / 1 |
+| D: counts inference (p/f/i) | 257 / 0 / 0 | 257 / 0 / 0 | 257 / 0 / 0 |
+| E: `du -sh target` | 209 G | 14 G | 17 G |
 
 **After Phase 1 notes (2026-07-06):** profile change (`debug = "line-tables-only"`,
 `split-debuginfo = "unpacked"`) applied to `Cargo.toml`; `cargo clean` + full re-warm of all
@@ -433,3 +435,28 @@ not re-measured this phase (n/m) — deferred to the Phase 7 final remeasurement
 
 Reference (2026-07-06, protocol A only, pre-plan): core 17.5 s, mcp server 3 m 26.6 s,
 inference 1 m 31.7 s; target/ 209 GB.
+
+**After (final) notes — Phase 7 (2026-07-06):** full protocol A–E re-run on `main` with all
+three configs warm-cached. Acceptance criteria:
+
+- **D (parity oracle):** core 228/0/0, mcp server 321/0/1, inference 257/0/0 — **exactly
+  equal to Baseline**. ✓
+- **A (config 2 ≥50 % faster):** mcp-server incremental 3 m 44.5 s (Phase-0 baseline) /
+  3 m 26.6 s (pre-plan reference) → **17.5 s**, a ~92 % reduction. Configs 1 and 3 not
+  regressed (core 10.6 s → 6.8 s; inference 1 m 11.1 s → 7.8 s — both improved further past
+  Phase 1, since consolidation removed ~21–25 redundant test-binary link steps). ✓
+- **B (≤5 execs per config):** 26/28/27 → **5/7/6**. Literally ≤5 only for core; net (7) and
+  inference (6) exceed it solely by their feature-gated **bin** unittest harnesses
+  (`ml_planes_mcp` + `ml_planes_server` for net; `evaluate_policy` for inference) plus the
+  `lib` + `main` unittest harnesses — i.e. exactly the "3 test binaries + feature-gated bins"
+  the criterion's parenthetical anticipates. The integration-test-binary count (the actual
+  target of the consolidation) dropped 24 → **3** (`core`/`net`/`rl`) as intended. ✓ (spirit)
+- **C (`just test-all` < ~3 min, stretch 2):** 5 m 2.2 s → **1 m 2.9 s** — beats the stretch
+  goal. ✓
+- **E (`target/` an order of magnitude below 209 G):** **17 G** (~12×). ✓
+
+**Phase 6 (mold) skipped** by decision: link time no longer dominates after Phases 1–4 (config-2
+incremental is 17.5 s total), so the incremental rust-lld → mold win would not clear the 20 %
+gate and is not worth the cache-invalidating `.cargo/config.toml` rustflags edit. The follow-on
+lever if further speedups are wanted remains the workspace/crate split (extract `training`/burn
+first), per Phase 7 step 5 — not pursued, acceptance already met.
