@@ -422,7 +422,7 @@ documented with the follow-on recommendation; work committed.
 | D: counts core (p/f/i) | 228 / 0 / 0 | 228 / 0 / 0 | 228 / 0 / 0 |
 | D: counts mcp server (p/f/i) | 321 / 0 / 1 | 321 / 0 / 1 | 321 / 0 / 1 |
 | D: counts inference (p/f/i) | 257 / 0 / 0 | 257 / 0 / 0 | 257 / 0 / 0 |
-| E: `du -sh target` | 209 G | 14 G | 17 G |
+| E: `du -sh target` | 209 G | 14 G | 17 G ⚠ (see correction below) |
 
 **After Phase 1 notes (2026-07-06):** profile change (`debug = "line-tables-only"`,
 `split-debuginfo = "unpacked"`) applied to `Cargo.toml`; `cargo clean` + full re-warm of all
@@ -454,6 +454,23 @@ three configs warm-cached. Acceptance criteria:
 - **C (`just test-all` < ~3 min, stretch 2):** 5 m 2.2 s → **1 m 2.9 s** — beats the stretch
   goal. ✓
 - **E (`target/` an order of magnitude below 209 G):** **17 G** (~12×). ✓
+
+**⚠ Correction — Protocol E disk figures were not controlled measurements (audited 2026-07-06):**
+The reported 14 G (Phase 1) and 17 G (final) do **not** reflect the footprint of the test
+matrix. A genuine `cargo clean && just test-all` produces a **5.2 G** `target/` (measured on a
+clean tree: `cargo clean` removed 6.6 GiB, cold `just test-all` rebuilt to 5.2 G, entirely
+`target/debug`). The 14/17 G figures are ~3× inflated — `du -sh target` was run on a dirty tree
+still holding artifacts that `just test-all` never builds (most plausibly the `--features
+training` wgpu/burn-autodiff stack warmed during Phase 4's `just test-training` milestone, plus
+the Phase-1 "re-warm all four configs" step, never cleaned before the `du`). Two takeaways:
+(1) the headline **209 G → ~17 G** collapse is overwhelmingly the Phase-1 `cargo clean` reclaiming
+accumulated multi-config incremental cruft (as Phase 1 step 2 states outright), **not** the
+`[profile.dev]` debuginfo change; the profile change does shrink debuginfo but its contribution
+was never isolated. (2) The true controlled number is **~5.2 G** for a clean full matrix.
+The timing results (Protocol A/C) were separately audited and hold up: warm-incremental
+`just test-all` reproduces at ~1 m (measured 1m16s), and the 5 m → 1 m win is a genuine
+warm-vs-warm improvement from the profile change + 24→3 binary consolidation (Phase 0 ran on the
+pre-existing 209 G — i.e. warm — target, so the baseline was not a cold build).
 
 **Phase 6 (mold) skipped** by decision: link time no longer dominates after Phases 1–4 (config-2
 incremental is 17.5 s total), so the incremental rust-lld → mold win would not clear the 20 %
