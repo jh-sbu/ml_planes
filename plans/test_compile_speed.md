@@ -1,7 +1,9 @@
 # Test-Matrix Compile-Speed Plan: Test Consolidation + Build-Profile Changes
 
-**Status:** Phase 4 complete (2 RL test binaries consolidated into `tests/rl/`, 2026-07-06;
-`tests/` now holds exactly `core/`, `net/`, `rl/`, `common/`); Phase 5 (documentation sync) next
+**Status:** Phase 5 complete (documentation sync, 2026-07-06 — CLAUDE.md §6 rewritten as
+per-module bullets under the 3 binaries + new `--test core <module>::` filter idiom, `sim_enabled`
+gating reworded to module-level, auto-memory paths updated; grep sweep clean, core parity
+228/0/0 held). Phases 6 (optional mold) / 7 (final remeasurement) remain
 **Written:** 2026-07-06
 **Scope:** reduce the compile cost of the supported test matrix (`just test-all`) without
 changing test coverage, test semantics, or the TDD workflow. Two mechanical changes:

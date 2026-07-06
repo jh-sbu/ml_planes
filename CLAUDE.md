@@ -682,30 +682,43 @@ app.add_plugins(EguiPlugin { enable_multipass_for_primary_context: false });
 - `FlightState` kinematics: attitude integration, angle-of-attack calculation
 
 ### Integration tests (`tests/`)
-- `aero_physics.rs` — energy conservation over N steps in level flight
-- `pid_convergence.rs` — pure PID closed-loop step response
-- `spawn_reset.rs` — `TrainingEnv::reset()` produces correct initial `FlightState`
-- `level_hold.rs` — level-hold cascade convergence to target altitude
-- `heading_hold.rs` — heading-hold convergence to a commanded heading
-- `wingman.rs` — formation flight relative-position tracking
-- `flight_plan.rs` — L1 flight-plan leg sequencing / waypoint capture
-- `orbit_tune_sync.rs` — orbit tuning-pool / gain-sync invariants
-- `scenario.rs` — `.scenario.ron` parse/resolve/build, per-plane `fuel_fraction` carried through `resolve()`, `ControllerSpec::kind()` mapping, `spawn_resolved_scenario` live spawn, `default.scenario.ron` resolve, + CSV header pinning (`ml_planes::scenario::CSV_HEADER`, incl. trailing `fuel_remaining`)
-- `lifecycle.rs` — runtime spawn/remove commands, auto-indexing, orphaned-wingman + camera cleanup (camera case is `visual`-gated)
-- `fuel.rs` — live-sim fuel: spawn-time tank load (`fuel_fraction`), `consume_fuel` burn + `update_plane_mass`, shipped-asset powerplant parse
-- `net_serde.rs` — serde round-trips for the replicated types + command events (`net`-gated)
-- `net_protocol.rs` — `NetProtocolPlugin` registration / replication-rule invariants (`net`-gated)
-- `sim_control.rs` — relocated `SimControlPlugin` controller-rebuild systems, headless (runs in core)
-- `server_sim.rs` — `ServerSimPlugin` boot / scenario spawn / `FromClient` command handlers, transport-free (`server`-gated)
-- `client_net.rs` — client interpolation math (`NetInterpolation` buffer → interpolated `Transform`) (`net`-gated)
-- `controller_telemetry.rs` — each controller's `FlightController::telemetry()` accessor / `ControllerTelemetry` shape (runs in core)
-- `local_server.rs` — in-process replicon client↔server command + replicated-state round-trip (`server`-gated)
-- `rl_inference.rs` — RL controller load + deterministic inference (`inference`/`training`-gated)
-- `ppo_training.rs` — RL trainer instantiation (training-gated; run with `--features training`)
-- `mcp_snapshot.rs` — MCP read-path snapshot mirror, transport-free (`mcp`-gated)
-- `mcp_bridge.rs` — MCP write-path command bridge drain, transport-free (`mcp`-gated)
-- `mcp_lifecycle.rs` — MCP auto-reconnect (`poll_reconnect`) + clean shutdown (`check_shutdown`), transport-free (`mcp`-gated)
-- `mcp_e2e.rs` — MCP end-to-end over real UDP: boots an `ml_planes_server` child, inspect + spawn/remove round-trip (`mcp`+`server`-gated, `#[ignore]`; run with `--features "mcp server" -- --ignored`)
+
+Consolidated into **three** test binaries — `tests/core/`, `tests/net/`, `tests/rl/` — each a
+directory-with-`main.rs` whose sibling `*.rs` files are plain modules (not separately compiled;
+see `plans/test_compile_speed.md` for why: fewer link steps). Run one former file's tests with
+the binary + a module filter, e.g. `cargo test --no-default-features --test core wingman::`;
+`net`/`rl` additionally need their feature flags.
+
+**`tests/core/` (core sim, `--no-default-features`):**
+- `pid_convergence` — pure PID closed-loop step response
+- `spawn_reset` — `TrainingEnv::reset()` produces correct initial `FlightState`
+- `orbit_tune_sync` — orbit tuning-pool / gain-sync invariants
+- `scenario` — `.scenario.ron` parse/resolve/build, per-plane `fuel_fraction` carried through `resolve()`, `ControllerSpec::kind()` mapping, `spawn_resolved_scenario` live spawn, `default.scenario.ron` resolve, + CSV header pinning (`ml_planes::scenario::CSV_HEADER`, incl. trailing `fuel_remaining`)
+- `lifecycle` — runtime spawn/remove commands, auto-indexing, orphaned-wingman + camera cleanup (camera case is `visual`-gated)
+- `sim_control` — relocated `SimControlPlugin` controller-rebuild systems, headless (runs in core)
+- `controller_telemetry` — each controller's `FlightController::telemetry()` accessor / `ControllerTelemetry` shape (runs in core)
+- **module-gated `#[cfg(sim_enabled)]` in `tests/core/main.rs`** (compile out on net-without-server builds):
+  - `aero_physics` — energy conservation over N steps in level flight
+  - `level_hold` — level-hold cascade convergence to target altitude
+  - `heading_hold` — heading-hold convergence to a commanded heading
+  - `flight_plan` — L1 flight-plan leg sequencing / waypoint capture
+  - `wingman` — formation flight relative-position tracking
+  - `fuel` — live-sim fuel: spawn-time tank load (`fuel_fraction`), `consume_fuel` burn + `update_plane_mass`, shipped-asset powerplant parse
+
+**`tests/net/` (`net`/`server`/`mcp`; the whole binary compiles out without `net`):**
+- `net_serde` — serde round-trips for the replicated types + command events (`net`-gated)
+- `net_protocol` — `NetProtocolPlugin` registration / replication-rule invariants (`net`-gated)
+- `client_net` — client interpolation math (`NetInterpolation` buffer → interpolated `Transform`) (`net`-gated)
+- `local_server` — in-process replicon client↔server command + replicated-state round-trip (`server`-gated)
+- `server_sim` — `ServerSimPlugin` boot / scenario spawn / `FromClient` command handlers, transport-free (`server`-gated)
+- `mcp_snapshot` — MCP read-path snapshot mirror, transport-free (`mcp`-gated)
+- `mcp_bridge` — MCP write-path command bridge drain, transport-free (`mcp`-gated)
+- `mcp_lifecycle` — MCP auto-reconnect (`poll_reconnect`) + clean shutdown (`check_shutdown`), transport-free (`mcp`-gated)
+- `mcp_e2e` — MCP end-to-end over real UDP: boots an `ml_planes_server` child, inspect + spawn/remove round-trip (`mcp`+`server`-gated, `#[ignore]`; run with `--features "mcp server" --test net -- --ignored mcp_e2e`)
+
+**`tests/rl/` (`inference`/`training`; the whole binary compiles out without an RL backend):**
+- `rl_inference` — RL controller load + deterministic inference (`inference`/`training`-gated)
+- `ppo_training` — RL trainer instantiation (training-gated; run with `--features training --test rl ppo_training::`)
 
 ### Rules
 - All tests must pass with `cargo test --no-default-features`
@@ -721,8 +734,9 @@ app.add_plugins(EguiPlugin { enable_multipass_for_primary_context: false });
   `net`-without-`server` build (e.g. bare `--features mcp`, since `mcp` enables `net` but not
   `server`) runs no physics, leaving `FlightState` at its `Default`. `build.rs` derives a
   `sim_enabled` cfg from that same condition, and the physics/controller integration tests
-  (`aero_physics`, `flight_plan`, `fuel`, `heading_hold`, `level_hold`, `wingman`) are gated
-  `#![cfg(sim_enabled)]`, so they **compile out** (not fail) on such a build. A spurious
+  (`aero_physics`, `flight_plan`, `fuel`, `heading_hold`, `level_hold`, `wingman`) are
+  module-gated `#[cfg(sim_enabled)]` on their `mod` declarations in `tests/core/main.rs`, so
+  they **compile out** (not fail) on such a build. A spurious
   "altitude=0 / plane reached ground" is this gating, **not** a physics bug — never touch the
   aero model to chase it. To run these tests against a networked build add the server feature
   (keep `--no-default-features` — the default `visual` feature loads rendering plugins that panic
