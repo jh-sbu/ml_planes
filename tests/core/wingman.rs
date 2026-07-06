@@ -1,10 +1,7 @@
 //! Requires the 6-DOF sim chain (`PlanePlugin` FixedUpdate systems), which is compiled out on a
 //! `net`-without-`server` build (e.g. bare `--features mcp`). The `sim_enabled` cfg (see
-//! `build.rs`) gates the whole file so it skips there instead of failing on a default
+//! `build.rs`) gates this module (from `tests/core/main.rs`) so it skips there instead of failing on a default
 //! `FlightState`; test networked builds with `--no-default-features --features "…​ server"`.
-#![cfg(sim_enabled)]
-
-mod common;
 
 use std::f32::consts::FRAC_PI_2;
 
@@ -24,7 +21,7 @@ fn spawn_plane_entity(
     velocity: Vec3,
     controller: impl ml_planes::controllers::FlightController + 'static,
 ) -> Entity {
-    let cfg = common::generic_jet_config();
+    let cfg = crate::common::generic_jet_config();
     let handle: Handle<PlaneConfig> = app
         .world_mut()
         .resource_mut::<Assets<PlaneConfig>>()
@@ -74,7 +71,7 @@ fn wingman_and_leader_stay_airborne() {
     const TARGET_ALT: f32 = 1000.0;
     const TARGET_SPD: f32 = 100.0;
 
-    let mut app = common::build_headless_app();
+    let mut app = crate::common::build_headless_app();
 
     let attitude = Quat::from_rotation_x(-FRAC_PI_2);
     let leader_pos = Vec3::new(0.0, TARGET_ALT, 0.0);
@@ -157,7 +154,7 @@ fn wingman_holds_slot_over_three_minutes() {
     const TARGET_ALT: f32 = 1000.0;
     const TARGET_SPD: f32 = 100.0;
 
-    let mut app = common::build_headless_app();
+    let mut app = crate::common::build_headless_app();
 
     let attitude = Quat::from_rotation_x(-FRAC_PI_2);
     let leader_pos = Vec3::new(0.0, TARGET_ALT, 0.0);
@@ -246,7 +243,7 @@ fn wingman_follows_leader_altitude_change() {
     const INITIAL_ALT: f32 = 1000.0;
     const TARGET_SPD: f32 = 100.0;
 
-    let mut app = common::build_headless_app();
+    let mut app = crate::common::build_headless_app();
 
     let attitude = Quat::from_rotation_x(-FRAC_PI_2);
     let leader_pos = Vec3::new(0.0, INITIAL_ALT, 0.0);
@@ -350,7 +347,7 @@ fn wingman_ctx_delivers_leader_state() {
     // Spawn wingman 200 m below the leader — creates a clear altitude error.
     const WINGMAN_ALT: f32 = 800.0;
 
-    let mut app = common::build_headless_app();
+    let mut app = crate::common::build_headless_app();
 
     let attitude = Quat::from_rotation_x(-FRAC_PI_2);
     let leader_pos = Vec3::new(0.0, TARGET_ALT, 0.0);

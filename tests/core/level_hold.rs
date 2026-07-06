@@ -1,10 +1,7 @@
 //! Requires the 6-DOF sim chain (`PlanePlugin` FixedUpdate systems), which is compiled out on a
 //! `net`-without-`server` build (e.g. bare `--features mcp`). The `sim_enabled` cfg (see
-//! `build.rs`) gates the whole file so it skips there instead of failing on a default
+//! `build.rs`) gates this module (from `tests/core/main.rs`) so it skips there instead of failing on a default
 //! `FlightState`; test networked builds with `--no-default-features --features "…​ server"`.
-#![cfg(sim_enabled)]
-
-mod common;
 
 use std::f32::consts::FRAC_PI_2;
 
@@ -19,7 +16,7 @@ use ml_planes::plane::{ControlInputs, FlightState, PlaneConfig, PlaneConfigHandl
 /// Level-flight orientation: body +Z (cockpit up) aligns with world +Y (up).
 /// `Quat::from_rotation_x(-FRAC_PI_2)` achieves this mapping.
 fn spawn_plane(app: &mut App, pos: Vec3, velocity: Vec3, controller: LevelHoldController) {
-    let cfg = common::generic_jet_config();
+    let cfg = crate::common::generic_jet_config();
     let handle: Handle<PlaneConfig> = app
         .world_mut()
         .resource_mut::<Assets<PlaneConfig>>()
@@ -76,7 +73,7 @@ fn altitude_hold_prevents_crash() {
     let target_spd = 80.0_f32;
     let spawn_alt = 900.0_f32; // 100 m below target
 
-    let mut app = common::build_headless_app();
+    let mut app = crate::common::build_headless_app();
     let ctrl = LevelHoldController::new(target_alt, target_spd);
     spawn_plane(
         &mut app,
@@ -129,7 +126,7 @@ fn large_altitude_offset_does_not_stall() {
     let target_spd = 80.0_f32;
     let spawn_alt = 500.0_f32; // 500 m below target
 
-    let mut app = common::build_headless_app();
+    let mut app = crate::common::build_headless_app();
     let ctrl = LevelHoldController::new(target_alt, target_spd);
     spawn_plane(
         &mut app,
@@ -169,7 +166,7 @@ fn airspeed_hold_maintains_speed() {
     let target_alt = 1000.0_f32;
     let target_spd = 80.0_f32;
 
-    let mut app = common::build_headless_app();
+    let mut app = crate::common::build_headless_app();
     let ctrl = LevelHoldController::new(target_alt, target_spd);
     spawn_plane(
         &mut app,

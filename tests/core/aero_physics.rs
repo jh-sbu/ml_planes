@@ -1,10 +1,7 @@
 //! Requires the 6-DOF sim chain (`PlanePlugin` FixedUpdate systems), which is compiled out on a
 //! `net`-without-`server` build (e.g. bare `--features mcp`). The `sim_enabled` cfg (see
-//! `build.rs`) gates the whole file so it skips there instead of failing on a default
+//! `build.rs`) gates this module (from `tests/core/main.rs`) so it skips there instead of failing on a default
 //! `FlightState`; test networked builds with `--no-default-features --features "…​ server"`.
-#![cfg(sim_enabled)]
-
-mod common;
 
 use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
@@ -20,9 +17,9 @@ use ml_planes::plane::{ControlInputs, FlightState, PlaneConfig, PlaneConfigHandl
 /// confirming the aero→Rapier integration doesn't produce runaway forces.
 #[test]
 fn energy_conservation_5s() {
-    let mut app = common::build_headless_app();
+    let mut app = crate::common::build_headless_app();
 
-    let cfg = common::generic_jet_config();
+    let cfg = crate::common::generic_jet_config();
 
     // Insert PlaneConfig directly into Assets — bypasses async file loader.
     let handle: Handle<PlaneConfig> = app

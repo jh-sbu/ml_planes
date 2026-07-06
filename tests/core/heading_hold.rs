@@ -1,10 +1,7 @@
 //! Requires the 6-DOF sim chain (`PlanePlugin` FixedUpdate systems), which is compiled out on a
 //! `net`-without-`server` build (e.g. bare `--features mcp`). The `sim_enabled` cfg (see
-//! `build.rs`) gates the whole file so it skips there instead of failing on a default
+//! `build.rs`) gates this module (from `tests/core/main.rs`) so it skips there instead of failing on a default
 //! `FlightState`; test networked builds with `--no-default-features --features "…​ server"`.
-#![cfg(sim_enabled)]
-
-mod common;
 
 use std::f32::consts::FRAC_PI_2;
 
@@ -21,7 +18,7 @@ fn level_attitude() -> Quat {
 }
 
 fn spawn_plane(app: &mut App, pos: Vec3, velocity: Vec3, controller: HeadingHoldController) {
-    let cfg = common::generic_jet_config();
+    let cfg = crate::common::generic_jet_config();
     let handle: Handle<PlaneConfig> = app
         .world_mut()
         .resource_mut::<Assets<PlaneConfig>>()
@@ -174,7 +171,7 @@ fn heading_hold_maintains_heading() {
     let spd = 80.0_f32;
     let velocity = Vec3::new(spd, 0.0, 0.0);
 
-    let mut app = common::build_headless_app();
+    let mut app = crate::common::build_headless_app();
     let state_seed = FlightState {
         position: Vec3::new(0.0, alt, 0.0),
         velocity,
@@ -220,7 +217,7 @@ fn heading_hold_tracks_step_change() {
     let velocity = Vec3::new(spd, 0.0, 0.0);
     let step_heading = 30.0_f32.to_radians();
 
-    let mut app = common::build_headless_app();
+    let mut app = crate::common::build_headless_app();
     let state_seed = FlightState {
         position: Vec3::new(0.0, alt, 0.0),
         velocity,

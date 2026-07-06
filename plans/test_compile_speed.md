@@ -1,6 +1,7 @@
 # Test-Matrix Compile-Speed Plan: Test Consolidation + Build-Profile Changes
 
-**Status:** Phase 1 complete (build-profile change; measured 2026-07-06); Phase 2 next
+**Status:** Phase 2 complete (13 core-sim test binaries consolidated into `tests/core/`,
+2026-07-06); Phase 3 next
 **Written:** 2026-07-06
 **Scope:** reduce the compile cost of the supported test matrix (`just test-all`) without
 changing test coverage, test semantics, or the TDD workflow. Two mechanical changes:

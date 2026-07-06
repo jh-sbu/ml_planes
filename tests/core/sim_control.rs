@@ -6,10 +6,8 @@
 //! plane's `ActiveController` when its `ControllerKind` is mutated — the mechanism the
 //! server uses to apply a client's `SwitchControllerCommand`.
 
-mod common;
-
+use crate::common::build_headless_app_with;
 use bevy::prelude::*;
-use common::build_headless_app_with;
 use ml_planes::controllers::{
     ActiveController, ControllerKind, LevelHoldController, ManualController, SimControlPlugin,
 };

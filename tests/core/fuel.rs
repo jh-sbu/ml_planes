@@ -4,15 +4,12 @@
 //!
 //! Requires the 6-DOF sim chain (`PlanePlugin` FixedUpdate systems), which is compiled out on a
 //! `net`-without-`server` build (e.g. bare `--features mcp`). The `sim_enabled` cfg (see
-//! `build.rs`) gates the whole file so it skips there instead of failing on a default
+//! `build.rs`) gates this module (from `tests/core/main.rs`) so it skips there instead of failing on a default
 //! `FlightState`; test networked builds with `--no-default-features --features "…​ server"`.
-#![cfg(sim_enabled)]
 
-mod common;
-
+use crate::common::{build_headless_app, build_headless_app_with, generic_jet_config};
 use bevy::prelude::*;
 use bevy_rapier3d::prelude::{AdditionalMassProperties, MassProperties};
-use common::{build_headless_app, build_headless_app_with, generic_jet_config};
 use ml_planes::controllers::{ControllerKind, LevelHoldController};
 use ml_planes::environment::spawn_plane;
 use ml_planes::plane::{

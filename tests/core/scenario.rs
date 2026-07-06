@@ -1,9 +1,7 @@
 //! Integration tests for the multi-plane scenario format.
 
-mod common;
-
+use crate::common::build_headless_app;
 use bevy::prelude::*;
-use common::build_headless_app;
 use ml_planes::controllers::{ControllerKind, FormationOffset, OrbitDirection, WingmanController};
 use ml_planes::environment::spawn_resolved_scenario;
 use ml_planes::plane::{NextPlaneId, PlaneId};

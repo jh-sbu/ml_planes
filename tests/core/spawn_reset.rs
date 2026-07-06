@@ -1,5 +1,3 @@
-mod common;
-
 use bevy::ecs::system::RunSystemOnce;
 use bevy::prelude::*;
 
@@ -18,7 +16,7 @@ use ml_planes::training::SpawnSpec;
 /// immediately) so the entity is present when `app.update()` runs FixedUpdate.
 #[test]
 fn spawn_then_sync_flight_state() {
-    let mut app = common::build_headless_app();
+    let mut app = crate::common::build_headless_app();
 
     let spec = SpawnSpec {
         position: Some(Vec3::new(100.0, 200.0, 300.0)),
@@ -28,7 +26,7 @@ fn spawn_then_sync_flight_state() {
 
         fuel_fraction: None,
     };
-    let cfg = common::generic_jet_config();
+    let cfg = crate::common::generic_jet_config();
 
     // run_system_once executes the closure as a one-off system and immediately
     // applies deferred Commands — the entity exists in the world before update().

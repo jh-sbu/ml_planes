@@ -2,11 +2,8 @@
 //!
 //! Requires the 6-DOF sim chain (`PlanePlugin` FixedUpdate systems), which is compiled out on a
 //! `net`-without-`server` build (e.g. bare `--features mcp`). The `sim_enabled` cfg (see
-//! `build.rs`) gates the whole file so it skips there instead of failing on a default
+//! `build.rs`) gates this module (from `tests/core/main.rs`) so it skips there instead of failing on a default
 //! `FlightState`; test networked builds with `--no-default-features --features "…​ server"`.
-#![cfg(sim_enabled)]
-
-mod common;
 
 use std::f32::consts::FRAC_PI_2;
 
@@ -23,7 +20,7 @@ use ml_planes::plane::{
 /// Spawn a plane at `pos` flying `velocity` (heading +X level orientation),
 /// driven by an `L1Controller` following `plan`.
 fn spawn_l1_plane(app: &mut App, pos: Vec3, velocity: Vec3, plan: FlightPlan) {
-    let cfg = common::generic_jet_config();
+    let cfg = crate::common::generic_jet_config();
     let handle: Handle<PlaneConfig> = app
         .world_mut()
         .resource_mut::<Assets<PlaneConfig>>()
@@ -73,7 +70,7 @@ fn read_state(app: &mut App) -> FlightState {
 /// populated `FlightPlan` asset through a headless app.
 #[test]
 fn loads_patrol_plan_asset() {
-    let mut app = common::build_headless_app();
+    let mut app = crate::common::build_headless_app();
 
     let handle: Handle<FlightPlan> = app
         .world()
@@ -134,7 +131,7 @@ fn l1_flies_waypoint_sequence_then_loiters() {
         ],
     };
 
-    let mut app = common::build_headless_app();
+    let mut app = crate::common::build_headless_app();
     spawn_l1_plane(
         &mut app,
         Vec3::new(0.0, 1000.0, 0.0),

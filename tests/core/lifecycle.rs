@@ -1,10 +1,8 @@
 //! Runtime plane lifecycle: per-plane config path, spawn/remove commands,
 //! automatic indexing, and removal cleanup.
 
-mod common;
-
+use crate::common::{build_headless_app, build_headless_app_with, generic_jet_config};
 use bevy::prelude::*;
-use common::{build_headless_app, build_headless_app_with, generic_jet_config};
 #[cfg(feature = "visual")]
 use ml_planes::camera::{systems::recover_camera_on_target_loss, CameraMode};
 use ml_planes::controllers::{
