@@ -1,7 +1,7 @@
 # Test-Matrix Compile-Speed Plan: Test Consolidation + Build-Profile Changes
 
-**Status:** Phase 3 complete (9 net/mcp/server test binaries consolidated into `tests/net/`,
-2026-07-06); Phase 4 next
+**Status:** Phase 4 complete (2 RL test binaries consolidated into `tests/rl/`, 2026-07-06;
+`tests/` now holds exactly `core/`, `net/`, `rl/`, `common/`); Phase 5 (documentation sync) next
 **Written:** 2026-07-06
 **Scope:** reduce the compile cost of the supported test matrix (`just test-all`) without
 changing test coverage, test semantics, or the TDD workflow. Two mechanical changes:

@@ -1,7 +1,6 @@
-//! RL inference integration tests — requires the `inference` feature.
-//!   cargo test --no-default-features --features inference --test rl_inference
-#![cfg(any(feature = "inference", feature = "training"))]
-
+//! RL inference integration tests — requires the `inference` feature. Module of the
+//! consolidated `rl` test binary (see plans/test_compile_speed.md).
+//!   cargo test --no-default-features --features inference --test rl rl_inference::
 use bevy::math::{Quat, Vec3};
 use burn::backend::NdArray;
 use burn::module::Module;

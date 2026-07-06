@@ -1,9 +1,8 @@
-//! PPO integration tests.
+//! PPO integration tests. Module of the consolidated `rl` test binary (see
+//! plans/test_compile_speed.md).
 //!
 //! All tests require the `training` feature:
-//!   cargo test --no-default-features --features training --test ppo_training
-
-#![cfg(feature = "training")]
+//!   cargo test --no-default-features --features training --test rl ppo_training::
 
 use bevy::math::Vec3;
 use burn::backend::{Autodiff, NdArray};
