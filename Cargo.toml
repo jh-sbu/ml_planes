@@ -76,3 +76,11 @@ required-features = ["training"]
 name = "evaluate_policy"
 path = "src/bin/evaluate_policy.rs"
 required-features = ["inference"]
+
+[profile.dev]
+# Full debuginfo generation + linking dominated sys-time in the 2026-07-06 baseline.
+# line-tables-only keeps file/line backtraces (enough for test failures); the expensive
+# variable/type DWARF is dropped.
+debug = "line-tables-only"
+# Keep debuginfo out of the link step entirely (stays in the .o files under target/).
+split-debuginfo = "unpacked"

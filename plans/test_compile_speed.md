@@ -1,6 +1,6 @@
 # Test-Matrix Compile-Speed Plan: Test Consolidation + Build-Profile Changes
 
-**Status:** Phase 0 complete (baseline recorded 2026-07-06); Phase 1 next
+**Status:** Phase 1 complete (build-profile change; measured 2026-07-06); Phase 2 next
 **Written:** 2026-07-06
 **Scope:** reduce the compile cost of the supported test matrix (`just test-all`) without
 changing test coverage, test semantics, or the TDD workflow. Two mechanical changes:
@@ -409,15 +409,24 @@ documented with the follow-on recommendation; work committed.
 
 | Metric | Baseline (Phase 0) | After Phase 1 | After (final, Phase 7) |
 |---|---|---|---|
-| A: core incremental (`real`) | 10.6 s | | |
-| A: mcp server incremental (`real`) | 3 m 44.5 s | | |
-| A: inference incremental (`real`) | 1 m 11.1 s | | |
-| B: executables core / net / inference | 26 / 28 / 27 | | |
-| C: `just test-all` wall after touch | 5 m 2.2 s | | |
-| D: counts core (p/f/i) | 228 / 0 / 0 | | |
-| D: counts mcp server (p/f/i) | 321 / 0 / 1 | | |
-| D: counts inference (p/f/i) | 257 / 0 / 0 | | |
-| E: `du -sh target` | 209 G | | |
+| A: core incremental (`real`) | 10.6 s | 7.5 s | |
+| A: mcp server incremental (`real`) | 3 m 44.5 s | 25.6 s | |
+| A: inference incremental (`real`) | 1 m 11.1 s | 36.4 s | |
+| B: executables core / net / inference | 26 / 28 / 27 | 26 / 28 / 27 | |
+| C: `just test-all` wall after touch | 5 m 2.2 s | (n/m) | |
+| D: counts core (p/f/i) | 228 / 0 / 0 | 228 / 0 / 0 | |
+| D: counts mcp server (p/f/i) | 321 / 0 / 1 | 321 / 0 / 1 | |
+| D: counts inference (p/f/i) | 257 / 0 / 0 | 257 / 0 / 0 | |
+| E: `du -sh target` | 209 G | 14 G | |
+
+**After Phase 1 notes (2026-07-06):** profile change (`debug = "line-tables-only"`,
+`split-debuginfo = "unpacked"`) applied to `Cargo.toml`; `cargo clean` + full re-warm of all
+four configs. Protocol-D counts identical to Baseline (parity oracle green). Protocol A: mcp
+server incremental dropped 224.5 s → 25.6 s (~89 %, already past the Phase 7 ≥50 % target);
+core and inference also improved. Protocol B unchanged (test consolidation is Phase 2+).
+Protocol E: 213.4 GiB reclaimed → 14 G. Backtrace sanity confirmed: a flipped assert still
+panics with `tests/pid_convergence.rs:20:5` and resolves file:line in the backtrace. Protocol C
+not re-measured this phase (n/m) — deferred to the Phase 7 final remeasurement.
 
 Reference (2026-07-06, protocol A only, pre-plan): core 17.5 s, mcp server 3 m 26.6 s,
 inference 1 m 31.7 s; target/ 209 GB.
