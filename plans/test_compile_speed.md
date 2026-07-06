@@ -1,6 +1,6 @@
 # Test-Matrix Compile-Speed Plan: Test Consolidation + Build-Profile Changes
 
-**Status:** planned, not started
+**Status:** Phase 0 complete (baseline recorded 2026-07-06); Phase 1 next
 **Written:** 2026-07-06
 **Scope:** reduce the compile cost of the supported test matrix (`just test-all`) without
 changing test coverage, test semantics, or the TDD workflow. Two mechanical changes:
@@ -409,15 +409,15 @@ documented with the follow-on recommendation; work committed.
 
 | Metric | Baseline (Phase 0) | After Phase 1 | After (final, Phase 7) |
 |---|---|---|---|
-| A: core incremental (`real`) | | | |
-| A: mcp server incremental (`real`) | | | |
-| A: inference incremental (`real`) | | | |
-| B: executables core / net / inference | | | |
-| C: `just test-all` wall after touch | | | |
-| D: counts core (p/f/i) | | | |
-| D: counts mcp server (p/f/i) | | | |
-| D: counts inference (p/f/i) | | | |
-| E: `du -sh target` | | | |
+| A: core incremental (`real`) | 10.6 s | | |
+| A: mcp server incremental (`real`) | 3 m 44.5 s | | |
+| A: inference incremental (`real`) | 1 m 11.1 s | | |
+| B: executables core / net / inference | 26 / 28 / 27 | | |
+| C: `just test-all` wall after touch | 5 m 2.2 s | | |
+| D: counts core (p/f/i) | 228 / 0 / 0 | | |
+| D: counts mcp server (p/f/i) | 321 / 0 / 1 | | |
+| D: counts inference (p/f/i) | 257 / 0 / 0 | | |
+| E: `du -sh target` | 209 G | | |
 
 Reference (2026-07-06, protocol A only, pre-plan): core 17.5 s, mcp server 3 m 26.6 s,
 inference 1 m 31.7 s; target/ 209 GB.
