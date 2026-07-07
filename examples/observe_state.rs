@@ -123,6 +123,9 @@ fn main() {
         app.world_mut().spawn((
             RigidBody::Dynamic,
             Collider::cuboid(3.0, 0.5, 1.0),
+            // Contact-only collider: zero mass so the body flies exactly the
+            // `AdditionalMassProperties` mass (matches the live spawner).
+            ColliderMassProperties::Mass(0.0),
             Velocity {
                 linvel: plane.velocity,
                 angvel: angvel_world,

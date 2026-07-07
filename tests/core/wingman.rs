@@ -33,6 +33,7 @@ fn spawn_plane_entity(
         .spawn((
             RigidBody::Dynamic,
             Collider::cuboid(1.0, 0.5, 3.0),
+            ColliderMassProperties::Mass(0.0),
             Velocity {
                 linvel: velocity,
                 angvel: Vec3::ZERO,

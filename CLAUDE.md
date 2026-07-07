@@ -154,6 +154,20 @@ the self-contained training integrator, so both see the same altitude physics.
 
 All coefficients are defined per-asset in `.plane.ron` files. No compile-time aero data.
 
+**Stated simplifications** (accepted scope — full list in the `aerodynamics/model.rs` header):
+no side force (CY ≡ 0; sideslip makes moments, not forces); lift/drag rotated wind→body by α
+only (β not in the force rotation); thrust body-fixed along +X; gyroscopic ω×(Iω) omitted on
+*both* sides (Rapier's `gyroscopic_forces_enabled` defaults off, matching `integrate_state`);
+dynamics use g = 9.81 while the ISA density model uses 9.80665 internally. Fuel-burn ordering
+differs by one tick at flameout only: the live sim burns before applying forces
+(`consume_fuel` → `apply_aerodynamic_forces`), training burns after.
+
+**Sign conventions:** the body frame (+X fwd, +Y right, +Z up) mirrors NED about the roll and
+pitch axes — positive roll torque = +Y wing **up**, positive pitch torque = nose **down**.
+Derivatives copied from NED references must flip: `cm_alpha` and `cl_beta` are **positive**
+here (stable), `cl_r` **negative**. Dampings (`cl_p`, `cm_q`, `cn_r`) and `cn_beta` keep their
+usual signs. `tests/core/plane_assets.rs` pins these for every shipped airframe.
+
 ### Fuel & Charge (Powerplant)
 
 Each `PlaneConfig` carries a `powerplant` (`plane/config.rs`). `FlightState.consumable_remaining`
@@ -192,7 +206,10 @@ prior checkpoints** — a 13/10-dim `.mpk` loads but panics at the matmul on the
 by `rl_inference::loaded_orbit_policy_runs_forward_pass`). Current valid (but **short, smoke-only**)
 checkpoints live at `models/<task>/fuel_smoke_<task>.mpk` (the orbit one is also the
 `ppo_orbit_1.mpk` test fixture). Pre-existing `models/**` checkpoints from before this change are
-dimensionally stale — retrain before use. To restore production quality, retrain each task and
+dimensionally stale — retrain before use. **The 2026-07 flight-model audit fixes (lateral
+derivative sign flips `cl_beta`/`cl_r` + body-fixed thrust) changed the physics again: all
+checkpoints still *load* (obs dims unchanged) but are behaviorally stale — retrain before
+production use.** To restore production quality, retrain each task and
 re-tune the (now heavier, 7000 kg loaded) jet:
 
 ```

@@ -26,9 +26,9 @@
     cm_delta_e: -1.2,       // dCm/dδe [1/rad]
 
     // --- Lateral-Directional Coefficients ---
-    cl_beta: -0.08,         // dCl/dβ (roll due to sideslip)
+    cl_beta: 0.08,          // dCl/dβ (dihedral) — positive = windward wing rises; sign flipped vs NED (positive roll torque = +Y wing UP here)
     cl_p: -0.45,            // roll damping
-    cl_r: 0.12,             // roll due to yaw rate
+    cl_r: -0.12,            // roll due to yaw rate — negative = outer wing rises; sign flipped vs NED
     cl_delta_a: 0.18,       // dCl/dδa (aileron effectiveness)
 
     cn_beta: 0.10,          // yaw stiffness (weathercock)

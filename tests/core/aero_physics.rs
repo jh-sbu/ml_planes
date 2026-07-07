@@ -30,6 +30,7 @@ fn energy_conservation_5s() {
     app.world_mut().spawn((
         RigidBody::Dynamic,
         Collider::cuboid(1.0, 0.5, 3.0),
+        ColliderMassProperties::Mass(0.0),
         Velocity {
             linvel: Vec3::new(100.0, 0.0, 0.0),
             angvel: Vec3::ZERO,

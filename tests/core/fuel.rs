@@ -9,7 +9,7 @@
 
 use crate::common::{build_headless_app, build_headless_app_with, generic_jet_config};
 use bevy::prelude::*;
-use bevy_rapier3d::prelude::{AdditionalMassProperties, MassProperties};
+use bevy_rapier3d::prelude::{AdditionalMassProperties, MassProperties, ReadMassProperties};
 use ml_planes::controllers::{ControllerKind, LevelHoldController};
 use ml_planes::environment::spawn_plane;
 use ml_planes::plane::{
@@ -107,6 +107,49 @@ fn shipped_plane_assets_parse_with_expected_powerplants() {
             "{stem} jet fuel contributes mass"
         );
     }
+}
+
+#[test]
+fn rapier_body_mass_matches_effective_mass_exactly() {
+    // The training integrator flies exactly `effective_mass(dry, fuel)`; the live
+    // Rapier body must match. `AdditionalMassProperties` is *additive* to the
+    // collider-derived mass, so the plane collider must contribute zero mass
+    // (default collider density 1.0 would add ~12 kg the training model never sees).
+    let mut app = build_headless_app_with(|app| {
+        app.insert_resource(SpawnParams {
+            fuel_fraction: None,
+        });
+        app.add_systems(Startup, spawn_sys);
+    });
+    app.update();
+    let e = app.world().resource::<Spawned>().0;
+    app.world_mut()
+        .entity_mut(e)
+        .insert(ReadMassProperties::default());
+    // Two ticks so Rapier steps and writes the computed mass properties back.
+    app.update();
+    app.update();
+
+    let cfg = generic_jet_config();
+    let fuel = app
+        .world()
+        .entity(e)
+        .get::<FlightState>()
+        .unwrap()
+        .consumable_remaining;
+    let expected = cfg.powerplant.effective_mass(cfg.mass, fuel);
+    let actual = app
+        .world()
+        .entity(e)
+        .get::<ReadMassProperties>()
+        .unwrap()
+        .get()
+        .mass;
+    assert!(
+        (actual - expected).abs() < 0.5,
+        "Rapier body mass {actual} should equal effective mass {expected} \
+         (collider must not add mass)"
+    );
 }
 
 #[test]

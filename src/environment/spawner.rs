@@ -115,6 +115,11 @@ pub fn spawn_plane(
         .spawn((
             RigidBody::Dynamic,
             Collider::cuboid(3.0, 0.5, 1.0),
+            // The collider is for ground contact only; all mass comes from the
+            // explicit `AdditionalMassProperties` below (which Rapier *adds* to the
+            // collider-derived mass — default density 1.0 would sneak in ~12 kg the
+            // training integrator never sees).
+            ColliderMassProperties::Mass(0.0),
             Velocity {
                 linvel,
                 angvel: angvel_world,

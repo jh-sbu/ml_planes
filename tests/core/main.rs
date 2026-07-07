@@ -9,6 +9,7 @@ mod controller_telemetry;
 mod lifecycle;
 mod orbit_tune_sync;
 mod pid_convergence;
+mod plane_assets;
 mod scenario;
 mod sim_control;
 mod spawn_reset;

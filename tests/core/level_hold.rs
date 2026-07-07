@@ -27,6 +27,7 @@ fn spawn_plane(app: &mut App, pos: Vec3, velocity: Vec3, controller: LevelHoldCo
     app.world_mut().spawn((
         RigidBody::Dynamic,
         Collider::cuboid(1.0, 0.5, 3.0),
+        ColliderMassProperties::Mass(0.0),
         Velocity {
             linvel: velocity,
             angvel: Vec3::ZERO,

@@ -1,3 +1,32 @@
+//! Coefficient-based aerodynamic force/torque model, shared verbatim by the live
+//! Rapier sim and the self-contained training integrator.
+//!
+//! # Stated simplifications (accepted scope, not bugs)
+//!
+//! - **No side force**: sideslip produces moments (`cl_beta`, `cn_beta`) but zero
+//!   force — there is no CY derivative. Lift/drag are rotated wind→body by `alpha`
+//!   only; `beta` does not enter the force rotation, so drag acts in the body x-z
+//!   plane rather than along the full 3-D velocity. Fine for the small-beta regime
+//!   the controllers fly.
+//! - **Thrust is body-fixed along +X** (see `compute_aero_forces`); no thrust
+//!   incidence or offset moments.
+//! - **No gyroscopic coupling**: the training integrator omits the ω×(Iω) Euler
+//!   term, and Rapier's `gyroscopic_forces_enabled` defaults to off, so the two
+//!   integrators agree analytically (both reduce to `ω̇ = I⁻¹τ`).
+//! - **Gravity** is 9.81 m/s² in the dynamics (Rapier default and
+//!   `integrate_state`); the ISA density model uses the standard 9.80665
+//!   internally — the ~0.04% mismatch only shifts the density profile.
+//!
+//! # Sign conventions (body frame: +X fwd, +Y right wing, +Z up)
+//!
+//! This frame mirrors NED about the roll and pitch axes: **positive roll torque =
+//! +Y wing UP** and **positive pitch torque = nose DOWN**. Stability derivatives
+//! copied from standard (NED) references must flip sign accordingly: `cm_alpha`
+//! and `cl_beta` are positive here for static stability, `cl_r` negative. Rate
+//! dampings (`cl_p`, `cm_q`, `cn_r`) oppose their own rate and keep the usual
+//! negative sign; the yaw sense (positive = nose toward +Y) matches NED, so
+//! `cn_beta` stays positive. Guarded by `tests/core/plane_assets.rs`.
+
 use crate::aerodynamics::atmosphere::{air_density, density_ratio};
 use crate::plane::{ControlInputs, FlightState, PlaneConfig};
 use bevy::math::Vec3;
@@ -69,16 +98,17 @@ pub fn compute_aero_forces(
     // consumable (flameout). Shared with the per-tick fuel-burn accounting.
     let thrust = engine_thrust(state, inputs, cfg);
 
-    // Rotate from wind axes (aligned with velocity) to body axes using alpha.
-    // For small alpha this is approximately (thrust-drag, 0, lift), but at large
+    // Rotate lift/drag from wind axes (aligned with velocity) to body axes using
+    // alpha. For small alpha this is approximately (-drag, 0, lift), but at large
     // alpha (steep dive) the correction is critical: without it, negative CL at
     // large negative alpha produces a downward force that grows as V² and causes
-    // finite-time blow-up to infinity → NaN.
-    let fx_wind = thrust - drag;
+    // finite-time blow-up to infinity → NaN. Thrust is body-fixed along +X (the
+    // engine turns with the airframe) and must NOT be rotated with the wind frame.
+    let fx_wind = -drag;
     let fz_wind = lift;
     let (sin_a, cos_a) = alpha.sin_cos();
     let force_body = Vec3::new(
-        fx_wind * cos_a + fz_wind * sin_a,
+        thrust + fx_wind * cos_a + fz_wind * sin_a,
         0.0,
         -fx_wind * sin_a + fz_wind * cos_a,
     );
@@ -130,9 +160,9 @@ mod tests {
             cm_alpha: 0.6,
             cm_q: -8.0,
             cm_delta_e: -1.2,
-            cl_beta: -0.08,
+            cl_beta: 0.08,
             cl_p: -0.45,
-            cl_r: 0.12,
+            cl_r: -0.12,
             cl_delta_a: 0.18,
             cn_beta: 0.10,
             cn_r: -0.12,
@@ -294,6 +324,71 @@ mod tests {
             "Fz={:.1} should match expected {:.1} (wind-to-body rotation of clamped lift)",
             forces.force_body.z,
             expected_fz
+        );
+    }
+
+    #[test]
+    fn sideslip_rolls_windward_wing_up() {
+        // Stable dihedral: wind from the +Y side (beta > 0) must raise the windward
+        // (+Y) wing. In this codebase positive roll torque = +Y wing up (the mirror
+        // of NED, where positive roll = right wing down), so cl_beta must be POSITIVE.
+        let cfg = jet_config();
+        let mut state = zero_state();
+        state.airspeed = 100.0;
+        state.beta = 0.1;
+
+        let forces = compute_aero_forces(&state, &zero_inputs(), &cfg);
+        assert!(
+            forces.torque_body.x > 0.0,
+            "dihedral roll torque={:.1} should be positive (windward wing up) for beta=+0.1",
+            forces.torque_body.x
+        );
+    }
+
+    #[test]
+    fn yaw_rate_rolls_toward_inside_wing() {
+        // Yaw rate r > 0 swings the nose toward +Y; the outer (-Y) wing advances
+        // faster, gains lift, and rises — a NEGATIVE roll torque in this frame
+        // (positive roll torque = +Y wing up), so cl_r must be NEGATIVE.
+        let cfg = jet_config();
+        let mut state = zero_state();
+        state.airspeed = 100.0;
+        state.angular_velocity = Vec3::new(0.0, 0.0, 0.5); // r = 0.5 rad/s
+
+        let forces = compute_aero_forces(&state, &zero_inputs(), &cfg);
+        assert!(
+            forces.torque_body.x < 0.0,
+            "yaw-rate roll torque={:.1} should be negative (outer wing up) for r=+0.5",
+            forces.torque_body.x
+        );
+    }
+
+    #[test]
+    fn thrust_acts_along_body_x() {
+        // Thrust is body-fixed along +X; only lift/drag live in the wind frame.
+        // At nonzero alpha the force delta between full and zero throttle must be
+        // exactly (thrust_max, 0, 0) — no spurious -T·sin(alpha) body-down component.
+        let cfg = jet_config();
+        let mut state = zero_state();
+        state.airspeed = 100.0;
+        state.alpha = 0.1;
+
+        let mut full = zero_inputs();
+        full.throttle = 1.0;
+        let f_full = compute_aero_forces(&state, &full, &cfg);
+        let f_idle = compute_aero_forces(&state, &zero_inputs(), &cfg);
+        let delta = f_full.force_body - f_idle.force_body;
+
+        assert!(
+            (delta.x - cfg.thrust_max).abs() < 1.0,
+            "thrust delta x={:.1} expected {:.1}",
+            delta.x,
+            cfg.thrust_max
+        );
+        assert!(
+            delta.z.abs() < 1.0,
+            "thrust delta z={:.1} should be 0 (thrust must not tilt with alpha)",
+            delta.z
         );
     }
 

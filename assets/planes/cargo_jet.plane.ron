@@ -29,9 +29,9 @@
     cm_delta_e: -1.2,
 
     // --- Lateral-Directional Coefficients ---
-    cl_beta: -0.08,
+    cl_beta: 0.08,          // dihedral — sign flipped vs NED (positive roll torque = +Y wing UP here)
     cl_p: -0.5,             // roll damping (large span)
-    cl_r: 0.12,
+    cl_r: -0.12,            // roll due to yaw rate — sign flipped vs NED
     cl_delta_a: 0.18,
 
     cn_beta: 0.10,
