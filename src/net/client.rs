@@ -57,19 +57,27 @@ impl Drop for ServerProcess {
 /// in `FixedPostUpdate`, Bevy's default 64 Hz) and the Rapier `TimestepMode::Fixed`
 /// `dt = 1/64` used by `ml_planes_server`.
 const SERVER_TICK_HZ: f64 = 64.0;
+const TICK: f64 = 1.0 / SERVER_TICK_HZ;
 
-/// How far behind the newest received snapshot the render pose is sampled, so a pair
-/// of snapshots always straddles the playback point. ~2.5 server ticks — enough
-/// cushion for client frame-time / packet jitter while staying visually tight.
-const RENDER_DELAY: f64 = 2.5 / SERVER_TICK_HZ;
+/// Target lag of the playback clock behind the newest received snapshot. Must exceed
+/// the client's snapshot inter-arrival interval *including jitter* so the playback
+/// point always sits between two buffered snapshots (never past the newest, which
+/// would clamp-and-stall). ~4 ticks (≈62 ms) covers a jittery ~35 fps client where
+/// arrivals span 1–3 ticks.
+const RENDER_DELAY: f64 = 4.0 * TICK;
 
-/// Ring-buffer depth per plane (≈125 ms at 64 Hz) — comfortably covers `RENDER_DELAY`
-/// plus jitter at any client frame rate.
-const SNAPSHOT_CAP: usize = 8;
+/// Healthy band for the playback clock's lag behind the newest snapshot. The clock
+/// free-runs on real `dt` (smooth by construction) and only hard-resyncs to
+/// `newest − RENDER_DELAY` when it leaves this band — i.e. on genuine starvation
+/// (`< MIN_LEAD`, about to outrun the buffer) or a large hitch / time-accel jump
+/// (`> MAX_LEAD`). At 1× the client and server both run real-time, so after warmup the
+/// clock stays in-band and never resyncs → no periodic jump.
+const MIN_LEAD: f64 = 1.0 * TICK;
+const MAX_LEAD: f64 = 10.0 * TICK;
 
-/// Low-pass factor for the server↔client clock-offset estimate. Small = smoother
-/// (rejects per-frame jitter) at the cost of slower convergence to clock drift.
-const OFFSET_SMOOTHING: f64 = 0.1;
+/// Ring-buffer depth per plane (≈250 ms at 64 Hz) — comfortably covers `MAX_LEAD`
+/// plus history behind the playback point, at any client frame rate.
+const SNAPSHOT_CAP: usize = 16;
 
 /// One received pose, stamped with the server time it represents.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -88,23 +96,17 @@ pub struct NetInterpolation {
     pub snapshots: VecDeque<Snapshot>,
 }
 
-/// Smoothed estimate of `client_now − server_time_of_latest_snapshot`, shared by all
-/// planes (they ride the same server tick timeline). Maps client wall-clock into the
-/// server-time space the snapshots live in; low-passing it is what removes the
-/// frame-time jitter that made plane gizmos pulse.
-#[derive(Resource, Debug, Clone, Copy)]
-pub struct NetClockOffset {
-    pub offset: f64,
+/// Shared playback clock, in the server's tick-time space. All planes ride the same
+/// server tick timeline, so one clock drives them all. `playback` advances purely by
+/// real `dt` between resyncs, so the rendered motion is smooth regardless of client
+/// frame-time or snapshot-arrival jitter — the fix for the gizmo pulse.
+#[derive(Resource, Debug, Clone, Copy, Default)]
+pub struct NetRenderClock {
+    /// Server time we currently render at.
+    pub playback: f64,
+    /// Newest snapshot `server_time` seen so far.
+    pub latest: f64,
     pub initialized: bool,
-}
-
-impl Default for NetClockOffset {
-    fn default() -> Self {
-        Self {
-            offset: 0.0,
-            initialized: false,
-        }
-    }
 }
 
 /// Append `snap` to the ring buffer, capping at `cap`. Replaces the newest entry when
@@ -152,15 +154,21 @@ pub fn sample(buf: &VecDeque<Snapshot>, render_time: f64) -> Option<(Vec3, Quat)
     Some((last.pos, last.rot)) // unreachable given the clamps above
 }
 
-/// Fold a fresh `client_now − latest_server_time` observation into the smoothed
-/// offset, seeding exactly on the first sample.
-fn update_offset(clock: &mut NetClockOffset, observed: f64) {
-    if clock.initialized {
-        clock.offset += (observed - clock.offset) * OFFSET_SMOOTHING;
-    } else {
-        clock.offset = observed;
-        clock.initialized = true;
+/// Advance the free-running playback clock by real `dt`, resyncing to
+/// `latest − RENDER_DELAY` only when it leaves the healthy lead band. Pure (takes the
+/// clock + `dt`) so the resync policy is unit-testable without an app. Returns `true`
+/// if a resync happened (for diagnostics).
+fn advance_clock(clock: &mut NetRenderClock, dt: f64) -> bool {
+    if !clock.initialized {
+        return false; // seeded by ingest on the first snapshot
     }
+    clock.playback += dt;
+    let lead = clock.latest - clock.playback;
+    if !(MIN_LEAD..=MAX_LEAD).contains(&lead) {
+        clock.playback = clock.latest - RENDER_DELAY;
+        return true;
+    }
+    false
 }
 
 /// Attach an (empty) [`NetInterpolation`] ring buffer to each replicated plane once
@@ -178,8 +186,8 @@ fn decorate_replicated_plane(
 }
 
 /// Record a server-timed [`Snapshot`] for each plane that received a replication
-/// update this frame, and fold the arrival into the shared [`NetClockOffset`]. Runs
-/// after [`ClientSystems::Receive`] so it sees the values replicon just applied.
+/// update this frame, and advance the shared [`NetRenderClock`]'s `latest`. Runs after
+/// [`ClientSystems::Receive`] so it sees the values replicon just applied.
 ///
 /// [`EntityReplicated`] carries the exact [`RepliconTick`] of the applied data (it
 /// fires on mutations, unlike the global `ServerUpdateTick`). Multiple ticks can be
@@ -187,10 +195,9 @@ fn decorate_replicated_plane(
 /// we collapse a batch to its newest tick and push a single snapshot at that
 /// server time.
 fn ingest_snapshots(
-    time: Res<Time>,
     mut replicated: MessageReader<EntityReplicated>,
     mut planes: Query<(&FlightState, &mut NetInterpolation)>,
-    mut clock: ResMut<NetClockOffset>,
+    mut clock: ResMut<NetRenderClock>,
 ) {
     // Newest tick per entity this frame.
     let mut newest: HashMap<Entity, u32> = HashMap::new();
@@ -202,7 +209,6 @@ fn ingest_snapshots(
         return;
     }
 
-    let now = time.elapsed_secs_f64();
     let mut latest_server_time = f64::NEG_INFINITY;
     for (entity, tick) in newest {
         let Ok((state, mut interp)) = planes.get_mut(entity) else {
@@ -222,7 +228,12 @@ fn ingest_snapshots(
     }
 
     if latest_server_time.is_finite() {
-        update_offset(&mut clock, now - latest_server_time);
+        clock.latest = clock.latest.max(latest_server_time);
+        if !clock.initialized {
+            // Seed the playback clock one RENDER_DELAY behind the first snapshot.
+            clock.playback = clock.latest - RENDER_DELAY;
+            clock.initialized = true;
+        }
     }
 }
 
@@ -246,20 +257,71 @@ fn reconstruct_tuning_handle(
     }
 }
 
-/// Write the interpolated render pose into each plane's [`Transform`] every frame.
-/// The playback point `render_time = client_now − offset − RENDER_DELAY` maps client
-/// wall-clock into server-time space, where it lands between two uniformly-spaced
-/// buffered snapshots — so the rendered motion is smooth regardless of client frame
-/// jitter. Planes with an empty buffer (pre-warmup) keep their replicated `Transform`.
-fn render_net_interpolation(
+/// Advance the shared [`NetRenderClock`] once per frame, before rendering. Kept
+/// separate from [`render_net_interpolation`] (which only reads the clock) so the
+/// resync policy runs exactly once regardless of plane count.
+fn advance_render_clock(
     time: Res<Time>,
-    clock: Res<NetClockOffset>,
+    mut clock: ResMut<NetRenderClock>,
+    mut diag: Local<ClockDiag>,
+) {
+    let resynced = advance_clock(&mut clock, time.delta_secs_f64());
+
+    // Temporary diagnostic: confirm the clock stays in-band (no periodic resync).
+    if clock.initialized {
+        let now = time.elapsed_secs_f64();
+        let lead_ticks = (clock.latest - clock.playback) / TICK;
+        diag.frames += 1;
+        diag.resyncs += resynced as u32;
+        diag.lead_min = diag.lead_min.min(lead_ticks);
+        diag.lead_max = diag.lead_max.max(lead_ticks);
+        if now - diag.window_start >= 1.0 {
+            info!(
+                "net-diag clock: {:>3} frames/s  resyncs={}  lead(ticks) min={:.2} max={:.2}",
+                diag.frames, diag.resyncs, diag.lead_min, diag.lead_max
+            );
+            *diag = ClockDiag {
+                window_start: now,
+                ..Default::default()
+            };
+        }
+    }
+}
+
+/// Temporary per-second aggregate for verifying the playback clock behaviour.
+struct ClockDiag {
+    window_start: f64,
+    frames: u32,
+    resyncs: u32,
+    lead_min: f64,
+    lead_max: f64,
+}
+
+impl Default for ClockDiag {
+    fn default() -> Self {
+        Self {
+            window_start: 0.0,
+            frames: 0,
+            resyncs: 0,
+            lead_min: f64::INFINITY,
+            lead_max: f64::NEG_INFINITY,
+        }
+    }
+}
+
+/// Write the interpolated render pose into each plane's [`Transform`] every frame,
+/// sampling every plane at the shared playback time. The playback clock lives in
+/// server-time space and advances smoothly (see [`advance_render_clock`]), so the
+/// rendered motion is decoupled from client frame / arrival jitter. Planes with an
+/// empty buffer (pre-warmup) keep their replicated `Transform`.
+fn render_net_interpolation(
+    clock: Res<NetRenderClock>,
     mut planes: Query<(&NetInterpolation, &mut Transform)>,
 ) {
     if !clock.initialized {
         return;
     }
-    let render_time = time.elapsed_secs_f64() - clock.offset - RENDER_DELAY;
+    let render_time = clock.playback;
     for (interp, mut transform) in &mut planes {
         if let Some((pos, rot)) = sample(&interp.snapshots, render_time) {
             transform.translation = pos;
@@ -323,13 +385,14 @@ pub struct ClientNetPlugin;
 
 impl Plugin for ClientNetPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<NetClockOffset>();
+        app.init_resource::<NetRenderClock>();
         app.add_systems(PreUpdate, ingest_snapshots.after(ClientSystems::Receive));
         app.add_systems(
             Update,
             (
                 decorate_replicated_plane,
                 reconstruct_tuning_handle,
+                advance_render_clock,
                 render_net_interpolation,
             )
                 .chain(),
@@ -428,13 +491,54 @@ mod tests {
     }
 
     #[test]
-    fn update_offset_seeds_then_low_passes() {
-        let mut clock = NetClockOffset::default();
-        update_offset(&mut clock, 10.0);
-        assert!(clock.initialized);
-        assert!((clock.offset - 10.0).abs() < 1e-9, "seeded exactly");
-        update_offset(&mut clock, 20.0);
-        // Low-pass toward 20 by OFFSET_SMOOTHING (0.1).
-        assert!((clock.offset - 11.0).abs() < 1e-9, "got {}", clock.offset);
+    fn advance_clock_free_runs_in_band() {
+        // Seeded one RENDER_DELAY behind the newest snapshot (as ingest does).
+        let latest = 10.0;
+        let mut clock = NetRenderClock {
+            playback: latest - RENDER_DELAY,
+            latest,
+            initialized: true,
+        };
+        // A frame's worth of dt keeps it in-band → no resync, playback += dt.
+        let before = clock.playback;
+        let resynced = advance_clock(&mut clock, TICK);
+        assert!(!resynced, "in-band advance must not resync");
+        assert!((clock.playback - (before + TICK)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn advance_clock_resyncs_when_starved() {
+        // Playback has caught up to within < MIN_LEAD of latest (data starvation):
+        // lead = 0 < MIN_LEAD → resync back to latest - RENDER_DELAY.
+        let latest = 10.0;
+        let mut clock = NetRenderClock {
+            playback: latest, // lead 0
+            latest,
+            initialized: true,
+        };
+        let resynced = advance_clock(&mut clock, TICK);
+        assert!(resynced, "starved clock must resync");
+        assert!((clock.playback - (latest - RENDER_DELAY)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn advance_clock_resyncs_when_far_behind() {
+        // A large jump in latest (hitch / time-accel) pushes lead > MAX_LEAD → resync.
+        let latest = 10.0;
+        let mut clock = NetRenderClock {
+            playback: latest - (MAX_LEAD + 5.0 * TICK),
+            latest,
+            initialized: true,
+        };
+        let resynced = advance_clock(&mut clock, TICK);
+        assert!(resynced, "clock too far behind must resync");
+        assert!((clock.playback - (latest - RENDER_DELAY)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn advance_clock_noop_before_init() {
+        let mut clock = NetRenderClock::default();
+        assert!(!advance_clock(&mut clock, TICK));
+        assert_eq!(clock.playback, 0.0, "uninitialised clock does not advance");
     }
 }

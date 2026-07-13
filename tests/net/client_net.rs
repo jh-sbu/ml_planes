@@ -11,7 +11,7 @@
 use bevy::prelude::*;
 use bevy_replicon::client::confirm_history::EntityReplicated;
 use bevy_replicon::prelude::RepliconTick;
-use ml_planes::net::{ClientNetPlugin, NetClockOffset, NetInterpolation};
+use ml_planes::net::{ClientNetPlugin, NetInterpolation, NetRenderClock};
 use ml_planes::plane::{FlightState, PlaneId};
 
 /// A minimal headless app with just the client rendering systems. `MinimalPlugins`
@@ -98,10 +98,14 @@ fn entity_replicated_pushes_a_server_timed_snapshot() {
         snap.server_time
     );
 
-    let clock = app.world().resource::<NetClockOffset>();
+    let clock = app.world().resource::<NetRenderClock>();
     assert!(
         clock.initialized,
-        "the first snapshot seeds the clock offset"
+        "the first snapshot seeds the playback clock"
+    );
+    assert!(
+        (clock.latest - 1.0).abs() < 1e-9,
+        "clock.latest tracks the newest snapshot server_time"
     );
 }
 

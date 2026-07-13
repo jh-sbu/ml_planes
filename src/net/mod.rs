@@ -10,7 +10,7 @@ pub mod client;
 
 pub use client::{
     connect_to_server, push_snapshot, sample, start_renet_client, ClientNetPlugin, ConnectTarget,
-    NetClockOffset, NetInterpolation, ServerProcess, Snapshot,
+    NetInterpolation, NetRenderClock, ServerProcess, Snapshot,
 };
 
 #[cfg(feature = "server")]
