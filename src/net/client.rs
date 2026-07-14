@@ -260,53 +260,21 @@ fn reconstruct_tuning_handle(
 /// Advance the shared [`NetRenderClock`] once per frame, before rendering. Kept
 /// separate from [`render_net_interpolation`] (which only reads the clock) so the
 /// resync policy runs exactly once regardless of plane count.
-fn advance_render_clock(
-    time: Res<Time>,
-    mut clock: ResMut<NetRenderClock>,
-    mut diag: Local<ClockDiag>,
-) {
-    let resynced = advance_clock(&mut clock, time.delta_secs_f64());
-
-    // Temporary diagnostic: confirm the clock stays in-band (no periodic resync).
-    if clock.initialized {
-        let now = time.elapsed_secs_f64();
-        let lead_ticks = (clock.latest - clock.playback) / TICK;
-        diag.frames += 1;
-        diag.resyncs += resynced as u32;
-        diag.lead_min = diag.lead_min.min(lead_ticks);
-        diag.lead_max = diag.lead_max.max(lead_ticks);
-        if now - diag.window_start >= 1.0 {
-            info!(
-                "net-diag clock: {:>3} frames/s  resyncs={}  lead(ticks) min={:.2} max={:.2}",
-                diag.frames, diag.resyncs, diag.lead_min, diag.lead_max
-            );
-            *diag = ClockDiag {
-                window_start: now,
-                ..Default::default()
-            };
-        }
-    }
+fn advance_render_clock(time: Res<Time>, mut clock: ResMut<NetRenderClock>) {
+    advance_clock(&mut clock, time.delta_secs_f64());
 }
 
-/// Temporary per-second aggregate for verifying the playback clock behaviour.
-struct ClockDiag {
+/// Temporary per-second aggregate of the *sampled output* smoothness (first plane):
+/// counts direction reversals in the rendered position. A smooth trajectory reverses
+/// ~never; a back-and-forth pulse reverses several times per second.
+#[derive(Default)]
+struct OutputDiag {
     window_start: f64,
     frames: u32,
-    resyncs: u32,
-    lead_min: f64,
-    lead_max: f64,
-}
-
-impl Default for ClockDiag {
-    fn default() -> Self {
-        Self {
-            window_start: 0.0,
-            frames: 0,
-            resyncs: 0,
-            lead_min: f64::INFINITY,
-            lead_max: f64::NEG_INFINITY,
-        }
-    }
+    reversals: u32,
+    max_step: f32,
+    prev_pos: Option<Vec3>,
+    prev_delta: Option<Vec3>,
 }
 
 /// Write the interpolated render pose into each plane's [`Transform`] every frame,
@@ -315,17 +283,53 @@ impl Default for ClockDiag {
 /// rendered motion is decoupled from client frame / arrival jitter. Planes with an
 /// empty buffer (pre-warmup) keep their replicated `Transform`.
 fn render_net_interpolation(
+    time: Res<Time>,
     clock: Res<NetRenderClock>,
     mut planes: Query<(&NetInterpolation, &mut Transform)>,
+    mut diag: Local<OutputDiag>,
 ) {
     if !clock.initialized {
         return;
     }
     let render_time = clock.playback;
+    let mut first: Option<Vec3> = None;
     for (interp, mut transform) in &mut planes {
         if let Some((pos, rot)) = sample(&interp.snapshots, render_time) {
             transform.translation = pos;
             transform.rotation = rot;
+            if first.is_none() {
+                first = Some(pos);
+            }
+        }
+    }
+
+    // Temporary diagnostic: characterise the sampled output of the first plane.
+    if let Some(pos) = first {
+        diag.frames += 1;
+        if let Some(prev) = diag.prev_pos {
+            let delta = pos - prev;
+            diag.max_step = diag.max_step.max(delta.length());
+            if let Some(pd) = diag.prev_delta {
+                if delta.dot(pd) < 0.0 && delta.length_squared() > 1e-8 {
+                    diag.reversals += 1;
+                }
+            }
+            diag.prev_delta = Some(delta);
+        }
+        diag.prev_pos = Some(pos);
+
+        let now = time.elapsed_secs_f64();
+        if now - diag.window_start >= 1.0 {
+            info!(
+                "net-diag output: {:>3} frames/s  reversals={}  max_step={:.3}m",
+                diag.frames, diag.reversals, diag.max_step
+            );
+            *diag = OutputDiag {
+                window_start: now,
+                prev_pos: diag.prev_pos,
+                prev_delta: diag.prev_delta,
+                ..Default::default()
+            };
         }
     }
 }
