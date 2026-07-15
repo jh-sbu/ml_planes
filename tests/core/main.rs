@@ -10,6 +10,7 @@ mod lifecycle;
 mod orbit_tune_sync;
 mod pid_convergence;
 mod plane_assets;
+mod render_pose_order;
 mod scenario;
 mod sim_control;
 mod spawn_reset;

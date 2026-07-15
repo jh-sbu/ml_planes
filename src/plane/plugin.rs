@@ -17,6 +17,7 @@ use crate::controllers::flight_plan::FlightPlan;
 use crate::controllers::tuning::{LevelHoldTuning, OrbitTuning, PlaneTuning};
 use crate::plane::config::PlaneConfig;
 use crate::plane::context::{NextPlaneId, PlaneId};
+use crate::plane::PlaneRenderPose;
 
 // --- PlaneConfigHandle component ---
 
@@ -244,6 +245,12 @@ impl Plugin for PlanePlugin {
 
         app.init_resource::<NextPlaneId>();
         app.register_type::<PlaneId>();
+
+        // Ordering contract for the rendered plane pose (see `PlaneRenderPose`). Owned
+        // here because `PlanePlugin` is in every build, whereas the writer (networked
+        // client) and the readers (camera, gizmos) are feature-gated and must not depend
+        // on one another. Either set being empty in a given build is harmless.
+        app.configure_sets(Update, PlaneRenderPose::Write.before(PlaneRenderPose::Read));
 
         // The 6-DOF sim chain runs everywhere except the thin networked client,
         // which renders replicated state and runs no physics (see

@@ -35,7 +35,7 @@ use bevy_replicon_renet::renet::ConnectionConfig;
 use bevy_replicon_renet::{RenetChannelsExt, RenetClient};
 
 use crate::net::protocol::PROTOCOL_ID;
-use crate::plane::{FlightState, PlaneId, PlaneTuningHandle, PlaneTuningPath};
+use crate::plane::{FlightState, PlaneId, PlaneRenderPose, PlaneTuningHandle, PlaneTuningPath};
 
 /// A child `ml_planes_server` process that is killed when this handle is dropped,
 /// so a server the client launched (Start New Server) dies with the client on every
@@ -326,6 +326,84 @@ impl Default for ClockDiag {
     }
 }
 
+/// Temporary per-second aggregate of a plane's pose **in camera space** — the space the
+/// eye actually judges, and the one [`OutputDiag`]'s world-space stats are structurally
+/// blind to. If the *camera* is what pulses, world-space stays perfectly smooth
+/// (`reversals=0`, as observed) while every plane appears to hop in sync, because they
+/// all share one camera.
+///
+/// Sampled in `Last`, after every `Update` writer and `PostUpdate` transform propagation,
+/// so it reflects the pose the renderer actually drew rather than a mid-schedule value.
+#[cfg(feature = "visual")]
+#[derive(Default)]
+struct CameraRelDiag {
+    window_start: f64,
+    frames: u32,
+    reversals: u32,
+    max_step: f32,
+    prev_rel: Option<Vec3>,
+    prev_delta: Option<Vec3>,
+}
+
+/// Measure the followed plane's position relative to the camera and report per-second
+/// reversal counts, mirroring [`OutputDiag`] but in camera space.
+///
+/// FreeLook is the **control case**: with a static camera, camera-space motion is just
+/// world motion, so a pulse that still shows up there is *not* camera-borne and the
+/// hypothesis is dead. `mode` is therefore reported alongside the counts.
+#[cfg(feature = "visual")]
+fn diagnose_camera_relative(
+    time: Res<Time>,
+    mode: Res<crate::camera::CameraMode>,
+    cameras: Query<&GlobalTransform, With<Camera3d>>,
+    planes: Query<&GlobalTransform, (With<PlaneId>, Without<Camera3d>)>,
+    mut diag: Local<CameraRelDiag>,
+) {
+    use crate::camera::CameraMode;
+
+    let Ok(cam) = cameras.single() else {
+        return;
+    };
+    // Prefer the plane the user is actually watching; fall back to the first plane so
+    // FreeLook still reports.
+    let (target, mode_label) = match *mode {
+        CameraMode::Follow(entity) => (planes.get(entity).ok(), "Follow"),
+        CameraMode::FreeLook => (planes.iter().next(), "FreeLook"),
+    };
+    let Some(plane) = target else {
+        return;
+    };
+
+    let rel = cam.affine().inverse().transform_point3(plane.translation());
+
+    diag.frames += 1;
+    if let Some(prev) = diag.prev_rel {
+        let delta = rel - prev;
+        diag.max_step = diag.max_step.max(delta.length());
+        if let Some(pd) = diag.prev_delta {
+            if delta.dot(pd) < 0.0 && delta.length_squared() > 1e-8 {
+                diag.reversals += 1;
+            }
+        }
+        diag.prev_delta = Some(delta);
+    }
+    diag.prev_rel = Some(rel);
+
+    let now = time.elapsed_secs_f64();
+    if now - diag.window_start >= 1.0 {
+        info!(
+            "net-diag camera: {:>3} frames/s  mode={}  rel_reversals={}  rel_max_step={:.3}m",
+            diag.frames, mode_label, diag.reversals, diag.max_step
+        );
+        *diag = CameraRelDiag {
+            window_start: now,
+            prev_rel: diag.prev_rel,
+            prev_delta: diag.prev_delta,
+            ..Default::default()
+        };
+    }
+}
+
 /// Temporary per-second aggregate of the *sampled output* smoothness (first plane):
 /// counts direction reversals in the rendered position. A smooth trajectory reverses
 /// ~never; a back-and-forth pulse reverses several times per second.
@@ -476,10 +554,18 @@ impl Plugin for ClientNetPlugin {
                 decorate_replicated_plane,
                 reconstruct_tuning_handle,
                 advance_render_clock,
-                render_net_interpolation,
+                // Establishes the pose the frame renders — the follow camera and the
+                // gizmo renderer must observe it, never the previous frame's.
+                render_net_interpolation.in_set(PlaneRenderPose::Write),
             )
                 .chain(),
         );
+
+        // Diagnostic only. In `Last` so it observes the final, propagated poses the
+        // renderer actually drew — measuring this mid-`Update` would race the very
+        // writers we are trying to characterise.
+        #[cfg(feature = "visual")]
+        app.add_systems(Last, diagnose_camera_relative);
 
         // Populate `ModelLibrary` for the HUD model dropdown / `T`-key cycler. On
         // the client `SimControlPlugin` (which normally scans) is compiled out, so

@@ -1,5 +1,7 @@
 use bevy::prelude::*;
 
+use crate::plane::PlaneRenderPose;
+
 use super::mode::CameraMode;
 use super::systems::{
     cycle_camera_mode, handle_follow_camera_input, recover_camera_on_target_loss, spawn_camera,
@@ -19,7 +21,10 @@ impl Plugin for CameraPlugin {
                 recover_camera_on_target_loss,
                 cycle_camera_mode,
                 handle_follow_camera_input,
-                update_follow_camera,
+                // Reads the plane's rendered pose, so it must run after whatever
+                // establishes it this frame — otherwise it intermittently smooths toward
+                // the previous frame's pose and oscillates (see `PlaneRenderPose`).
+                update_follow_camera.in_set(PlaneRenderPose::Read),
             )
                 .chain(),
         );

@@ -31,8 +31,13 @@ impl Plugin for EnvironmentPlugin {
         app.add_plugins(MaterialPlugin::<GridMaterial>::default());
         #[cfg(feature = "visual")]
         app.add_systems(Startup, spawn_visual_ground);
+        // Draws the plane at its rendered pose, so it must run after whatever
+        // establishes that pose this frame (see `PlaneRenderPose`).
         #[cfg(feature = "visual")]
-        app.add_systems(Update, draw_plane_gizmos);
+        app.add_systems(
+            Update,
+            draw_plane_gizmos.in_set(crate::plane::PlaneRenderPose::Read),
+        );
         #[cfg(feature = "visual")]
         app.add_systems(Update, draw_orbit_pin_gizmo);
         #[cfg(feature = "visual")]

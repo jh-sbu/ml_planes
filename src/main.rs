@@ -133,6 +133,22 @@ fn main() {
     #[cfg(all(feature = "visual", feature = "inference", not(target_arch = "wasm32")))]
     app.add_systems(Update, cycle_rl_model.run_if(in_state(AppState::InGame)));
 
+    // TEMPORARY DIAGNOSTIC (remove once the render-pulse investigation lands): report
+    // systems in `Update` that touch the same data with no ordering between them. The
+    // pulse suspect is `render_net_interpolation` writing `Transform` while
+    // `draw_plane_gizmos` / `update_follow_camera` read it, unordered — Bevy serialises
+    // them but in an order nobody specified. Bevy's own plugins have known ambiguities,
+    // so expect noise; grep the output for the systems of interest.
+    if std::env::var("ML_PLANES_AMBIGUITY").is_ok() {
+        use bevy::ecs::schedule::{LogLevel, ScheduleBuildSettings};
+        app.edit_schedule(Update, |schedule| {
+            schedule.set_build_settings(ScheduleBuildSettings {
+                ambiguity_detection: LogLevel::Warn,
+                ..default()
+            });
+        });
+    }
+
     app.run();
 }
 
