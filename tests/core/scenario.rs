@@ -210,6 +210,56 @@ fn default_scenario_resolves_to_full_demo() {
     }
 }
 
+/// The 100-plane stress scenario stays well-formed: it is easy to break the
+/// count or duplicate a name when hand-editing 100 entries, and nothing else in
+/// the suite loads this file. Like the default scenario it mixes RL and non-RL
+/// planes, so only the non-RL ones are built here (RL specs resolve everywhere
+/// but build only under a native inference build).
+#[test]
+fn stress_100_scenario_resolves_to_100_planes() {
+    let path = Path::new("assets/scenarios/stress_100.scenario.ron");
+    let scenario = Scenario::from_path(path).expect("load stress_100 scenario");
+    let resolved = scenario.resolve().expect("resolve stress_100 scenario");
+
+    assert_eq!(
+        resolved.planes.len(),
+        100,
+        "stress scenario must be 100 planes"
+    );
+
+    // At least 10 planes must fly an RL controller — the point of the scenario.
+    let rl_count = resolved
+        .planes
+        .iter()
+        .filter(|p| {
+            matches!(
+                p.spec.kind(),
+                ControllerKind::RlLevelHold
+                    | ControllerKind::RlOrbit
+                    | ControllerKind::RlOrbitResidual
+                    | ControllerKind::RlLstmOrbit
+            )
+        })
+        .count();
+    assert!(rl_count >= 10, "expected >=10 RL planes, got {rl_count}");
+
+    // Every non-RL plane must build cleanly in every feature config.
+    for (idx, plane) in resolved.planes.iter().enumerate() {
+        let is_rl = matches!(
+            plane.spec.kind(),
+            ControllerKind::RlLevelHold
+                | ControllerKind::RlOrbit
+                | ControllerKind::RlOrbitResidual
+                | ControllerKind::RlLstmOrbit
+        );
+        if !is_rl {
+            resolved
+                .build_controller(idx)
+                .unwrap_or_else(|e| panic!("build stress_100 plane {idx} ({}): {e}", plane.name));
+        }
+    }
+}
+
 #[test]
 fn csv_header_is_pinned() {
     // Skills parse this exact column layout; guard against silent drift.

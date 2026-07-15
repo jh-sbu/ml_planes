@@ -1,0 +1,387 @@
+// Stress test: 100 planes across every controller kind and all five airframes.
+//
+// Purpose is load, not flight quality — it exists to push the fixed 64 Hz Rapier
+// step, the per-entity controller update, replication bandwidth, and the HUD/map
+// with a plane count ~15× the default scene.
+//
+// Run headless (60 s of sim, one CSV sample per second per plane → ~6000 rows):
+//   cargo run --release --example observe_state --no-default-features --features inference -- \
+//     --scenario assets/scenarios/stress_100.scenario.ron --steps 3840 --interval 64
+// Drop `--features inference` to exercise the 88 non-RL planes; the 12 RL planes
+// then fail to build and are skipped (see `ResolvedScenario::build_controller`).
+//
+// Layout — regions are spread over ~45 km of X so groups don't interact at spawn:
+//   x ≈ -24000  transports (cargo/tanker/business/electric level hold)   14
+//   x ≈ -20000  RL level-hold column                                      6
+//   x ≈ -12000  PID orbit hub B, center (-12000, 8000)                   10
+//   x ≈  -8000  five wingman flights (leader + 3 each)                    20
+//   x ≈      0  flight-plan followers (patrol.plan.ron, origin region)     2
+//   x ≈      0  RL orbit hub, center (0, 12000)                            6
+//   x ≈   8000  ascent climbers                                            8
+//   x ≈   9000  heading-hold ring (alt 2600–4400, above everything else)  10
+//   x ≈  12000  PID orbit hub A, center (12000, 0)                        10
+//   x ≈  16000  level-hold altitude ladder (varied fuel_fraction)         12
+//   x ≈  20000  manual (no autopilot — these descend and hit the ground)   2
+//                                                                       ----
+//                                                                        100
+//
+// RL planes (12) are held inside the trained envelope: `train_ppo` trains both
+// tasks at altitude 1000 / airspeed 100, and `OrbitEnv` resamples target radius
+// from 2500..=4000 each reset, so orbit radii stay in [2600, 4000] and altitudes
+// within ±150 m of 1000. Push them outside that and you are measuring policy
+// extrapolation, not throughput.
+//
+// Known/intentional interactions — planes have real colliders and nothing
+// separates them, so these are part of the test:
+//   * both flight-plan planes converge on the patrol plan's terminal loiter
+//     (center (0,0), r=1000, alt 1000) and will eventually share that circle;
+//   * the RL level-hold column flies +X and reaches the origin region after
+//     ~200 s of uninterrupted run;
+//   * ascent climbers cross the heading-hold ring's lower altitudes.
+(
+    steps: 3840,
+    interval: 64,
+    planes: [
+        // ------------------------------------------------------------------
+        // RL orbit hub — center (0, 12000). Radii 2600–4000 (trained range),
+        // altitudes 860–1160 (within ±150 of the trained 1000). Each plane
+        // spawns tangent on the +Z side of the hub: heading 0 for CCW, 180 for
+        // CW, so the orbit engages bumpless. 280 m radial separation.
+        (
+            name: "rl_orbit_1",
+            position: (0.0, 860.0, 14600.0),
+            heading_deg: 0.0,
+            controller: RlOrbit(
+                model: "models/orbit/ppo_orbit_1.mpk",
+                center_x: 0.0, center_z: 12000.0,
+                radius: 2600.0, direction: CounterClockwise,
+                altitude: 860.0, airspeed: 100.0,
+            ),
+        ),
+        (
+            name: "rl_orbit_2",
+            position: (0.0, 920.0, 14880.0),
+            heading_deg: 180.0,
+            controller: RlOrbit(
+                model: "models/orbit/ppo_orbit_1.mpk",
+                center_x: 0.0, center_z: 12000.0,
+                radius: 2880.0, direction: Clockwise,
+                altitude: 920.0, airspeed: 100.0,
+            ),
+        ),
+        (
+            name: "rl_orbit_3",
+            position: (0.0, 980.0, 15160.0),
+            heading_deg: 0.0,
+            controller: RlOrbit(
+                model: "models/orbit/ppo_orbit_1.mpk",
+                center_x: 0.0, center_z: 12000.0,
+                radius: 3160.0, direction: CounterClockwise,
+                altitude: 980.0, airspeed: 100.0,
+            ),
+        ),
+        (
+            name: "rl_orbit_4",
+            position: (0.0, 1040.0, 15440.0),
+            heading_deg: 180.0,
+            controller: RlOrbit(
+                model: "models/orbit/ppo_orbit_1.mpk",
+                center_x: 0.0, center_z: 12000.0,
+                radius: 3440.0, direction: Clockwise,
+                altitude: 1040.0, airspeed: 100.0,
+            ),
+        ),
+        (
+            name: "rl_orbit_5",
+            position: (0.0, 1100.0, 15720.0),
+            heading_deg: 0.0,
+            controller: RlOrbit(
+                model: "models/orbit/ppo_orbit_1.mpk",
+                center_x: 0.0, center_z: 12000.0,
+                radius: 3720.0, direction: CounterClockwise,
+                altitude: 1100.0, airspeed: 100.0,
+            ),
+        ),
+        (
+            name: "rl_orbit_6",
+            position: (0.0, 1160.0, 16000.0),
+            heading_deg: 180.0,
+            controller: RlOrbit(
+                model: "models/orbit/ppo_orbit_1.mpk",
+                center_x: 0.0, center_z: 12000.0,
+                radius: 4000.0, direction: Clockwise,
+                altitude: 1160.0, airspeed: 100.0,
+            ),
+        ),
+
+        // ------------------------------------------------------------------
+        // RL level-hold column — six policies stepped in parallel, laterally
+        // separated by 240 m, targets 900–1100 (trained target is 1000).
+        (
+            name: "rl_level_1",
+            position: (-20000.0, 900.0, -600.0),
+            controller: RlLevelHold(model: "models/level_hold/ppo_level_hold.mpk", altitude: 900.0, airspeed: 100.0),
+        ),
+        (
+            name: "rl_level_2",
+            position: (-20000.0, 940.0, -360.0),
+            controller: RlLevelHold(model: "models/level_hold/ppo_level_hold.mpk", altitude: 940.0, airspeed: 100.0),
+        ),
+        (
+            name: "rl_level_3",
+            position: (-20000.0, 980.0, -120.0),
+            controller: RlLevelHold(model: "models/level_hold/ppo_level_hold.mpk", altitude: 980.0, airspeed: 100.0),
+        ),
+        (
+            name: "rl_level_4",
+            position: (-20000.0, 1020.0, 120.0),
+            controller: RlLevelHold(model: "models/level_hold/ppo_level_hold.mpk", altitude: 1020.0, airspeed: 100.0),
+        ),
+        (
+            name: "rl_level_5",
+            position: (-20000.0, 1060.0, 360.0),
+            controller: RlLevelHold(model: "models/level_hold/ppo_level_hold.mpk", altitude: 1060.0, airspeed: 100.0),
+        ),
+        (
+            name: "rl_level_6",
+            position: (-20000.0, 1100.0, 600.0),
+            controller: RlLevelHold(model: "models/level_hold/ppo_level_hold.mpk", altitude: 1100.0, airspeed: 100.0),
+        ),
+
+        // ------------------------------------------------------------------
+        // PID orbit hub A — center (12000, 0). Ten concentric rings, radii
+        // 1200–5700 (500 m apart), altitudes 600–2400, alternating direction.
+        // The tight inner rings command steep bank: r=1200 at 100 m/s needs
+        // atan(V²/gR) ≈ 40°, which is the point — it loads the inner cascade.
+        (
+            name: "orbit_a1",
+            position: (12000.0, 600.0, 1200.0), heading_deg: 0.0,
+            controller: Orbit(center_x: 12000.0, center_z: 0.0, radius: 1200.0, direction: CounterClockwise, altitude: 600.0, airspeed: 100.0),
+        ),
+        (
+            name: "orbit_a2",
+            position: (12000.0, 800.0, 1700.0), heading_deg: 180.0,
+            controller: Orbit(center_x: 12000.0, center_z: 0.0, radius: 1700.0, direction: Clockwise, altitude: 800.0, airspeed: 100.0),
+        ),
+        (
+            name: "orbit_a3",
+            position: (12000.0, 1000.0, 2200.0), heading_deg: 0.0,
+            controller: Orbit(center_x: 12000.0, center_z: 0.0, radius: 2200.0, direction: CounterClockwise, altitude: 1000.0, airspeed: 100.0),
+        ),
+        (
+            name: "orbit_a4",
+            position: (12000.0, 1200.0, 2700.0), heading_deg: 180.0,
+            controller: Orbit(center_x: 12000.0, center_z: 0.0, radius: 2700.0, direction: Clockwise, altitude: 1200.0, airspeed: 100.0),
+        ),
+        (
+            name: "orbit_a5",
+            position: (12000.0, 1400.0, 3200.0), heading_deg: 0.0,
+            controller: Orbit(center_x: 12000.0, center_z: 0.0, radius: 3200.0, direction: CounterClockwise, altitude: 1400.0, airspeed: 100.0),
+        ),
+        (
+            name: "orbit_a6",
+            position: (12000.0, 1600.0, 3700.0), heading_deg: 180.0,
+            controller: Orbit(center_x: 12000.0, center_z: 0.0, radius: 3700.0, direction: Clockwise, altitude: 1600.0, airspeed: 100.0),
+        ),
+        (
+            name: "orbit_a7",
+            position: (12000.0, 1800.0, 4200.0), heading_deg: 0.0,
+            controller: Orbit(center_x: 12000.0, center_z: 0.0, radius: 4200.0, direction: CounterClockwise, altitude: 1800.0, airspeed: 100.0),
+        ),
+        (
+            name: "orbit_a8",
+            position: (12000.0, 2000.0, 4700.0), heading_deg: 180.0,
+            controller: Orbit(center_x: 12000.0, center_z: 0.0, radius: 4700.0, direction: Clockwise, altitude: 2000.0, airspeed: 100.0),
+        ),
+        (
+            name: "orbit_a9",
+            position: (12000.0, 2200.0, 5200.0), heading_deg: 0.0,
+            controller: Orbit(center_x: 12000.0, center_z: 0.0, radius: 5200.0, direction: CounterClockwise, altitude: 2200.0, airspeed: 100.0),
+        ),
+        (
+            name: "orbit_a10",
+            position: (12000.0, 2400.0, 5700.0), heading_deg: 180.0,
+            controller: Orbit(center_x: 12000.0, center_z: 0.0, radius: 5700.0, direction: Clockwise, altitude: 2400.0, airspeed: 100.0),
+        ),
+
+        // ------------------------------------------------------------------
+        // PID orbit hub B — center (-12000, 8000). Same ladder, opposite
+        // starting direction, offset altitudes 700–2500.
+        (
+            name: "orbit_b1",
+            position: (-12000.0, 700.0, 9200.0), heading_deg: 180.0,
+            controller: Orbit(center_x: -12000.0, center_z: 8000.0, radius: 1200.0, direction: Clockwise, altitude: 700.0, airspeed: 100.0),
+        ),
+        (
+            name: "orbit_b2",
+            position: (-12000.0, 900.0, 9700.0), heading_deg: 0.0,
+            controller: Orbit(center_x: -12000.0, center_z: 8000.0, radius: 1700.0, direction: CounterClockwise, altitude: 900.0, airspeed: 100.0),
+        ),
+        (
+            name: "orbit_b3",
+            position: (-12000.0, 1100.0, 10200.0), heading_deg: 180.0,
+            controller: Orbit(center_x: -12000.0, center_z: 8000.0, radius: 2200.0, direction: Clockwise, altitude: 1100.0, airspeed: 100.0),
+        ),
+        (
+            name: "orbit_b4",
+            position: (-12000.0, 1300.0, 10700.0), heading_deg: 0.0,
+            controller: Orbit(center_x: -12000.0, center_z: 8000.0, radius: 2700.0, direction: CounterClockwise, altitude: 1300.0, airspeed: 100.0),
+        ),
+        (
+            name: "orbit_b5",
+            position: (-12000.0, 1500.0, 11200.0), heading_deg: 180.0,
+            controller: Orbit(center_x: -12000.0, center_z: 8000.0, radius: 3200.0, direction: Clockwise, altitude: 1500.0, airspeed: 100.0),
+        ),
+        (
+            name: "orbit_b6",
+            position: (-12000.0, 1700.0, 11700.0), heading_deg: 0.0,
+            controller: Orbit(center_x: -12000.0, center_z: 8000.0, radius: 3700.0, direction: CounterClockwise, altitude: 1700.0, airspeed: 100.0),
+        ),
+        (
+            name: "orbit_b7",
+            position: (-12000.0, 1900.0, 12200.0), heading_deg: 180.0,
+            controller: Orbit(center_x: -12000.0, center_z: 8000.0, radius: 4200.0, direction: Clockwise, altitude: 1900.0, airspeed: 100.0),
+        ),
+        (
+            name: "orbit_b8",
+            position: (-12000.0, 2100.0, 12700.0), heading_deg: 0.0,
+            controller: Orbit(center_x: -12000.0, center_z: 8000.0, radius: 4700.0, direction: CounterClockwise, altitude: 2100.0, airspeed: 100.0),
+        ),
+        (
+            name: "orbit_b9",
+            position: (-12000.0, 2300.0, 13200.0), heading_deg: 180.0,
+            controller: Orbit(center_x: -12000.0, center_z: 8000.0, radius: 5200.0, direction: Clockwise, altitude: 2300.0, airspeed: 100.0),
+        ),
+        (
+            name: "orbit_b10",
+            position: (-12000.0, 2500.0, 13700.0), heading_deg: 0.0,
+            controller: Orbit(center_x: -12000.0, center_z: 8000.0, radius: 5700.0, direction: CounterClockwise, altitude: 2500.0, airspeed: 100.0),
+        ),
+
+        // ------------------------------------------------------------------
+        // Wingman flights — five flights of four (leader + 3 wingmen), 1200 m
+        // apart in Z and 400 m in altitude. Each wingman reads its leader's
+        // live state through ControllerContext every tick, so this is the
+        // group that stresses the shared-context read path.
+        //
+        // Spawn positions place each wingman on its slot at t=0: the offset is
+        // body-frame (x fwd, y right, z up) and the leaders fly heading 0, where
+        // body +Y maps to world -Z. So offset (-20, 15, 0) → spawn delta
+        // (-20, 0, -15).
+
+        // Flight 1 — alt 1400
+        (name: "lead_1", position: (-8000.0, 1400.0, -6000.0), controller: LevelHold(altitude: 1400.0, airspeed: 100.0)),
+        (name: "wing_1a", position: (-8020.0, 1400.0, -6015.0), controller: Wingman(leader: "lead_1", offset: (-20.0, 15.0, 0.0))),
+        (name: "wing_1b", position: (-8020.0, 1400.0, -5985.0), controller: Wingman(leader: "lead_1", offset: (-20.0, -15.0, 0.0))),
+        (name: "wing_1c", position: (-8045.0, 1410.0, -6030.0), controller: Wingman(leader: "lead_1", offset: (-45.0, 30.0, 10.0))),
+
+        // Flight 2 — alt 1800
+        (name: "lead_2", position: (-8000.0, 1800.0, -4800.0), controller: LevelHold(altitude: 1800.0, airspeed: 100.0)),
+        (name: "wing_2a", position: (-8020.0, 1800.0, -4815.0), controller: Wingman(leader: "lead_2", offset: (-20.0, 15.0, 0.0))),
+        (name: "wing_2b", position: (-8020.0, 1800.0, -4785.0), controller: Wingman(leader: "lead_2", offset: (-20.0, -15.0, 0.0))),
+        (name: "wing_2c", position: (-8045.0, 1810.0, -4830.0), controller: Wingman(leader: "lead_2", offset: (-45.0, 30.0, 10.0))),
+
+        // Flight 3 — alt 2200
+        (name: "lead_3", position: (-8000.0, 2200.0, -3600.0), controller: LevelHold(altitude: 2200.0, airspeed: 100.0)),
+        (name: "wing_3a", position: (-8020.0, 2200.0, -3615.0), controller: Wingman(leader: "lead_3", offset: (-20.0, 15.0, 0.0))),
+        (name: "wing_3b", position: (-8020.0, 2200.0, -3585.0), controller: Wingman(leader: "lead_3", offset: (-20.0, -15.0, 0.0))),
+        (name: "wing_3c", position: (-8045.0, 2210.0, -3630.0), controller: Wingman(leader: "lead_3", offset: (-45.0, 30.0, 10.0))),
+
+        // Flight 4 — alt 2600
+        (name: "lead_4", position: (-8000.0, 2600.0, -2400.0), controller: LevelHold(altitude: 2600.0, airspeed: 100.0)),
+        (name: "wing_4a", position: (-8020.0, 2600.0, -2415.0), controller: Wingman(leader: "lead_4", offset: (-20.0, 15.0, 0.0))),
+        (name: "wing_4b", position: (-8020.0, 2600.0, -2385.0), controller: Wingman(leader: "lead_4", offset: (-20.0, -15.0, 0.0))),
+        (name: "wing_4c", position: (-8045.0, 2610.0, -2430.0), controller: Wingman(leader: "lead_4", offset: (-45.0, 30.0, 10.0))),
+
+        // Flight 5 — alt 3000, led by a tanker (heavier airframe, wingmen are
+        // generic jets holding slot on a much larger lead plane).
+        (name: "lead_5", config: "assets/planes/tanker.plane.ron", position: (-8000.0, 3000.0, -1200.0), velocity: (100.0, 0.0, 0.0), controller: LevelHold(altitude: 3000.0, airspeed: 100.0)),
+        (name: "wing_5a", position: (-8020.0, 3000.0, -1215.0), controller: Wingman(leader: "lead_5", offset: (-20.0, 15.0, 0.0))),
+        (name: "wing_5b", position: (-8020.0, 3000.0, -1185.0), controller: Wingman(leader: "lead_5", offset: (-20.0, -15.0, 0.0))),
+        (name: "wing_5c", position: (-8045.0, 3010.0, -1230.0), controller: Wingman(leader: "lead_5", offset: (-45.0, 30.0, 10.0))),
+
+        // ------------------------------------------------------------------
+        // Heading-hold ring — ten planes on a 9000 m ring around the origin,
+        // each flying tangentially (heading = bearing + 90°) so the group
+        // circulates CCW rather than converging. Altitudes 2600–4400 keep this
+        // band clear of the orbit hubs below.
+        (name: "hdg_1", position: (9000.0, 2600.0, 0.0), heading_deg: 90.0, controller: HeadingHold(heading_deg: 90.0, altitude: 2600.0, airspeed: 100.0)),
+        (name: "hdg_2", position: (7281.0, 2800.0, 5290.0), heading_deg: 126.0, controller: HeadingHold(heading_deg: 126.0, altitude: 2800.0, airspeed: 100.0)),
+        (name: "hdg_3", position: (2781.0, 3000.0, 8560.0), heading_deg: 162.0, controller: HeadingHold(heading_deg: 162.0, altitude: 3000.0, airspeed: 100.0)),
+        (name: "hdg_4", position: (-2781.0, 3200.0, 8560.0), heading_deg: 198.0, controller: HeadingHold(heading_deg: 198.0, altitude: 3200.0, airspeed: 100.0)),
+        (name: "hdg_5", position: (-7281.0, 3400.0, 5290.0), heading_deg: 234.0, controller: HeadingHold(heading_deg: 234.0, altitude: 3400.0, airspeed: 100.0)),
+        (name: "hdg_6", position: (-9000.0, 3600.0, 0.0), heading_deg: 270.0, controller: HeadingHold(heading_deg: 270.0, altitude: 3600.0, airspeed: 100.0)),
+        (name: "hdg_7", position: (-7281.0, 3800.0, -5290.0), heading_deg: 306.0, controller: HeadingHold(heading_deg: 306.0, altitude: 3800.0, airspeed: 100.0)),
+        (name: "hdg_8", position: (-2781.0, 4000.0, -8560.0), heading_deg: 342.0, controller: HeadingHold(heading_deg: 342.0, altitude: 4000.0, airspeed: 100.0)),
+        (name: "hdg_9", position: (2781.0, 4200.0, -8560.0), heading_deg: 18.0, controller: HeadingHold(heading_deg: 18.0, altitude: 4200.0, airspeed: 100.0)),
+        (name: "hdg_10", position: (7281.0, 4400.0, -5290.0), heading_deg: 54.0, controller: HeadingHold(heading_deg: 54.0, altitude: 4400.0, airspeed: 100.0)),
+
+        // ------------------------------------------------------------------
+        // Ascent climbers — spawn low and climb, then latch to level hold. The
+        // spread of targets (2000–4800) means they latch at staggered times.
+        (name: "ascent_1", position: (8000.0, 400.0, -8000.0), controller: Ascent(target_altitude: 2000.0)),
+        (name: "ascent_2", position: (8000.0, 440.0, -7100.0), controller: Ascent(target_altitude: 2400.0)),
+        (name: "ascent_3", position: (8000.0, 480.0, -6200.0), controller: Ascent(target_altitude: 2800.0)),
+        (name: "ascent_4", position: (8000.0, 520.0, -5300.0), controller: Ascent(target_altitude: 3200.0)),
+        (name: "ascent_5", position: (8000.0, 560.0, -4400.0), controller: Ascent(target_altitude: 3600.0)),
+        (name: "ascent_6", position: (8000.0, 600.0, -3500.0), controller: Ascent(target_altitude: 4000.0)),
+        (name: "ascent_7", position: (8000.0, 640.0, -2600.0), controller: Ascent(target_altitude: 4400.0)),
+        (name: "ascent_8", position: (8000.0, 680.0, -1700.0), controller: Ascent(target_altitude: 4800.0)),
+
+        // ------------------------------------------------------------------
+        // Flight-plan followers — both fly patrol.plan.ron, entering from
+        // opposite corners so they run the legs out of phase. Kept to two:
+        // the plan's terminal loiter is a single fixed circle, so every extra
+        // plane on it is a guaranteed pile-up rather than useful load.
+        (name: "plan_1", position: (2000.0, 1000.0, 2000.0), heading_deg: -135.0, controller: FlightPlan(plan: "assets/plans/patrol.plan.ron")),
+        (name: "plan_2", position: (-2000.0, 1150.0, -2000.0), heading_deg: 45.0, controller: FlightPlan(plan: "assets/plans/patrol.plan.ron")),
+
+        // ------------------------------------------------------------------
+        // Transports — the four non-generic airframes at their own cruise
+        // speeds (cargo/tanker ≈ 170, business ≈ 100, electric ≈ 70), each with
+        // explicit `velocity` since the 100 m/s default would not match.
+        // Exercises both Powerplant kinds: the jets burn mass and lighten, the
+        // electric trainer draws charge at constant mass.
+        (name: "cargo_1", config: "assets/planes/cargo_jet.plane.ron", position: (-24000.0, 1000.0, 6000.0), velocity: (170.0, 0.0, 0.0), controller: LevelHold(altitude: 1000.0, airspeed: 170.0)),
+        (name: "cargo_2", config: "assets/planes/cargo_jet.plane.ron", position: (-24000.0, 1400.0, 6600.0), velocity: (170.0, 0.0, 0.0), fuel_fraction: 0.6, controller: LevelHold(altitude: 1400.0, airspeed: 170.0)),
+        (name: "cargo_3", config: "assets/planes/cargo_jet.plane.ron", position: (-24000.0, 1800.0, 7200.0), velocity: (170.0, 0.0, 0.0), fuel_fraction: 0.3, controller: LevelHold(altitude: 1800.0, airspeed: 170.0)),
+        (name: "tanker_1", config: "assets/planes/tanker.plane.ron", position: (-24000.0, 2200.0, 7800.0), velocity: (168.0, 0.0, 0.0), controller: LevelHold(altitude: 2200.0, airspeed: 168.0)),
+        (name: "tanker_2", config: "assets/planes/tanker.plane.ron", position: (-24000.0, 2600.0, 8400.0), velocity: (168.0, 0.0, 0.0), fuel_fraction: 0.5, controller: LevelHold(altitude: 2600.0, airspeed: 168.0)),
+        (name: "tanker_3", config: "assets/planes/tanker.plane.ron", position: (-24000.0, 3000.0, 9000.0), velocity: (168.0, 0.0, 0.0), fuel_fraction: 0.2, controller: LevelHold(altitude: 3000.0, airspeed: 168.0)),
+        (name: "business_1", config: "assets/planes/business_jet.plane.ron", position: (-24000.0, 800.0, 9600.0), velocity: (100.0, 0.0, 0.0), controller: LevelHold(altitude: 800.0, airspeed: 100.0)),
+        (name: "business_2", config: "assets/planes/business_jet.plane.ron", position: (-24000.0, 1000.0, 10200.0), velocity: (100.0, 0.0, 0.0), fuel_fraction: 0.75, controller: LevelHold(altitude: 1000.0, airspeed: 100.0)),
+        (name: "business_3", config: "assets/planes/business_jet.plane.ron", position: (-24000.0, 1200.0, 10800.0), velocity: (100.0, 0.0, 0.0), fuel_fraction: 0.5, controller: LevelHold(altitude: 1200.0, airspeed: 100.0)),
+        (name: "business_4", config: "assets/planes/business_jet.plane.ron", position: (-24000.0, 1400.0, 11400.0), velocity: (100.0, 0.0, 0.0), fuel_fraction: 0.25, controller: LevelHold(altitude: 1400.0, airspeed: 100.0)),
+        (name: "electric_1", config: "assets/planes/electric_trainer.plane.ron", position: (-24000.0, 500.0, 12000.0), velocity: (70.0, 0.0, 0.0), controller: LevelHold(altitude: 500.0, airspeed: 70.0)),
+        (name: "electric_2", config: "assets/planes/electric_trainer.plane.ron", position: (-24000.0, 650.0, 12600.0), velocity: (70.0, 0.0, 0.0), fuel_fraction: 0.7, controller: LevelHold(altitude: 650.0, airspeed: 70.0)),
+        (name: "electric_3", config: "assets/planes/electric_trainer.plane.ron", position: (-24000.0, 800.0, 13200.0), velocity: (70.0, 0.0, 0.0), fuel_fraction: 0.4, controller: LevelHold(altitude: 800.0, airspeed: 70.0)),
+        (name: "electric_4", config: "assets/planes/electric_trainer.plane.ron", position: (-24000.0, 950.0, 13800.0), velocity: (70.0, 0.0, 0.0), fuel_fraction: 0.15, controller: LevelHold(altitude: 950.0, airspeed: 70.0)),
+
+        // ------------------------------------------------------------------
+        // Level-hold altitude ladder — twelve generic jets from 500 m to 3800 m,
+        // spanning enough altitude for the ISA density model to bite (thinner
+        // air ⇒ less lift and less thrust up top). Varied fuel_fraction gives
+        // twelve different loaded masses on one airframe.
+        (name: "ladder_1", position: (16000.0, 500.0, -2000.0), fuel_fraction: 1.0, controller: LevelHold(altitude: 500.0, airspeed: 100.0)),
+        (name: "ladder_2", position: (16000.0, 800.0, -1640.0), fuel_fraction: 0.9, controller: LevelHold(altitude: 800.0, airspeed: 100.0)),
+        (name: "ladder_3", position: (16000.0, 1100.0, -1280.0), fuel_fraction: 0.8, controller: LevelHold(altitude: 1100.0, airspeed: 100.0)),
+        (name: "ladder_4", position: (16000.0, 1400.0, -920.0), fuel_fraction: 0.7, controller: LevelHold(altitude: 1400.0, airspeed: 100.0)),
+        (name: "ladder_5", position: (16000.0, 1700.0, -560.0), fuel_fraction: 0.6, controller: LevelHold(altitude: 1700.0, airspeed: 100.0)),
+        (name: "ladder_6", position: (16000.0, 2000.0, -200.0), fuel_fraction: 0.5, controller: LevelHold(altitude: 2000.0, airspeed: 100.0)),
+        (name: "ladder_7", position: (16000.0, 2300.0, 160.0), fuel_fraction: 0.45, controller: LevelHold(altitude: 2300.0, airspeed: 100.0)),
+        (name: "ladder_8", position: (16000.0, 2600.0, 520.0), fuel_fraction: 0.4, controller: LevelHold(altitude: 2600.0, airspeed: 100.0)),
+        (name: "ladder_9", position: (16000.0, 2900.0, 880.0), fuel_fraction: 0.35, controller: LevelHold(altitude: 2900.0, airspeed: 100.0)),
+        (name: "ladder_10", position: (16000.0, 3200.0, 1240.0), fuel_fraction: 0.3, controller: LevelHold(altitude: 3200.0, airspeed: 100.0)),
+        (name: "ladder_11", position: (16000.0, 3500.0, 1600.0), fuel_fraction: 0.2, controller: LevelHold(altitude: 3500.0, airspeed: 100.0)),
+        (name: "ladder_12", position: (16000.0, 3800.0, 1960.0), fuel_fraction: 0.1, controller: LevelHold(altitude: 3800.0, airspeed: 100.0)),
+
+        // ------------------------------------------------------------------
+        // Manual — no autopilot and no stick input in headless mode, so these
+        // fly a zero-throttle ballistic arc into the ground. That is deliberate:
+        // it keeps two entities on the passthrough control path, and the ground
+        // is a death plane with no auto-removal (out of scope), so they stay in
+        // the entity count after contact.
+        (name: "manual_1", position: (20000.0, 1500.0, 0.0), controller: Manual),
+        (name: "manual_2", position: (20000.0, 1800.0, 200.0), heading_deg: 45.0, controller: Manual),
+    ],
+)
