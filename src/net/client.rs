@@ -22,6 +22,17 @@
 //! the newest snapshot by [`RENDER_DELAY`], keeping a straddling pair available to
 //! blend. Stamping on client frame-arrival time instead made the rendered lag track
 //! frame-time jitter, which showed up as plane gizmos pulsing back and forth.
+//!
+//! [`render_net_interpolation`] runs in [`PlaneRenderPose::Write`] and that matters: it
+//! writes `Transform` in `Update`, while the follow camera and gizmo renderer read it
+//! back in the same schedule. Without that ordering edge Bevy serialised them in an
+//! unspecified order that flipped between frames, so the camera intermittently smoothed
+//! toward the previous frame's pose and oscillated at ~4–6 Hz — every plane pulsing in
+//! sync, since they share one camera, while world-space motion stayed perfectly smooth.
+//! That smoothness is why the artifact reads as a *networking* bug and survived several
+//! interpolation rewrites; it was never one. `ScheduleBuildSettings::ambiguity_detection`
+//! (`LogLevel::Warn` on `Update`) names such pairs directly and is the fastest way to
+//! re-check this class of defect.
 
 use std::collections::{HashMap, VecDeque};
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
@@ -154,39 +165,29 @@ pub fn sample(buf: &VecDeque<Snapshot>, render_time: f64) -> Option<(Vec3, Quat)
     Some((last.pos, last.rot)) // unreachable given the clamps above
 }
 
-/// One frame's worth of playback-clock movement, reported by [`advance_clock`] for
-/// diagnostics.
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct ClockStep {
-    /// `latest − playback` after advancing by `dt` but *before* any resync, so a clock
-    /// grinding down toward [`MIN_LEAD`] stays visible instead of being masked by the
-    /// snap (which always lands the lead exactly on [`RENDER_DELAY`]).
-    lead: f64,
-    /// Playback displacement if a resync fired: `new − old`. **Negative means a backward
-    /// teleport** — the starvation branch snapping from near `latest` back to
-    /// `latest − RENDER_DELAY`. Every plane samples the one shared clock, so a backward
-    /// snap moves them all back together.
-    resync_delta: Option<f64>,
-}
-
 /// Advance the free-running playback clock by real `dt`, resyncing to
 /// `latest − RENDER_DELAY` only when it leaves the healthy lead band. Pure (takes the
-/// clock + `dt`) so the resync policy is unit-testable without an app. Returns `None`
-/// before the clock is seeded, else the [`ClockStep`] taken.
-fn advance_clock(clock: &mut NetRenderClock, dt: f64) -> Option<ClockStep> {
+/// clock + `dt`) so the resync policy is unit-testable without an app. Returns `true`
+/// if a resync happened.
+///
+/// Measured at 1× on a release client/server pair, the clock never resyncs: the lead
+/// sits at ≈2.5–4 ticks, well inside the band. The starvation branch is therefore
+/// dormant in practice — but note it teleports playback *backward*
+/// (`advance_clock_starvation_resync_jumps_backward`), and every plane samples this one
+/// shared clock, so if arrival jitter ever does drive the lead under [`MIN_LEAD`] the
+/// planes will hop backward together. Prefer slowing the clock over snapping it if that
+/// ever shows up.
+fn advance_clock(clock: &mut NetRenderClock, dt: f64) -> bool {
     if !clock.initialized {
-        return None; // seeded by ingest on the first snapshot
+        return false; // seeded by ingest on the first snapshot
     }
     clock.playback += dt;
     let lead = clock.latest - clock.playback;
-    let resync_delta = if !(MIN_LEAD..=MAX_LEAD).contains(&lead) {
-        let before = clock.playback;
+    if !(MIN_LEAD..=MAX_LEAD).contains(&lead) {
         clock.playback = clock.latest - RENDER_DELAY;
-        Some(clock.playback - before)
-    } else {
-        None
-    };
-    Some(ClockStep { lead, resync_delta })
+        return true;
+    }
+    false
 }
 
 /// Attach an (empty) [`NetInterpolation`] ring buffer to each replicated plane once
@@ -277,144 +278,9 @@ fn reconstruct_tuning_handle(
 
 /// Advance the shared [`NetRenderClock`] once per frame, before rendering. Kept
 /// separate from [`render_net_interpolation`] (which only reads the clock) so the
-/// resync policy runs exactly once regardless of plane count — which also makes this
-/// the one honest place to count resyncs into [`ClockDiag`].
-fn advance_render_clock(
-    time: Res<Time>,
-    mut clock: ResMut<NetRenderClock>,
-    mut diag: ResMut<ClockDiag>,
-) {
-    let Some(step) = advance_clock(&mut clock, time.delta_secs_f64()) else {
-        return; // clock not seeded yet — nothing meaningful to record
-    };
-    if let Some(delta) = step.resync_delta {
-        diag.resyncs += 1;
-        if delta < 0.0 {
-            diag.max_back_jump = diag.max_back_jump.max(-delta);
-        }
-    }
-    diag.lead_min = diag.lead_min.min(step.lead);
-    diag.lead_max = diag.lead_max.max(step.lead);
-}
-
-/// Temporary per-second aggregate of the shared [`NetRenderClock`]'s health, filled by
-/// [`advance_render_clock`] and reported alongside the sampled-output stats by
-/// [`render_net_interpolation`], which also resets it each window.
-///
-/// Exists to test one hypothesis: the planes' *synchronized* back-and-forth pulse is the
-/// starvation branch of [`advance_clock`] teleporting the shared playback clock backward.
-/// `resyncs` should then match the visible pulse rate, `max_back_jump` should be a few
-/// ticks, and `lead_min` should graze [`MIN_LEAD`] just before each snap.
-#[derive(Resource, Debug)]
-struct ClockDiag {
-    resyncs: u32,
-    /// Largest backward playback teleport this window, in seconds (0 if none).
-    max_back_jump: f64,
-    lead_min: f64,
-    lead_max: f64,
-}
-
-impl Default for ClockDiag {
-    fn default() -> Self {
-        Self {
-            resyncs: 0,
-            max_back_jump: 0.0,
-            // Sentinels so the first sample of the window wins either comparison.
-            lead_min: f64::INFINITY,
-            lead_max: f64::NEG_INFINITY,
-        }
-    }
-}
-
-/// Temporary per-second aggregate of a plane's pose **in camera space** — the space the
-/// eye actually judges, and the one [`OutputDiag`]'s world-space stats are structurally
-/// blind to. If the *camera* is what pulses, world-space stays perfectly smooth
-/// (`reversals=0`, as observed) while every plane appears to hop in sync, because they
-/// all share one camera.
-///
-/// Sampled in `Last`, after every `Update` writer and `PostUpdate` transform propagation,
-/// so it reflects the pose the renderer actually drew rather than a mid-schedule value.
-#[cfg(feature = "visual")]
-#[derive(Default)]
-struct CameraRelDiag {
-    window_start: f64,
-    frames: u32,
-    reversals: u32,
-    max_step: f32,
-    prev_rel: Option<Vec3>,
-    prev_delta: Option<Vec3>,
-}
-
-/// Measure the followed plane's position relative to the camera and report per-second
-/// reversal counts, mirroring [`OutputDiag`] but in camera space.
-///
-/// FreeLook is the **control case**: with a static camera, camera-space motion is just
-/// world motion, so a pulse that still shows up there is *not* camera-borne and the
-/// hypothesis is dead. `mode` is therefore reported alongside the counts.
-#[cfg(feature = "visual")]
-fn diagnose_camera_relative(
-    time: Res<Time>,
-    mode: Res<crate::camera::CameraMode>,
-    cameras: Query<&GlobalTransform, With<Camera3d>>,
-    planes: Query<&GlobalTransform, (With<PlaneId>, Without<Camera3d>)>,
-    mut diag: Local<CameraRelDiag>,
-) {
-    use crate::camera::CameraMode;
-
-    let Ok(cam) = cameras.single() else {
-        return;
-    };
-    // Prefer the plane the user is actually watching; fall back to the first plane so
-    // FreeLook still reports.
-    let (target, mode_label) = match *mode {
-        CameraMode::Follow(entity) => (planes.get(entity).ok(), "Follow"),
-        CameraMode::FreeLook => (planes.iter().next(), "FreeLook"),
-    };
-    let Some(plane) = target else {
-        return;
-    };
-
-    let rel = cam.affine().inverse().transform_point3(plane.translation());
-
-    diag.frames += 1;
-    if let Some(prev) = diag.prev_rel {
-        let delta = rel - prev;
-        diag.max_step = diag.max_step.max(delta.length());
-        if let Some(pd) = diag.prev_delta {
-            if delta.dot(pd) < 0.0 && delta.length_squared() > 1e-8 {
-                diag.reversals += 1;
-            }
-        }
-        diag.prev_delta = Some(delta);
-    }
-    diag.prev_rel = Some(rel);
-
-    let now = time.elapsed_secs_f64();
-    if now - diag.window_start >= 1.0 {
-        info!(
-            "net-diag camera: {:>3} frames/s  mode={}  rel_reversals={}  rel_max_step={:.3}m",
-            diag.frames, mode_label, diag.reversals, diag.max_step
-        );
-        *diag = CameraRelDiag {
-            window_start: now,
-            prev_rel: diag.prev_rel,
-            prev_delta: diag.prev_delta,
-            ..Default::default()
-        };
-    }
-}
-
-/// Temporary per-second aggregate of the *sampled output* smoothness (first plane):
-/// counts direction reversals in the rendered position. A smooth trajectory reverses
-/// ~never; a back-and-forth pulse reverses several times per second.
-#[derive(Default)]
-struct OutputDiag {
-    window_start: f64,
-    frames: u32,
-    reversals: u32,
-    max_step: f32,
-    prev_pos: Option<Vec3>,
-    prev_delta: Option<Vec3>,
+/// resync policy runs exactly once regardless of plane count.
+fn advance_render_clock(time: Res<Time>, mut clock: ResMut<NetRenderClock>) {
+    advance_clock(&mut clock, time.delta_secs_f64());
 }
 
 /// Write the interpolated render pose into each plane's [`Transform`] every frame,
@@ -422,70 +288,21 @@ struct OutputDiag {
 /// server-time space and advances smoothly (see [`advance_render_clock`]), so the
 /// rendered motion is decoupled from client frame / arrival jitter. Planes with an
 /// empty buffer (pre-warmup) keep their replicated `Transform`.
+///
+/// Runs in [`PlaneRenderPose::Write`]: this establishes the pose the frame renders, and
+/// the follow camera / gizmo renderer read it back in the same schedule.
 fn render_net_interpolation(
-    time: Res<Time>,
     clock: Res<NetRenderClock>,
     mut planes: Query<(&NetInterpolation, &mut Transform)>,
-    mut diag: Local<OutputDiag>,
-    mut clock_diag: ResMut<ClockDiag>,
 ) {
     if !clock.initialized {
         return;
     }
     let render_time = clock.playback;
-    let mut first: Option<Vec3> = None;
     for (interp, mut transform) in &mut planes {
         if let Some((pos, rot)) = sample(&interp.snapshots, render_time) {
             transform.translation = pos;
             transform.rotation = rot;
-            if first.is_none() {
-                first = Some(pos);
-            }
-        }
-    }
-
-    // Temporary diagnostic: characterise the sampled output of the first plane.
-    if let Some(pos) = first {
-        diag.frames += 1;
-        if let Some(prev) = diag.prev_pos {
-            let delta = pos - prev;
-            diag.max_step = diag.max_step.max(delta.length());
-            if let Some(pd) = diag.prev_delta {
-                if delta.dot(pd) < 0.0 && delta.length_squared() > 1e-8 {
-                    diag.reversals += 1;
-                }
-            }
-            diag.prev_delta = Some(delta);
-        }
-        diag.prev_pos = Some(pos);
-
-        let now = time.elapsed_secs_f64();
-        if now - diag.window_start >= 1.0 {
-            // Leads in ticks, to read directly against MIN_LEAD / RENDER_DELAY / MAX_LEAD.
-            // A window with no clock samples leaves the ±INF sentinels — print 0 instead.
-            let (lead_min, lead_max) = if clock_diag.lead_min.is_finite() {
-                (clock_diag.lead_min / TICK, clock_diag.lead_max / TICK)
-            } else {
-                (0.0, 0.0)
-            };
-            info!(
-                "net-diag output: {:>3} frames/s  reversals={}  max_step={:.3}m  |  \
-                 clock: resyncs={} max_back_jump={:.1}ms lead={:.2}..{:.2} ticks",
-                diag.frames,
-                diag.reversals,
-                diag.max_step,
-                clock_diag.resyncs,
-                clock_diag.max_back_jump * 1000.0,
-                lead_min,
-                lead_max,
-            );
-            *diag = OutputDiag {
-                window_start: now,
-                prev_pos: diag.prev_pos,
-                prev_delta: diag.prev_delta,
-                ..Default::default()
-            };
-            *clock_diag = ClockDiag::default();
         }
     }
 }
@@ -546,7 +363,6 @@ pub struct ClientNetPlugin;
 impl Plugin for ClientNetPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<NetRenderClock>();
-        app.init_resource::<ClockDiag>();
         app.add_systems(PreUpdate, ingest_snapshots.after(ClientSystems::Receive));
         app.add_systems(
             Update,
@@ -560,12 +376,6 @@ impl Plugin for ClientNetPlugin {
             )
                 .chain(),
         );
-
-        // Diagnostic only. In `Last` so it observes the final, propagated poses the
-        // renderer actually drew — measuring this mid-`Update` would race the very
-        // writers we are trying to characterise.
-        #[cfg(feature = "visual")]
-        app.add_systems(Last, diagnose_camera_relative);
 
         // Populate `ModelLibrary` for the HUD model dropdown / `T`-key cycler. On
         // the client `SimControlPlugin` (which normally scans) is compiled out, so
@@ -670,11 +480,8 @@ mod tests {
         };
         // A frame's worth of dt keeps it in-band → no resync, playback += dt.
         let before = clock.playback;
-        let step = advance_clock(&mut clock, TICK).expect("initialised clock steps");
-        assert!(
-            step.resync_delta.is_none(),
-            "in-band advance must not resync"
-        );
+        let resynced = advance_clock(&mut clock, TICK);
+        assert!(!resynced, "in-band advance must not resync");
         assert!((clock.playback - (before + TICK)).abs() < 1e-12);
     }
 
@@ -688,15 +495,17 @@ mod tests {
             latest,
             initialized: true,
         };
-        let step = advance_clock(&mut clock, TICK).expect("initialised clock steps");
-        assert!(step.resync_delta.is_some(), "starved clock must resync");
+        let resynced = advance_clock(&mut clock, TICK);
+        assert!(resynced, "starved clock must resync");
         assert!((clock.playback - (latest - RENDER_DELAY)).abs() < 1e-12);
     }
 
     /// The starvation resync is a *backward* teleport: playback sits near `latest` and is
-    /// snapped back to `latest − RENDER_DELAY`. Every plane samples the one shared clock,
-    /// so this is the suspected cause of all planes hopping backward in perfect sync.
-    /// Pins both the sign and the magnitude the net-diag `max_back_jump` should report.
+    /// snapped back to `latest − RENDER_DELAY`, losing `RENDER_DELAY + TICK` of server
+    /// time. Measured at 1× the branch never fires (lead stays at ≈2.5–4 ticks), but
+    /// every plane samples this one shared clock, so if arrival jitter ever does starve
+    /// it they will all hop backward together — a hazard worth pinning rather than
+    /// rediscovering.
     #[test]
     fn advance_clock_starvation_resync_jumps_backward() {
         let latest = 10.0;
@@ -705,23 +514,19 @@ mod tests {
             latest,
             initialized: true,
         };
-        let step = advance_clock(&mut clock, TICK).expect("initialised clock steps");
-        let delta = step.resync_delta.expect("starved clock must resync");
+        // Where the `dt` advance lands playback before the resync considers it.
+        let advanced = clock.playback + TICK;
+        assert!(advance_clock(&mut clock, TICK), "starved clock must resync");
         assert!(
-            delta < 0.0,
-            "starvation resync teleports backward, got {delta}"
-        );
-        // playback reached latest + TICK after the advance, then snapped to
-        // latest - RENDER_DELAY ⇒ a jump of -(RENDER_DELAY + TICK).
-        assert!(
-            (delta - -(RENDER_DELAY + TICK)).abs() < 1e-12,
-            "expected {} got {delta}",
-            -(RENDER_DELAY + TICK)
+            clock.playback < advanced,
+            "starvation resync must move playback backward: {} !< {advanced}",
+            clock.playback
         );
         assert!(
-            step.lead < MIN_LEAD,
-            "reported lead is the pre-resync excursion, got {}",
-            step.lead
+            ((clock.playback - advanced) - -(RENDER_DELAY + TICK)).abs() < 1e-12,
+            "expected a {}s backward jump, got {}",
+            -(RENDER_DELAY + TICK),
+            clock.playback - advanced
         );
     }
 
@@ -734,16 +539,22 @@ mod tests {
             latest,
             initialized: true,
         };
-        let step = advance_clock(&mut clock, TICK).expect("initialised clock steps");
-        let delta = step.resync_delta.expect("clock too far behind must resync");
-        assert!(delta > 0.0, "catch-up resync moves forward, got {delta}");
+        let advanced = clock.playback + TICK;
+        assert!(
+            advance_clock(&mut clock, TICK),
+            "clock too far behind must resync"
+        );
+        assert!(
+            clock.playback > advanced,
+            "catch-up resync moves playback forward, unlike the starvation case"
+        );
         assert!((clock.playback - (latest - RENDER_DELAY)).abs() < 1e-12);
     }
 
     #[test]
     fn advance_clock_noop_before_init() {
         let mut clock = NetRenderClock::default();
-        assert!(advance_clock(&mut clock, TICK).is_none());
+        assert!(!advance_clock(&mut clock, TICK));
         assert_eq!(clock.playback, 0.0, "uninitialised clock does not advance");
     }
 }

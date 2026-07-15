@@ -40,8 +40,19 @@ impl Plugin for EnvironmentPlugin {
         );
         #[cfg(feature = "visual")]
         app.add_systems(Update, draw_orbit_pin_gizmo);
+        // Re-centres the infinite grid on the camera, so it must run after the camera
+        // systems have moved it — the same unordered read-after-write that made the
+        // planes pulse. Latent rather than visible here: the ground snaps to a 10 m
+        // lattice and the grid is periodic, so a frame-stale camera pose almost always
+        // resolves to an identical result. It stops being latent the moment the snap
+        // shrinks or the quantisation goes away.
         #[cfg(feature = "visual")]
-        app.add_systems(Update, follow_camera);
+        app.add_systems(
+            Update,
+            follow_camera
+                .after(crate::camera::systems::update_follow_camera)
+                .after(crate::camera::systems::update_free_look_camera),
+        );
 
         // Ground-contact detection reads the Rapier context — not present on the
         // client, which renders replicated planes and never collides locally.
