@@ -99,6 +99,24 @@ const MIN_SPAWN_ALT_M: f32 = 500.0;
 /// tuning bug. Lighter airframes (generic/business jet) hold fine at 100 m/s.
 const SPAWN_SPEED_MS: f32 = 100.0;
 
+/// Fraction of the screen height the roster list may occupy, and the absolute
+/// bounds it is clamped to. 0.35 leaves the panel (roster + spawn form) clear of
+/// the ~250 px top-left "Flight Data" HUD even on a short 720 px window.
+const ROSTER_SCREEN_FRAC: f32 = 0.35;
+/// Keeps a few rows visible on a short window rather than collapsing to nothing.
+const ROSTER_MIN_H: f32 = 80.0;
+/// Hard ceiling: the panel is anchored bottom-left and grows upward, so an
+/// unbounded roster (large scenarios) would run off-screen and cover the
+/// top-left "Flight Data" HUD.
+const ROSTER_MAX_H: f32 = 320.0;
+
+/// Max height of the scrollable roster list for a given screen height. The
+/// spawn form is drawn outside the scroll area, so the window as a whole stays
+/// somewhat taller than this.
+fn roster_max_height(screen_height: f32) -> f32 {
+    (screen_height * ROSTER_SCREEN_FRAC).clamp(ROSTER_MIN_H, ROSTER_MAX_H)
+}
+
 /// Spawn-form state for the Planes panel (selected kind + config path).
 #[derive(Resource)]
 pub struct PlanePanelState {
@@ -113,6 +131,87 @@ impl Default for PlanePanelState {
             config_path: DEFAULT_CONFIG.to_string(),
         }
     }
+}
+
+/// One roster line: a live plane as the panel needs to display it.
+struct PlaneRow {
+    entity: Entity,
+    index: u32,
+    kind: ControllerKind,
+    altitude: f32,
+    airspeed: f32,
+    plane: PlaneId,
+}
+
+/// What the user asked for this frame. [`plane_panel_ui`] only reports these;
+/// [`draw_plane_panel`] turns them into lifecycle commands, which keeps the
+/// layout testable without an ECS world.
+enum PanelAction {
+    Remove(Entity, PlaneId),
+    Spawn,
+    Browse,
+}
+
+/// Draws the panel and reports the window rect plus any requested actions.
+/// Pure UI: no `Commands`, so it can be laid out in a headless egui context.
+fn plane_panel_ui(
+    ctx: &egui::Context,
+    rows: &[PlaneRow],
+    state: &mut PlanePanelState,
+) -> (Option<egui::Rect>, Vec<PanelAction>) {
+    let roster_h = roster_max_height(ctx.content_rect().height());
+    let mut actions = Vec::new();
+
+    let response = egui::Window::new("Planes")
+        .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(10.0, -10.0))
+        .collapsible(true)
+        .show(ctx, |ui| {
+            // Capped + scrollable: the window is bottom-anchored and grows
+            // upward, so an unbounded roster would cover the top-left HUD.
+            egui::ScrollArea::vertical()
+                .max_height(roster_h)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    for row in rows {
+                        ui.horizontal(|ui| {
+                            ui.label(format!(
+                                "#{}  {}  {:.0} m  {:.0} m/s",
+                                row.index,
+                                row.kind.name(),
+                                row.altitude,
+                                row.airspeed
+                            ));
+                            if ui.small_button("Remove").clicked() {
+                                actions.push(PanelAction::Remove(row.entity, row.plane));
+                            }
+                        });
+                    }
+                });
+
+            ui.separator();
+
+            // Outside the scroll area, so the spawn form stays reachable no
+            // matter how many planes are live.
+            egui::ComboBox::from_label("Kind")
+                .selected_text(state.selected_kind.name())
+                .show_ui(ui, |ui| {
+                    for kind in SPAWNABLE_KINDS {
+                        ui.selectable_value(&mut state.selected_kind, *kind, kind.name());
+                    }
+                });
+            ui.horizontal(|ui| {
+                ui.label("Config:");
+                ui.text_edit_singleline(&mut state.config_path);
+                if ui.button("Browse…").clicked() {
+                    actions.push(PanelAction::Browse);
+                }
+            });
+            if ui.button("Spawn ahead of camera").clicked() {
+                actions.push(PanelAction::Spawn);
+            }
+        });
+
+    (response.map(|r| r.response.rect), actions)
 }
 
 /// Position + velocity for a plane placed ahead of the camera, flying level
@@ -148,41 +247,26 @@ pub fn draw_plane_panel(
     }
     let Ok(ctx) = contexts.ctx_mut() else { return };
 
-    egui::Window::new("Planes")
-        .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(10.0, -10.0))
-        .collapsible(true)
-        .show(ctx, |ui| {
-            let mut rows: Vec<(Entity, u32, ControllerKind, f32, f32, PlaneId)> = planes
-                .iter()
-                .map(|(e, idx, kind, st, pid)| (e, idx.0, *kind, st.altitude, st.airspeed, *pid))
-                .collect();
-            rows.sort_by_key(|r| r.1);
-            for (entity, idx, kind, alt, spd, plane) in rows {
-                ui.horizontal(|ui| {
-                    ui.label(format!("#{idx}  {}  {alt:.0} m  {spd:.0} m/s", kind.name()));
-                    if ui.small_button("Remove").clicked() {
-                        send_remove(&mut commands, entity, plane);
-                    }
-                });
-            }
+    let mut rows: Vec<PlaneRow> = planes
+        .iter()
+        .map(|(entity, idx, kind, st, plane)| PlaneRow {
+            entity,
+            index: idx.0,
+            kind: *kind,
+            altitude: st.altitude,
+            airspeed: st.airspeed,
+            plane: *plane,
+        })
+        .collect();
+    rows.sort_by_key(|r| r.index);
 
-            ui.separator();
+    let (_, actions) = plane_panel_ui(ctx, &rows, &mut state);
 
-            egui::ComboBox::from_label("Kind")
-                .selected_text(state.selected_kind.name())
-                .show_ui(ui, |ui| {
-                    for kind in SPAWNABLE_KINDS {
-                        ui.selectable_value(&mut state.selected_kind, *kind, kind.name());
-                    }
-                });
-            ui.horizontal(|ui| {
-                ui.label("Config:");
-                ui.text_edit_singleline(&mut state.config_path);
-                if ui.button("Browse…").clicked() {
-                    crate::ui::file_load::spawn_plane_config_load(&mut pending);
-                }
-            });
-            if ui.button("Spawn ahead of camera").clicked() {
+    for action in actions {
+        match action {
+            PanelAction::Remove(entity, plane) => send_remove(&mut commands, entity, plane),
+            PanelAction::Browse => crate::ui::file_load::spawn_plane_config_load(&mut pending),
+            PanelAction::Spawn => {
                 if let Ok(cam) = camera.single() {
                     let (pos, vel) = spawn_pose_ahead(cam);
                     send_spawn(
@@ -197,7 +281,8 @@ pub fn draw_plane_panel(
                     );
                 }
             }
-        });
+        }
+    }
 }
 
 /// `N` spawns a default plane ahead of the camera; `Delete` removes the followed
@@ -269,6 +354,129 @@ mod tests {
             "never below the floor, got {}",
             pos.y
         );
+    }
+
+    /// Lays the real panel out in a headless egui context and returns the
+    /// window's rect, so the anchored bottom-left growth can be asserted
+    /// without a GPU or a window manager.
+    fn layout_panel(screen: egui::Vec2, plane_count: u32) -> egui::Rect {
+        let ctx = egui::Context::default();
+        let mut state = PlanePanelState::default();
+        let rows: Vec<PlaneRow> = (0..plane_count)
+            .map(|i| PlaneRow {
+                entity: Entity::PLACEHOLDER,
+                index: i,
+                kind: ControllerKind::LevelHold,
+                altitude: 1000.0,
+                airspeed: 100.0,
+                plane: PlaneId(i),
+            })
+            .collect();
+
+        let mut rect = None;
+        // egui settles anchored/auto-sized windows over a couple of frames.
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), screen)),
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                rect = plane_panel_ui(ctx, &rows, &mut state).0;
+            });
+        }
+        rect.expect("panel window should be laid out")
+    }
+
+    /// The bug: with a large scenario the bottom-anchored roster grew upward off
+    /// the top of the screen and covered the top-left "Flight Data" HUD.
+    #[test]
+    fn panel_with_a_hundred_planes_stays_on_screen_and_clear_of_the_hud() {
+        let screen = egui::vec2(1280.0, 720.0);
+        let rect = layout_panel(screen, 100);
+
+        assert!(
+            rect.top() > 0.0,
+            "panel must not run off the top of the screen, got top={}",
+            rect.top()
+        );
+        // The HUD is anchored LEFT_TOP; keep the panel well clear of that band.
+        assert!(
+            rect.top() > screen.y * 0.4,
+            "panel must stay clear of the top-left HUD, got top={} on a {}px screen",
+            rect.top(),
+            screen.y
+        );
+        assert!(
+            rect.height() < screen.y,
+            "panel must be shorter than the screen, got {}",
+            rect.height()
+        );
+    }
+
+    #[test]
+    fn panel_height_is_capped_rather_than_growing_with_plane_count() {
+        let screen = egui::vec2(1280.0, 720.0);
+        let small = layout_panel(screen, 4);
+        let huge = layout_panel(screen, 100);
+        assert!(
+            huge.height() <= small.height() + ROSTER_MAX_H,
+            "100 planes ({}) must not grow unboundedly past 4 planes ({})",
+            huge.height(),
+            small.height()
+        );
+        assert!(
+            huge.height() <= roster_max_height(screen.y) + 200.0,
+            "panel height should stay near the roster cap plus the spawn form, got {}",
+            huge.height()
+        );
+    }
+
+    /// A handful of planes should still render a compact panel rather than
+    /// reserving the full capped height.
+    #[test]
+    fn panel_shrinks_to_fit_a_small_roster() {
+        let screen = egui::vec2(1280.0, 720.0);
+        let small = layout_panel(screen, 2);
+        let huge = layout_panel(screen, 100);
+        assert!(
+            small.height() < huge.height(),
+            "2 planes ({}) should be shorter than 100 planes ({})",
+            small.height(),
+            huge.height()
+        );
+    }
+
+    #[test]
+    fn roster_height_capped_on_a_tall_screen() {
+        let h = roster_max_height(1080.0);
+        assert!(
+            h <= ROSTER_MAX_H,
+            "roster must stay capped so it cannot reach the top-left HUD, got {h}"
+        );
+    }
+
+    #[test]
+    fn roster_height_never_collapses_on_a_short_screen() {
+        let h = roster_max_height(200.0);
+        assert!(
+            h >= ROSTER_MIN_H,
+            "roster must stay usable on a short screen, got {h}"
+        );
+    }
+
+    #[test]
+    fn roster_height_grows_with_screen_but_leaves_room_for_the_spawn_form() {
+        assert!(
+            roster_max_height(1440.0) >= roster_max_height(720.0),
+            "taller screens allow at least as many visible rows"
+        );
+        for screen in [400.0, 720.0, 1080.0, 1440.0, 2160.0] {
+            let h = roster_max_height(screen);
+            assert!(
+                h < screen,
+                "roster must leave room for the spawn form at screen height {screen}, got {h}"
+            );
+        }
     }
 
     #[test]
