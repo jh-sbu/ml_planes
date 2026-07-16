@@ -711,7 +711,7 @@ the binary + a module filter, e.g. `cargo test --no-default-features --test core
 - `spawn_reset` — `TrainingEnv::reset()` produces correct initial `FlightState`
 - `orbit_tune_sync` — orbit tuning-pool / gain-sync invariants
 - `scenario` — `.scenario.ron` parse/resolve/build, per-plane `fuel_fraction` carried through `resolve()`, `ControllerSpec::kind()` mapping, `spawn_resolved_scenario` live spawn, `default.scenario.ron` resolve, + CSV header pinning (`ml_planes::scenario::CSV_HEADER`, incl. trailing `fuel_remaining`)
-- `lifecycle` — runtime spawn/remove commands, auto-indexing, orphaned-wingman + camera cleanup (camera case is `visual`-gated)
+- `lifecycle` — runtime spawn/remove commands, auto-indexing, orphaned-wingman + camera cleanup (camera case is `visual`-gated, so it runs only under `just test-visual`)
 - `sim_control` — relocated `SimControlPlugin` controller-rebuild systems, headless (runs in core)
 - `controller_telemetry` — each controller's `FlightController::telemetry()` accessor / `ControllerTelemetry` shape (runs in core)
 - **module-gated `#[cfg(sim_enabled)]` in `tests/core/main.rs`** (compile out on net-without-server builds):
@@ -737,15 +737,38 @@ the binary + a module filter, e.g. `cargo test --no-default-features --test core
 - `rl_inference` — RL controller load + deterministic inference (`inference`/`training`-gated)
 - `ppo_training` — RL trainer instantiation (training-gated; run with `--features training --test rl ppo_training::`)
 
+**Visual/UI unit tests (`visual`-gated, in `src/`; run with `just test-visual`):** `src/ui/**` and
+`src/camera/**` are `#[cfg(feature = "visual")]` modules (`src/lib.rs`), so their `mod tests` are
+**invisible to every `--no-default-features` recipe** — `just test` and `just test-all` silently
+skip them. `just test-visual` (`--features visual`) is the only recipe that compiles them:
+- `ui/lifecycle_panel` — spawn-pose helpers + Planes-panel layout (`roster_max_height`, plus
+  headless-`egui::Context` layout assertions that the 100-plane roster stays capped and clear of
+  the HUD)
+- `ui/map` — map projection / zoom / fit math; `ui/hud` — camera-follow index resolution;
+  `ui/file_load` — asset-relative path munging; `ui/menu` — scenario discovery + `parse_addr`
+- `camera/systems` — follow-camera orbit offset math
+- also picks up the `visual`-gated `lifecycle::camera_recovers_to_free_look_when_followed_plane_removed`
+  in `tests/core` and `src/main.rs`'s `cycle_index_wraps_both_directions` (a bin-target test no
+  other recipe runs)
+
+These are pure math / headless egui only — no window, no GPU (`visual` costs a `bevy/default`
+wgpu+winit *link*, not a display at runtime). Since `test-visual` omits `net`, `sim_enabled` holds,
+so it also re-runs the core sim suite and compile-checks the local-sim/`wasm` bin path.
+
 ### Rules
 - All tests must pass with `cargo test --no-default-features`
 - **The complete supported test matrix is `just test-all`** (justfile at repo root): core
   (`--no-default-features`), net parity (`--features "mcp server"`), and RL inference
-  (`--features inference`). `just test-training` covers the training-gated suite separately
-  (heavy wgpu build, needs a GPU). Feature combos outside the justfile are **not supported
-  test configurations** — a green ad-hoc run (e.g. bare `--features mcp`, where the sim tests
-  compile out) is not coverage. Run the full matrix before committing when net/mcp/RL code
-  was touched.
+  (`--features inference`). `just test-training` (heavy wgpu build, needs a GPU) and
+  `just test-visual` cover the training- and `visual`-gated suites separately. Feature combos
+  outside the justfile are **not supported test configurations** — a green ad-hoc run (e.g. bare
+  `--features mcp`, where the sim tests compile out) is not coverage. Run the full matrix before
+  committing when net/mcp/RL code was touched.
+- **Run `just test-visual` after any UI/camera work.** `src/ui/**` and `src/camera/**` are
+  `visual`-gated, so `test-all` does not compile them at all — a green `test-all` says **nothing**
+  about the UI tests, and a broken one is invisible until someone runs `test-visual`. It is kept
+  out of `test-all` only because `visual` pulls `bevy/default` (wgpu/winit/GTK link cost), not
+  because the tests need a display.
 - **Sim-dependent tests require the sim chain (`sim_enabled` cfg).** The 6-DOF FixedUpdate chain
   in `PlanePlugin` compiles in only under `any(not(feature = "net"), feature = "server")`. A
   `net`-without-`server` build (e.g. bare `--features mcp`, since `mcp` enables `net` but not
@@ -756,10 +779,13 @@ the binary + a module filter, e.g. `cargo test --no-default-features --test core
   they **compile out** (not fail) on such a build. A spurious
   "altitude=0 / plane reached ground" is this gating, **not** a physics bug — never touch the
   aero model to chase it. To run these tests against a networked build add the server feature
-  (keep `--no-default-features` — the default `visual` feature loads rendering plugins that panic
-  headless): `cargo test --no-default-features --features "mcp server"` (mirrors the MCP↔server
+  (keep `--no-default-features` — the default features build the *app binary*, whose rendering
+  plugins panic headless; the `visual` **tests** themselves are headless-safe, see `test-visual`):
+  `cargo test --no-default-features --features "mcp server"` (mirrors the MCP↔server
   feature-parity rule).
-- No rendering, no Bevy `App` window, no GPU resources in tests
+- No rendering, no Bevy `App` window, no GPU resources in tests — including the `visual` suite,
+  which stays pure math / headless `egui::Context` (drive layout via `ctx.run(RawInput { .. })`,
+  never a real window). A test that needs a display is out of scope.
 - Tests are deterministic (fixed seed where randomness is needed)
 - Run `cargo fmt` at the end of every editing session before committing — always run it, even if you believe the code is already correctly formatted. Never skip it based on visual inspection.
 - Tests are written **before** the implementation they cover — never after
