@@ -43,6 +43,20 @@ pub struct PlaneSnapshot {
 ///
 /// `planes` contains ALL planes (own + peers) for the tick. Simple controllers
 /// ignore it; `WingmanController` reads the leader via `find()`.
+///
+/// **Why a flat slice + linear-scan `find` (not a map).** The snapshot is
+/// rebuilt from scratch every tick in `run_flight_controllers`, `N` is a handful
+/// of aircraft, and the sole cross-plane lookup (`WingmanController`, once per
+/// tick for its leader) is not a hot path. For small `N` a contiguous
+/// `Arc<[_]>` scan beats a `HashMap` on cache locality, and a map would have to
+/// be re-hashed every tick to save a few comparisons on one lookup — strictly
+/// more build cost for no measurable gain. The `Arc<[_]>` is also trivially
+/// cheap to share (one `Arc::clone` per controller in phase 2) and `Send +
+/// Sync`. If massive multi-agent scenarios (hundreds/thousands of planes, many
+/// doing per-tick peer lookups) ever land — deferred, not out of scope, see the
+/// multi-agent scope decision in CLAUDE.md — build an `id → index` map once in
+/// phase 1 and pass it alongside the slice; `find`/`others` already encapsulate
+/// access, so that swap stays local.
 #[derive(Clone)]
 pub struct ControllerContext {
     pub own_id: PlaneId,
@@ -70,7 +84,9 @@ impl ControllerContext {
         self.planes.iter().filter(move |s| s.id != self.own_id)
     }
 
-    /// Look up any plane by id, including own.
+    /// Look up any plane by id, including own. Linear scan — intentional at the
+    /// current plane count; see the type-level doc for the rationale and the
+    /// map-based path to take if agent counts ever grow large.
     pub fn find(&self, id: PlaneId) -> Option<&PlaneSnapshot> {
         self.planes.iter().find(|s| s.id == id)
     }
