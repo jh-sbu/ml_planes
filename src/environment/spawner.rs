@@ -80,9 +80,11 @@ pub fn initial_state_from_spec(spec: &SpawnSpec) -> FlightState {
     s
 }
 
-/// Spawn a physics-ready plane entity and assign it a stable `PlaneId`.
+/// Spawn a physics-ready plane entity, allocating the next available
+/// `PlaneId` from `ids` (auto-incremented). Thin wrapper around
+/// [`spawn_plane_with_id`] for the common case where the caller doesn't need
+/// to know the id up front.
 ///
-/// `ids` allocates the next available id (auto-incremented).
 /// `config_path` is the `.plane.ron` asset loaded asynchronously to drive
 /// aerodynamic forces once ready; `cfg` is used immediately for Rapier
 /// `AdditionalMassProperties` (mass/inertia) at spawn time. Pass a `cfg` whose
@@ -99,6 +101,38 @@ pub fn spawn_plane(
 ) -> SpawnedPlane {
     let plane_id = PlaneId(ids.0);
     ids.0 += 1;
+    spawn_plane_with_id(
+        commands,
+        plane_id,
+        asset_server,
+        config_path,
+        spec,
+        controller,
+        kind,
+        cfg,
+    )
+}
+
+/// Spawn a physics-ready plane entity under an explicit, caller-assigned
+/// `PlaneId`. Use this instead of [`spawn_plane`] when the id must be known
+/// (or reserved) before controllers are built — e.g. a scenario whose
+/// wingmen reference their leader by id, where the id has to be settled
+/// before `WingmanController::leader_id` is baked in.
+///
+/// `config_path` is the `.plane.ron` asset loaded asynchronously to drive
+/// aerodynamic forces once ready; `cfg` is used immediately for Rapier
+/// `AdditionalMassProperties` (mass/inertia) at spawn time. Pass a `cfg` whose
+/// mass/inertia match `config_path` — they describe the same airframe.
+pub fn spawn_plane_with_id(
+    commands: &mut Commands,
+    plane_id: PlaneId,
+    asset_server: &AssetServer,
+    config_path: &str,
+    spec: &SpawnSpec,
+    controller: Box<dyn FlightController>,
+    kind: ControllerKind,
+    cfg: &PlaneConfig,
+) -> SpawnedPlane {
     let mut state = initial_state_from_spec(spec);
     // Opt this plane into the fuel model: fill the tank to the requested fraction of
     // capacity (default full). The integrator / `consume_fuel` then burn it down.

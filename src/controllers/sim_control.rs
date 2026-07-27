@@ -16,15 +16,16 @@
 use bevy::prelude::*;
 
 use crate::controllers::{
-    ActiveController, ControllerKind, ControllerTuning, FlightPlan, L1Controller, ModelLibrary,
-    OrbitController, OrbitParams, PlaneTuning, SelectedTuningProfile, TuningApplied,
+    ActiveController, ControllerKind, ControllerTuning, FlightPlan, FormationOffset, L1Controller,
+    LevelHoldController, ModelLibrary, OrbitController, OrbitParams, PidController, PlaneTuning,
+    SelectedTuningProfile, TuningApplied, WingmanController,
 };
-use crate::plane::{ControlInputs, FlightPlanHandle, FlightState, PlaneTuningHandle};
+use crate::plane::{ControlInputs, FlightPlanHandle, FlightState, PlaneId, PlaneTuningHandle};
 
 #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
 use crate::controllers::{
-    LevelHoldController, ModelLoadError, RlLevelHoldController, RlLstmOrbitController,
-    RlOrbitController, RlOrbitResidualController, SelectedModel,
+    ModelLoadError, RlLevelHoldController, RlLstmOrbitController, RlOrbitController,
+    RlOrbitResidualController, SelectedModel,
 };
 #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
 use crate::controllers::{OrbitTuning, RlLstmOrbitConfig, RlOrbitConfig, RlOrbitResidualConfig};
@@ -458,6 +459,55 @@ fn extract_orbit_params(ctrl: &mut ActiveController) -> Option<OrbitParams> {
     None
 }
 
+/// Formation state a tuning rebuild would otherwise destroy.
+///
+/// `ControllerKind::Wingman.build()` returns a plain `LevelHoldController` (the
+/// generic factory has no leader reference), so the rebuild systems snapshot
+/// this first and re-wrap the freshly tuned inner controller via
+/// `WingmanController::from_inner` — the wingman analogue of
+/// `extract_orbit_params` + `OrbitController::apply_params`. The outer PIDs are
+/// carried over too, so a profile switch doesn't discard accumulated
+/// range/lateral/heading integrator state.
+struct WingmanParams {
+    leader_id: PlaneId,
+    offset: FormationOffset,
+    range_pid: PidController,
+    lateral_pid: PidController,
+    heading_pid: PidController,
+}
+
+/// Snapshot the formation state of the active controller, if it's a
+/// `WingmanController`. `None` when the kind says `Wingman` but no wingman law
+/// is actually installed (e.g. a fresh `SpawnPlaneCommand`/`SwitchControllerCommand`
+/// fallback) — the caller just proceeds with the plain rebuild in that case.
+fn extract_wingman_params(ctrl: &mut ActiveController) -> Option<WingmanParams> {
+    let wingman = ctrl.0.as_any_mut().downcast_mut::<WingmanController>()?;
+    Some(WingmanParams {
+        leader_id: wingman.leader_id,
+        offset: wingman.offset.clone(),
+        range_pid: wingman.range_pid.clone(),
+        lateral_pid: wingman.lateral_pid.clone(),
+        heading_pid: wingman.heading_pid.clone(),
+    })
+}
+
+/// Re-wrap the freshly rebuilt (plain `LevelHoldController`) active controller
+/// back into a `WingmanController`, restoring the formation state `extract_wingman_params`
+/// captured before the rebuild.
+fn restore_wingman(ctrl: &mut ActiveController, params: WingmanParams) {
+    let Some(inner) = ctrl.0.as_any_mut().downcast_mut::<LevelHoldController>() else {
+        // Shouldn't happen — `Wingman.build()` always yields a LevelHoldController —
+        // but leave the controller alone rather than panic if it ever does.
+        return;
+    };
+    let inner = inner.clone();
+    let mut wingman = WingmanController::from_inner(params.leader_id, params.offset, inner);
+    wingman.range_pid = params.range_pid;
+    wingman.lateral_pid = params.lateral_pid;
+    wingman.heading_pid = params.heading_pid;
+    ctrl.0 = Box::new(wingman);
+}
+
 /// Apply the named tuning profile to a controller that was spawned before the PlaneTuning asset
 /// finished loading. Runs once per entity (guarded by `Without<TuningApplied>`) and fires before
 /// `apply_controller_switch` so any explicit profile switch in the same frame takes precedence.
@@ -508,6 +558,13 @@ fn apply_initial_tuning(
         } else {
             None
         };
+        // Preserve wingman formation state the same way: `Wingman.build()` can't
+        // reconstruct it (no leader reference in the generic factory).
+        let wingman_params = if *kind == ControllerKind::Wingman {
+            extract_wingman_params(&mut controller)
+        } else {
+            None
+        };
 
         controller.0 = kind.build(state, tuning, prev_inputs);
 
@@ -515,6 +572,9 @@ fn apply_initial_tuning(
             if let Some(orbit) = controller.0.as_any_mut().downcast_mut::<OrbitController>() {
                 orbit.apply_params(&params, state.airspeed);
             }
+        }
+        if let Some(params) = wingman_params {
+            restore_wingman(&mut controller, params);
         }
 
         commands.entity(entity).insert(TuningApplied);
@@ -581,6 +641,15 @@ fn apply_controller_switch(
         } else {
             None
         };
+        // Preserve wingman formation state across a profile switch the same way.
+        // `None` when the kind just changed *to* Wingman this frame (the current
+        // controller isn't a wingman yet) — the LevelHold fallback stands, and
+        // `cleanup_orphaned_wingmen` will demote the kind honestly next tick.
+        let wingman_params = if *kind == ControllerKind::Wingman {
+            extract_wingman_params(&mut controller)
+        } else {
+            None
+        };
 
         controller.0 = kind.build(state, tuning, prev_inputs);
 
@@ -590,6 +659,9 @@ fn apply_controller_switch(
             if let Some(orbit) = controller.0.as_any_mut().downcast_mut::<OrbitController>() {
                 orbit.apply_params(&params, state.airspeed);
             }
+        }
+        if let Some(params) = wingman_params {
+            restore_wingman(&mut controller, params);
         }
     }
 }

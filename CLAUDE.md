@@ -116,7 +116,7 @@ src/
 | `EvaluationSummary` / `TaskMetrics` | structs | Policy-evaluation output from `evaluate_policy` (success rate + per-metric families) |
 | `ControllerTelemetry` | ECS component (enum) | Read-only per-controller status (`Orbit { radial_error }`, `FlightPlan { leg, status }`, `Ascent`, `Wingman`, `None`, …) the server snapshots off the active controller each tick and **replicates**, so the thin client — which never steps a controller — can show it on the HUD. Default `None` (`controllers/telemetry.rs`) |
 | `SimSpeed` | resource (enum) | Authoritative sim playback speed (pause/1×/5×/10×) in `src/sim_speed.rs`; replicated so the client displays server-side time acceleration rather than scaling its own clock. Set via `SetSimSpeedCommand` |
-| `Scenario` / `ResolvedScenario` | RON model (`src/scenario.rs`) | Multi-plane `.scenario.ron`: per-plane initial state, optional `fuel_fraction` (0–1; default full tank → loaded mass), `.plane.ron` config, and a `ControllerSpec` (incl. `Wingman` peer references by name, optional inline tuning, RL specs). `resolve()` assigns `PlaneId`s and computes initial states; `build_controller()` builds the boxed controller; `ControllerSpec::kind()` maps a spec to its `ControllerKind`. RL specs **always parse** (so `default.scenario.ron` loads in every build) but only *build* on a native `--features inference` build; otherwise `build_controller` returns `Err` and the live spawner skips that plane. Drives `examples/observe_state.rs` via `--scenario` and the visual menu's Start Scenario flow (`environment::spawn_resolved_scenario`). CSV output ends with a `fuel_remaining` column. |
+| `Scenario` / `ResolvedScenario` | RON model (`src/scenario.rs`) | Multi-plane `.scenario.ron`: per-plane initial state, optional `fuel_fraction` (0–1; default full tank → loaded mass), `.plane.ron` config, and a `ControllerSpec` (incl. `Wingman` peer references by name, optional inline tuning, RL specs). `resolve()` assigns **scenario-local** `PlaneId`s (`idx + 1`) and computes initial states — the live spawner remaps these to runtime ids (see `spawn_resolved_scenario` below), since `NextPlaneId` is a separate, never-reset allocator; `build_controller()` builds the boxed controller; `ControllerSpec::kind()` maps a spec to its `ControllerKind`. A wingman naming itself as leader is rejected at `resolve()` time. RL specs **always parse** (so `default.scenario.ron` loads in every build) but only *build* on a native `--features inference` build; otherwise `build_controller` returns `Err` and the live spawner skips that plane. Drives `examples/observe_state.rs` via `--scenario` and the visual menu's Start Scenario flow (`environment::spawn_resolved_scenario`). CSV output ends with a `fuel_remaining` column. |
 
 ### Physics Layering
 
@@ -331,6 +331,25 @@ on-slot hold) and the `lateral_error_commands_restoring_bank_direction` /
 `lateral_pid.kp` (≫0.002) re-introduces a sustained lateral oscillation, since the
 inner heading/roll loop is comparatively slow.
 
+`ControllerKind::Wingman.build()` (`kind.rs`) returns a plain `LevelHoldController` —
+the generic factory has no leader reference to construct a real `WingmanController`
+with. Because of that, the tuning-rebuild systems in `sim_control.rs`
+(`apply_initial_tuning`, `apply_controller_switch`) can't just call `kind.build()`
+for a wingman the way they do for every other kind: doing so would silently replace
+a live `WingmanController` with the `LevelHold` fallback the moment the plane's
+`.tuning.ron` asset loaded (or a profile was switched), while `ControllerKind` kept
+reporting `Wingman`. Instead they snapshot `(leader_id, offset, range/lateral/heading
+PIDs)` via `extract_wingman_params` *before* rebuilding, then re-wrap the freshly
+tuned inner `LevelHoldController` via `WingmanController::from_inner` afterward
+(`restore_wingman`) — the wingman analogue of `extract_orbit_params` +
+`OrbitController::apply_params`. The wingman draws its tuning from the **`level_hold`**
+pool (there's no separate `wingman` tuning family). `cleanup_orphaned_wingmen`
+(`environment/lifecycle.rs`) additionally demotes `ControllerKind::Wingman` to
+`LevelHold` if the active controller ever isn't actually a `WingmanController` (e.g. a
+fresh `SpawnPlaneCommand { kind: Wingman }`, whose generic `build()` is the same
+fallback) — a safety net for the one case extract/restore can't help, since there's
+nothing to preserve.
+
 ### Runtime Plane Lifecycle
 
 Planes can be added/removed at runtime via observer commands (`environment/lifecycle.rs`,
@@ -346,9 +365,13 @@ Planes can be added/removed at runtime via observer commands (`environment/lifec
   `.plane.ron`, no longer hardcoded) and inserts `PlaneIndex(plane_id.0)` itself — every
   spawned plane is automatically visible to camera cycling, the map, and the HUD. Callers no
   longer hand-insert `PlaneIndex`. `generic_jet_spawn_config()` supplies the shared spawn-time
-  mass/inertia.
+  mass/inertia. `spawn_plane` allocates the next id from `NextPlaneId`; `spawn_plane_with_id`
+  is the underlying primitive for callers (the scenario spawner) that must pin an explicit,
+  pre-reserved `PlaneId` instead.
 - **Removal cleanup:** `cleanup_orphaned_wingmen` (Update, headless-safe) flips a wingman whose
-  `leader_id` is no longer live to `ControllerKind::LevelHold`; `recover_camera_on_target_loss`
+  `leader_id` is no longer live to `ControllerKind::LevelHold`; the same system also demotes any
+  `Wingman`-kind plane whose active controller isn't actually a `WingmanController` (see the
+  Wingman Controller Architecture section above). `recover_camera_on_target_loss`
   (visual) drops the camera from `Follow(dead)` back to `FreeLook` so it/the HUD don't freeze.
 - **UI (visual):** the bottom-left **Planes** panel (`ui/lifecycle_panel.rs`) lists live planes
   with Remove buttons and a spawn form (kind dropdown + config path), plus hotkeys **`N`**
@@ -439,11 +462,22 @@ ScenarioSelect, InGame }` — the original local single-player flow, unchanged. 
 
 `spawn_resolved_scenario` (`environment/scenario_spawn.rs`) is the live-app counterpart to
 `observe_state`'s hand-spawning: per plane it calls `build_controller`, seeds the Rapier body
-via `load_spawn_config`, spawns through `spawn_plane` with `ControllerSpec::kind()`, and attaches
-per-kind extras (`FormationOffset` for wingmen, `SelectedModel` for RL, `FlightPlanHandle` for
-flight plans so `apply_flight_plan` re-installs the `L1Controller` after the tuning rebuild).
+via `load_spawn_config`, spawns through `spawn_plane_with_id` with `ControllerSpec::kind()`, and
+attaches per-kind extras (`FormationOffset` for wingmen, `SelectedModel` for RL, `FlightPlanHandle`
+for flight plans so `apply_flight_plan` re-installs the `L1Controller` after the tuning rebuild).
 Scenario `config` paths use the observe_state `assets/...` convention and are stripped to the
 Bevy asset-relative form for the live spawner.
+
+`resolve()`'s `PlaneId`s are **scenario-local** (`idx + 1`) — not the ids planes actually spawn
+with. `NextPlaneId` is a persistent, never-reset allocator, so the live/runtime ids diverge from
+the resolved numbering whenever other planes already exist or a scenario plane is skipped (e.g. a
+missing RL `.mpk` or flight-plan asset). Since a wingman's `leader_id` is baked in by
+`build_controller` from the resolved numbering, `spawn_resolved_scenario` runs four passes: build
+every controller (recording failures); transitively skip any wingman whose leader failed to build
+(fixed point, since a wingman may itself lead another wingman); reserve a contiguous runtime-id
+block for the survivors and remap each surviving wingman's `leader_id` from resolved to runtime;
+then spawn under the reserved ids via `spawn_plane_with_id`. `spawn_plane` remains the thin
+allocating wrapper used by every other spawn path (lifecycle commands, tests).
 
 ### Training Physics (Self-Contained)
 
@@ -528,6 +562,15 @@ families). Supports `--task {level_hold|orbit|residual_orbit|lstm_orbit}` and, f
 9. `main.rs` — `apply_rl_controller_switch` guard: add variant to the `matches!()` pattern
 10. `main.rs` — `apply_rl_controller_switch` match arm: call `::load()` with error fallback
 11. `main.rs` — `apply_model_switch` match arm: same `::load()` call for HUD model cycling
+
+**A kind whose `build()` can't reconstruct its full state** (like `Wingman`, which needs a
+leader reference the generic factory doesn't have): the tuning-rebuild systems
+(`apply_initial_tuning`, `apply_controller_switch` in `controllers/sim_control.rs`) will
+silently replace a live instance with the fallback the next time the plane's tuning asset
+loads or its profile switches. Add an extract/restore pair — snapshot the state that would be
+lost *before* calling `kind.build()`, then re-wrap the freshly built fallback controller
+*after* — in **both** systems, mirroring `extract_orbit_params`/`OrbitController::apply_params`
+(orbit geometry) or `extract_wingman_params`/`restore_wingman` (wingman formation state).
 
 ---
 
@@ -719,9 +762,9 @@ the binary + a module filter, e.g. `cargo test --no-default-features --test core
 - `pid_convergence` — pure PID closed-loop step response
 - `spawn_reset` — `TrainingEnv::reset()` produces correct initial `FlightState`
 - `orbit_tune_sync` — orbit tuning-pool / gain-sync invariants
-- `scenario` — `.scenario.ron` parse/resolve/build, per-plane `fuel_fraction` carried through `resolve()`, `ControllerSpec::kind()` mapping, `spawn_resolved_scenario` live spawn, `default.scenario.ron` resolve, + CSV header pinning (`ml_planes::scenario::CSV_HEADER`, incl. trailing `fuel_remaining`)
-- `lifecycle` — runtime spawn/remove commands, auto-indexing, orphaned-wingman + camera cleanup (camera case is `visual`-gated, so it runs only under `just test-visual`)
-- `sim_control` — relocated `SimControlPlugin` controller-rebuild systems, headless (runs in core)
+- `scenario` — `.scenario.ron` parse/resolve/build, per-plane `fuel_fraction` carried through `resolve()`, `ControllerSpec::kind()` mapping, `spawn_resolved_scenario` live spawn, `default.scenario.ron` resolve, + CSV header pinning (`ml_planes::scenario::CSV_HEADER`, incl. trailing `fuel_remaining`); self-referential wingman-leader rejection; resolved-vs-runtime `PlaneId` remap, leader-skip cascade, and a scenario wingman's `WingmanController` surviving the tuning rebuild end-to-end
+- `lifecycle` — runtime spawn/remove commands, auto-indexing, orphaned-wingman + camera cleanup (camera case is `visual`-gated, so it runs only under `just test-visual`), + a `Wingman`-kind plane with no `WingmanController` installed falling back to `LevelHold`
+- `sim_control` — relocated `SimControlPlugin` controller-rebuild systems, headless (runs in core); + a `WingmanController` surviving both the initial-tuning rebuild and a later profile switch
 - `controller_telemetry` — each controller's `FlightController::telemetry()` accessor / `ControllerTelemetry` shape (runs in core)
 - **module-gated `#[cfg(sim_enabled)]` in `tests/core/main.rs`** (compile out on net-without-server builds):
   - `aero_physics` — energy conservation over N steps in level flight

@@ -362,6 +362,9 @@ impl Scenario {
         // Validate wingman leader references resolve.
         for p in &planes {
             if let ControllerSpec::Wingman { leader, .. } = &p.spec {
+                if leader == &p.name {
+                    return Err(format!("wingman '{}' cannot follow itself", p.name));
+                }
                 if !planes.iter().any(|q| &q.name == leader) {
                     return Err(format!(
                         "wingman '{}' references unknown leader '{}'",

@@ -63,6 +63,12 @@ impl Plugin for LifecyclePlugin {
 /// silently masquerading as formation flight against a dead `leader_id`. Flipping
 /// `ControllerKind` lets the visual `apply_controller_switch` rebuild it into a
 /// real `LevelHoldController`; headless drivers see the kind change directly.
+///
+/// Also demotes a `Wingman`-kind plane whose active controller isn't actually a
+/// `WingmanController` (e.g. a fresh `SpawnPlaneCommand`/`SwitchControllerCommand`
+/// fallback, or — before the tuning-rebuild fix in `sim_control.rs` — a wingman
+/// clobbered by `apply_initial_tuning`): the kind shouldn't claim formation
+/// flight the plane isn't doing.
 fn cleanup_orphaned_wingmen(
     mut planes: Query<(&mut ActiveController, &mut ControllerKind, &PlaneId)>,
 ) {
@@ -71,8 +77,9 @@ fn cleanup_orphaned_wingmen(
         if *kind != ControllerKind::Wingman {
             continue;
         }
-        if let Some(wing) = ctrl.0.as_any_mut().downcast_mut::<WingmanController>() {
-            if !live.contains(&wing.leader_id) {
+        match ctrl.0.as_any_mut().downcast_mut::<WingmanController>() {
+            Some(wing) if live.contains(&wing.leader_id) => {}
+            _ => {
                 kind.set_if_neq(ControllerKind::LevelHold);
             }
         }

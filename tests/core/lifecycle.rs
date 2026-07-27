@@ -6,8 +6,8 @@ use bevy::prelude::*;
 #[cfg(feature = "visual")]
 use ml_planes::camera::{systems::recover_camera_on_target_loss, CameraMode};
 use ml_planes::controllers::{
-    ControllerKind, FormationOffset, LevelHoldController, PlaneTuning, SelectedTuningProfile,
-    WingmanController,
+    ActiveController, ControllerKind, FormationOffset, LevelHoldController, PlaneTuning,
+    SelectedTuningProfile, WingmanController,
 };
 use ml_planes::environment::{spawn_plane, LifecyclePlugin, RemovePlaneCommand, SpawnPlaneCommand};
 use ml_planes::plane::{
@@ -233,6 +233,37 @@ fn removing_leader_drops_wingman_to_level_hold() {
         *app.world().entity(wingman).get::<ControllerKind>().unwrap(),
         ControllerKind::LevelHold,
         "orphaned wingman should fall back to LevelHold once its leader is gone"
+    );
+}
+
+/// Phase 3 hardening: a plane can carry `ControllerKind::Wingman` without an
+/// actual `WingmanController` installed (e.g. a `SpawnPlaneCommand { kind:
+/// Wingman }`, whose generic `build()` falls back to `LevelHold` — or, before
+/// the tuning-rebuild fix, a wingman clobbered by `apply_initial_tuning`).
+/// `cleanup_orphaned_wingmen`'s downcast used to silently no-op in that case,
+/// leaving the plane claiming formation flight it wasn't doing. It must demote
+/// to `LevelHold` just like an orphaned (leader-removed) wingman does.
+#[test]
+fn wingman_kind_without_wingman_controller_falls_back_to_level_hold() {
+    let mut app = build_headless_app_with(|app| {
+        app.add_plugins(LifecyclePlugin);
+    });
+
+    let entity = app
+        .world_mut()
+        .spawn((
+            ml_planes::plane::PlaneId(1),
+            ControllerKind::Wingman,
+            ActiveController(Box::new(LevelHoldController::new(1000.0, 100.0))),
+        ))
+        .id();
+
+    app.update();
+
+    assert_eq!(
+        *app.world().entity(entity).get::<ControllerKind>().unwrap(),
+        ControllerKind::LevelHold,
+        "a Wingman kind with no WingmanController installed must be demoted to LevelHold"
     );
 }
 

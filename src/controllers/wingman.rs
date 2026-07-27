@@ -122,6 +122,30 @@ impl WingmanController {
         inner.target_altitude = desired_pos.y;
         inner.target_airspeed = leader_initial.airspeed;
 
+        Self::from_inner(leader_id, offset, inner)
+    }
+
+    /// Re-install the wingman guidance law over an already-constructed inner
+    /// controller.
+    ///
+    /// Used by the tuning-rebuild systems (`apply_initial_tuning`,
+    /// `apply_controller_switch` in `controllers/sim_control.rs`): they rebuild
+    /// the inner `LevelHoldController` from the plane's `.tuning.ron` profile
+    /// (`ControllerKind::Wingman::build()` cannot produce a real
+    /// `WingmanController` — the generic factory has no leader reference) and
+    /// then call this to re-wrap it, restoring `leader_id` / `offset` / the
+    /// outer PIDs that the rebuild would otherwise have thrown away.
+    ///
+    /// `inner`'s `target_altitude` / `target_airspeed` / `target_roll` are left
+    /// untouched: `update()` overwrites all three every tick the leader is
+    /// found in `ControllerContext`, and the values `LevelHoldController`'s own
+    /// constructors seed from the plane's *own current* state are the right
+    /// hold-current fallback for the leader-missing early-return path below.
+    pub fn from_inner(
+        leader_id: PlaneId,
+        offset: FormationOffset,
+        inner: LevelHoldController,
+    ) -> Self {
         Self {
             leader_id,
             offset,
@@ -274,6 +298,54 @@ mod tests {
         assert!(inputs.throttle.is_finite());
         assert!(inputs.aileron.is_finite());
         assert!(inputs.rudder.is_finite());
+    }
+
+    /// `from_inner` is the recovery path a tuning rebuild uses to re-wrap an
+    /// already-tuned `LevelHoldController` without disturbing its gains or
+    /// current targets. Guards the `new()` → `from_inner()` refactor: `new()`
+    /// must still apply its leader-geometry pre-seed, and `from_inner` must
+    /// preserve whatever `inner` it's handed (gains *and* targets) untouched.
+    #[test]
+    fn from_inner_keeps_tuned_inner_and_leader() {
+        let own = level_state(Vec3::new(0.0, 1000.0, 0.0), 100.0);
+        let mut inner = LevelHoldController::from_state(&own, &ControlInputs::default());
+        inner.altitude_pid.kp = 9.87;
+        inner.target_altitude = 1234.0;
+        inner.target_airspeed = 56.0;
+
+        let offset = FormationOffset {
+            offset_body: Vec3::new(-30.0, 20.0, 0.0),
+        };
+        let wc = WingmanController::from_inner(LEADER_ID, offset.clone(), inner);
+
+        assert_eq!(wc.leader_id, LEADER_ID);
+        assert_eq!(wc.offset.offset_body, offset.offset_body);
+        assert!((wc.inner.altitude_pid.kp - 9.87).abs() < 1e-6);
+        assert_eq!(
+            wc.inner.target_altitude, 1234.0,
+            "from_inner must not re-seed targets"
+        );
+        assert_eq!(
+            wc.inner.target_airspeed, 56.0,
+            "from_inner must not re-seed targets"
+        );
+    }
+
+    /// `new()` still applies the leader-geometry pre-seed after delegating to
+    /// `from_inner` — regression guard for the refactor.
+    #[test]
+    fn new_still_preseeds_targets_from_leader_geometry() {
+        let leader = level_state(Vec3::new(0.0, 1000.0, 0.0), 100.0);
+        let offset = FormationOffset {
+            offset_body: Vec3::new(-20.0, 15.0, 0.0),
+        };
+        let desired = leader.position + leader.attitude * offset.offset_body;
+        let own = level_state(Vec3::new(0.0, 900.0, 0.0), 90.0);
+
+        let wc = WingmanController::new(LEADER_ID, &leader, &own, offset);
+
+        assert_eq!(wc.inner.target_altitude, desired.y);
+        assert_eq!(wc.inner.target_airspeed, leader.airspeed);
     }
 
     #[test]

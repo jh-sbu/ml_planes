@@ -3,25 +3,37 @@
 //! `examples/observe_state.rs` spawns scenario planes by hand for headless CSV;
 //! this module is the live-app counterpart used by the visual menu's
 //! "Start Scenario" flow. It reuses [`ResolvedScenario::build_controller`] (peer
-//! references, RL load, synchronous L1 flight-plan load) and [`spawn_plane`] (the
-//! same sync-mass spawn path as the runtime `SpawnPlaneCommand`), so a scenario
+//! references, RL load, synchronous L1 flight-plan load) and [`spawn_plane_with_id`]
+//! (the same sync-mass spawn path as the runtime `SpawnPlaneCommand`), so a scenario
 //! drives both the headless and live paths identically.
 //!
 //! A plane whose controller fails to build (e.g. a missing RL `.mpk`) is skipped
 //! with a recorded warning rather than aborting the whole scenario — mirroring the
-//! silent fallback the old hardcoded `main.rs::setup` used.
+//! silent fallback the old hardcoded `main.rs::setup` used. A wingman whose leader
+//! was skipped is transitively skipped too (checked to a fixed point, since a
+//! wingman may itself lead another wingman).
+//!
+//! [`ResolvedScenario::resolve`] assigns **scenario-local** `PlaneId`s (`idx + 1`),
+//! baked into a wingman's `leader_id` by `build_controller`. Those ids are *not*
+//! the runtime ids planes actually spawn with — `NextPlaneId` is a persistent,
+//! never-reset allocator, and a skipped plane shifts every later index. This
+//! module reserves a contiguous block of runtime ids for the surviving planes and
+//! remaps each surviving wingman's `leader_id` from resolved to runtime before
+//! spawning.
+
+use std::collections::HashMap;
 
 use bevy::prelude::*;
 
-use crate::controllers::{FlightPlan, FormationOffset};
-use crate::plane::{FlightPlanHandle, NextPlaneId};
+use crate::controllers::{FlightController, FlightPlan, FormationOffset, WingmanController};
+use crate::plane::{FlightPlanHandle, NextPlaneId, PlaneId};
 use crate::scenario::{ControllerSpec, ResolvedScenario};
 use crate::training::SpawnSpec;
 
 #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
 use crate::controllers::SelectedModel;
 
-use super::spawner::{load_spawn_config, spawn_plane};
+use super::spawner::{load_spawn_config, spawn_plane_with_id};
 
 /// Outcome of [`spawn_resolved_scenario`].
 #[derive(Debug, Default)]
@@ -50,6 +62,15 @@ fn asset_relative_config(config: &Option<String>) -> String {
 
 /// Spawn every plane in `scenario` into the live world. Returns the spawned
 /// entities and any skipped-plane warnings (see [`ScenarioSpawnResult`]).
+///
+/// Four passes, because a wingman's controller bakes in its leader's *runtime*
+/// `PlaneId` — which isn't known until after skips are resolved and the id
+/// block is reserved:
+/// 1. build every plane's controller, recording failures;
+/// 2. transitively skip any wingman whose leader failed (fixed point);
+/// 3. reserve a contiguous runtime-id block for the survivors and remap each
+///    surviving wingman's `leader_id` from resolved to runtime;
+/// 4. spawn the survivors under their reserved ids.
 pub fn spawn_resolved_scenario(
     commands: &mut Commands,
     ids: &mut NextPlaneId,
@@ -57,19 +78,84 @@ pub fn spawn_resolved_scenario(
     scenario: &ResolvedScenario,
 ) -> ScenarioSpawnResult {
     let mut result = ScenarioSpawnResult::default();
+    let n = scenario.planes.len();
 
-    for idx in 0..scenario.planes.len() {
-        let plane = &scenario.planes[idx];
-
-        let controller = match scenario.build_controller(idx) {
-            Ok(c) => c,
+    // Pass 1: build every controller.
+    let mut controllers: Vec<Option<Box<dyn FlightController>>> = Vec::with_capacity(n);
+    let mut skip_reason: Vec<Option<String>> = vec![None; n];
+    for idx in 0..n {
+        match scenario.build_controller(idx) {
+            Ok(c) => controllers.push(Some(c)),
             Err(e) => {
-                result
-                    .skipped
-                    .push(format!("'{}' skipped: {e}", plane.name));
+                skip_reason[idx] = Some(format!("'{}' skipped: {e}", scenario.planes[idx].name));
+                controllers.push(None);
+            }
+        }
+    }
+
+    // Pass 2: a wingman whose leader was skipped has nothing to follow — skip
+    // it too. Looped to a fixed point since a wingman may itself lead another
+    // wingman.
+    loop {
+        let mut changed = false;
+        for idx in 0..n {
+            if skip_reason[idx].is_some() {
                 continue;
             }
+            let ControllerSpec::Wingman { leader, .. } = &scenario.planes[idx].spec else {
+                continue;
+            };
+            // Resolve by name, not by resolved PlaneId — the runtime remap
+            // in pass 3 hasn't happened yet, and names are what the scenario
+            // format itself uses to reference peers.
+            let leader_skipped = scenario
+                .planes
+                .iter()
+                .position(|p| &p.name == leader)
+                .is_some_and(|li| skip_reason[li].is_some());
+            if leader_skipped {
+                skip_reason[idx] = Some(format!(
+                    "'{}' skipped: leader '{leader}' was not spawned",
+                    scenario.planes[idx].name
+                ));
+                controllers[idx] = None;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    result.skipped.extend(skip_reason.iter().flatten().cloned());
+
+    // Pass 3: reserve a contiguous runtime-id block for the survivors (in
+    // scenario order) and remap each surviving wingman's `leader_id` from the
+    // scenario-local resolved id to the runtime id its leader actually got.
+    let mut runtime_id: Vec<Option<PlaneId>> = vec![None; n];
+    for idx in 0..n {
+        if skip_reason[idx].is_none() {
+            runtime_id[idx] = Some(PlaneId(ids.0));
+            ids.0 += 1;
+        }
+    }
+    let resolved_to_runtime: HashMap<PlaneId, PlaneId> = (0..n)
+        .filter_map(|idx| runtime_id[idx].map(|rid| (scenario.planes[idx].id, rid)))
+        .collect();
+    for controller in controllers.iter_mut().flatten() {
+        if let Some(wc) = controller.as_any_mut().downcast_mut::<WingmanController>() {
+            if let Some(&mapped) = resolved_to_runtime.get(&wc.leader_id) {
+                wc.leader_id = mapped;
+            }
+        }
+    }
+
+    // Pass 4: spawn the survivors under their reserved ids.
+    for idx in 0..n {
+        let Some(controller) = controllers[idx].take() else {
+            continue;
         };
+        let plane_id = runtime_id[idx].expect("a surviving plane must have a reserved runtime id");
+        let plane = &scenario.planes[idx];
 
         // Seed the Rapier body from the chosen config synchronously (mass /
         // inertia / fuel) — a heavy airframe on generic inertia diverges to a
@@ -85,9 +171,9 @@ pub fn spawn_resolved_scenario(
             fuel_fraction: plane.fuel_fraction,
         };
 
-        let spawned = spawn_plane(
+        let spawned = spawn_plane_with_id(
             commands,
-            ids,
+            plane_id,
             asset_server,
             &config_path,
             &spec,
