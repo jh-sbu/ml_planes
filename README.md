@@ -4,32 +4,53 @@ AI Summary:
 
 # ml_planes
 
-6-DOF flight simulation sandbox for traditional and ML-based autopilot research.
+6-DOF flight simulation sandbox for traditional and ML-based autopilot research, split
+client/server: an authoritative headless physics server plus a thin rendering client.
+Planes are physically simulated rigid bodies (Bevy Rapier 3D) with a coefficient-based
+linear stability aerodynamic model. Flight controllers — PID autopilots, L1 flight-plan
+guidance, and trained ML policies — are hot-swappable at runtime via a trait interface.
+All ML runs in pure Rust with the `burn` crate; no Python, no IPC.
 
-Planes are physically simulated rigid bodies (Bevy Rapier 3D) with a coefficient-based linear stability aerodynamic model. Flight controllers — PID autopilots or future ML policies — are hot-swappable at runtime via a trait interface. All ML runs in pure Rust with the `burn` crate; no Python, no IPC.
+See `CLAUDE.md` for the full architecture reference (module layout, key types, physics
+model, networking protocol, and test strategy). This file is a lighter-weight intro.
 
 ## Quick Start
 
 ```bash
-# Interactive visual sim (default)
+# Interactive visual client (default) — opens the main menu.
+# "Start New Server" launches a local ml_planes_server child process and connects to it;
+# "Connect to Server" joins a remote one.
 cargo run
 
-# Headless (no rendering)
-cargo run --no-default-features
+# Headless authoritative server (own the sim, let others connect)
+cargo run --features server --bin ml_planes_server -- \
+  --scenario assets/scenarios/default.scenario.ron --port 5555
 
-# All tests (always headless)
+# All tests (always headless; core sim suite only needs --no-default-features)
 cargo test --no-default-features
+
+# Full supported test matrix (see justfile)
+just test-all        # core + net/mcp/server + RL inference
+just test-visual      # UI/camera tests (visual-gated, headless egui — no display)
+just test-training    # RL training-loop tests (heavy wgpu build, needs a GPU)
 ```
+
+`cargo run --no-default-features` builds headless with no rendering and no networking —
+useful for CI/build checks, not for interactive play.
 
 ## Feature Flags
 
 | Flag | Effect |
 |---|---|
-| `visual` (default) | Full Bevy rendering pipeline, egui HUD, Rapier debug render |
-| `inference` | `burn` CPU (ndarray) backend only — loads/runs trained RL policies headlessly (incl. `evaluate_policy`), no GPU/training stack |
-| `training` | Builds on `inference`; adds the `burn` GPU/autodiff/train stack for the training loops |
-| `wasm` | `visual` + `inference` — browser build (CPU inference in the renderer) |
-| *(none — `--no-default-features`)* | Headless physics only; used for tests and training loops |
+| `client` (**default**) | `visual` + `net` — the pure networked renderer. No local physics; planes arrive via replication and every mutation goes out as a command to the server. |
+| `visual` | Full Bevy rendering pipeline, egui HUD, native file dialogs (`rfd`) |
+| `net` | Shared client/server replication protocol (`bevy_replicon` + renet transport) |
+| `server` | Headless authoritative sim (`ml_planes_server` binary) — Rapier + controllers + fuel at 64 Hz, no rendering |
+| `mcp` | `ml_planes_mcp` binary — headless MCP control client exposing a running server to an LLM agent |
+| `inference` | `burn` CPU (ndarray) backend — loads/runs trained RL policies headlessly (incl. `evaluate_policy`), no GPU/training stack |
+| `training` | Builds on `inference`; adds the `burn` GPU/autodiff/train stack for the PPO/BC training loops |
+| `wasm` | `visual` + `inference` — browser build target (CPU inference in the renderer); networking not yet supported in-browser (see `plans/wasm_feasibility.md`) |
+| *(none — `--no-default-features`)* | Headless, no rendering, no networking; used for tests and the training loops |
 
 ## Architecture
 
@@ -37,11 +58,16 @@ cargo test --no-default-features
 src/
   aerodynamics/   # coefficient model: (FlightState, ControlInputs, PlaneConfig) → (F, τ)
   plane/          # PlaneConfig asset, FlightState, ControlInputs, physics systems
-  controllers/    # FlightController trait + PID, Manual, LevelHold, Ascent, Wingman
-  environment/    # infinite ground collider, plane spawner, episode lifecycle
-  camera/         # FreeLook and Follow camera modes  [visual only]
-  ui/             # egui HUD                          [visual only]
-  training/       # TrainingEnv trait, episode management, LevelHoldEnv
+  controllers/    # FlightController trait + PID, Manual, LevelHold, HeadingHold, Ascent,
+                  #   Orbit, Wingman, L1 (flight-plan), + RL variants          [inference]
+  environment/    # infinite ground collider, plane spawner, runtime spawn/remove lifecycle
+  camera/         # FreeLook and Follow camera modes                          [visual only]
+  ui/             # egui HUD, map panel, main menu / scenario select, lifecycle panel [visual only]
+  net/            # replicated components + client→server commands, shared by client & server [net]
+  mcp/            # MCP control client: replicon client + rmcp stdio server                [mcp]
+  training/       # TrainingEnv trait, self-contained 6-DOF integrator, PPO/BC training loops
+  scenario.rs     # multi-plane .scenario.ron model + controller factory
+  bin/            # train_ppo, train_bc, evaluate_policy, ml_planes_server, ml_planes_mcp
 ```
 
 ### Physics Stack
@@ -50,7 +76,13 @@ src/
 FlightController  →  Aero Model  →  Rapier RigidBody
 ```
 
-Each plane is a full Rapier `RigidBody`. The aero model computes forces and torques in body frame from current `FlightState`, `ControlInputs`, and the plane's `PlaneConfig` asset:
+The authoritative 64 Hz Rapier simulation — every `FlightController`, the aero model, and
+fuel burn — runs in the headless `ml_planes_server` binary. The visual client renders
+interpolated replicated state and sends commands; it runs no physics of its own.
+
+Each plane is a full Rapier `RigidBody`. The aero model computes forces and torques in
+body frame from current `FlightState`, `ControlInputs`, and the plane's `PlaneConfig`
+asset, with air density and thrust scaled by altitude (ISA atmosphere model):
 
 | Force/Moment | Equation |
 |---|---|
@@ -59,22 +91,33 @@ Each plane is a full Rapier `RigidBody`. The aero model computes forces and torq
 | Pitching moment | `M = q·S·c̄·(Cm0 + Cmα·α + Cmq·(q·c̄/2V) + Cmδe·δe)` |
 | Roll / Yaw | Lateral-directional coefficients + stability derivatives |
 
-## Plane Assets
+## Plane Assets & Scenarios
 
-All aerodynamic data lives in `.plane.ron` files under `assets/planes/`. The asset loader parses these at runtime — no compile-time plane data.
+All aerodynamic data lives in `.plane.ron` files under `assets/planes/` (e.g.
+`generic_jet`, `business_jet`, `cargo_jet`, `tanker`, `electric_trainer`), each paired
+with a `.tuning.ron` PID gain pool. The asset loader parses these at runtime — no
+compile-time plane data. Each plane also declares a `powerplant` (jet fuel or electric
+charge) that burns down over a flight and lightens (jets) or holds constant (electric)
+mass.
 
-`assets/planes/generic_jet.plane.ron` is the reference configuration (5000 kg, 60 kN thrust).
-
-Controller tuning profiles are stored separately in `.tuning.ron` files and loaded the same way.
+Multi-plane setups are described by `.scenario.ron` files under `assets/scenarios/`
+(e.g. `default`, `wingman_formation`, `orbit`, `fleet_demo`, `mixed_powerplant`,
+`stress_100`) — per-plane spawn state, config, fuel fraction, and controller. The main
+menu's Scenario Select screen and `examples/observe_state.rs --scenario` both drive off
+this same model.
 
 ## Controllers
 
 | Controller | Description |
 |---|---|
-| `ManualController` | Keyboard input; direct control-surface commands |
-| `LevelHoldController` | Pitch + throttle PID to hold target altitude and airspeed |
-| `AscentController` | Climbs to a target altitude then hands off |
-| `WingmanController` | Formation flight; holds a fixed offset behind a leader entity |
+| `ManualController` | Keyboard/stick input; direct control-surface commands |
+| `LevelHoldController` | Cascade PID holding target altitude and airspeed |
+| `HeadingHoldController` | Holds a commanded heading via an inner level-hold cascade |
+| `AscentController` | Climbs to a target altitude then hands off to level hold |
+| `OrbitController` | 3-level cascade PID flying a circular orbit around a world-frame point |
+| `WingmanController` | Formation flight; holds a fixed offset in a leader's body frame |
+| `L1Controller` | Follows a preset `FlightPlan` (waypoints + orbit legs) via L1 nonlinear lateral guidance |
+| `Rl*Controller` (`inference`) | Trained `burn` policies for level hold, orbit (direct/residual), and recurrent LSTM orbit |
 
 Add a new controller by implementing `FlightController`:
 
@@ -160,12 +203,16 @@ printf '%s\n' \
 
 ## Maneuver Roadmap
 
-1. **Level hold** — pitch/throttle PID to maintain altitude and airspeed (complete)
-2. **Formation flight** — follow a lead plane at a fixed relative offset (next)
-3. **Aerial refueling** — approach lead from the rear to a docking position (planned)
+1. **Level flight hold** — complete. RL policy trained (`RlLevelHoldController`).
+2. **Ascent** — complete. Climbs to target altitude then hands off to level hold.
+3. **Formation flight (wingman)** — complete. Fixed body-frame offset behind a leader.
+4. **Circular orbit** — complete. PID cascade plus direct, residual, and recurrent-LSTM RL variants.
+5. **Flight-plan following** — complete. `L1Controller` sequences waypoint/orbit legs via L1 guidance.
+6. **Aerial refueling** — next. Approach a lead plane from the rear to a docking position.
 
 ## Scope / Non-Goals
 
 - No takeoff or landing. Planes spawn mid-air; ground contact ends the episode.
 - No terrain, no compressibility, no structural limits.
+- No client-side prediction — the renderer only interpolates replicated server state.
 - ML runtime is pure Rust (`burn`). No Python, no IPC, no C extensions.
