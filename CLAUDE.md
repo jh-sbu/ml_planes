@@ -677,6 +677,15 @@ app.add_plugins(EguiPlugin::default());
 app.add_plugins(EguiPlugin { enable_multipass_for_primary_context: false });
 ```
 
+**Audio — `AudioPlugin` disabled, no audio assets yet:**
+- `bevy_audio` comes in transitively via `visual = ["bevy/default", ...]`, but no
+  code uses `AudioPlayer`/`AudioSource` today.
+- `main.rs`'s `DefaultPlugins` registration disables it
+  (`.disable::<bevy::audio::AudioPlugin>()`) to avoid ALSA/JACK/OSS device-probe
+  errors at startup on machines without a configured sound server.
+- To add real audio later: drop the `.disable::<...>()` call and add
+  `AudioPlayer`/`AudioSource` usage as normal — `bevy_audio` is already compiled in.
+
 ---
 
 ## 6. Test Strategy

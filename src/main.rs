@@ -58,10 +58,16 @@ fn main() {
     // eliminates spurious HTTP 404 errors in the WASM build and is safe because
     // no asset requires custom loader settings or processing overrides.
     #[cfg(feature = "visual")]
-    app.add_plugins(DefaultPlugins.set(AssetPlugin {
-        meta_check: AssetMetaCheck::Never,
-        ..default()
-    }));
+    app.add_plugins(
+        DefaultPlugins
+            .set(AssetPlugin {
+                meta_check: AssetMetaCheck::Never,
+                ..default()
+            })
+            // No audio assets exist yet; this skips ALSA/JACK/OSS device probing
+            // at startup. Remove once real audio (AudioPlayer/AudioSource) is added.
+            .disable::<bevy::audio::AudioPlugin>(),
+    );
     #[cfg(not(feature = "visual"))]
     app.add_plugins((
         MinimalPlugins,
