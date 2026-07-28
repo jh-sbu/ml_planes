@@ -155,7 +155,14 @@ where
 
         for _ in 0..steps_per_env {
             // Batch [n, obs_dim] obs tensor — one inference call for all envs.
-            let obs_flat: Vec<f32> = obs_batch.iter().flat_map(|o| o.iter().copied()).collect();
+            // Pre-sized `extend` avoids the incremental regrowth `flat_map(..).collect()`
+            // does when it can't see the total length up front (TensorData::new still
+            // needs to take ownership of this Vec, so the allocation itself is
+            // unavoidable — this just makes the one allocation exact-sized).
+            let mut obs_flat: Vec<f32> = Vec::with_capacity(n * self.obs_dim);
+            for o in &obs_batch {
+                obs_flat.extend_from_slice(o);
+            }
             let obs_t = Tensor::<B::InnerBackend, 2>::from_data(
                 TensorData::new(obs_flat, vec![n, self.obs_dim]),
                 &inner_device,
@@ -187,7 +194,10 @@ where
 
             for i in 0..n {
                 env_buffers[i].push(RolloutStep {
-                    obs: obs_batch[i].clone(),
+                    // `obs_batch` is unconditionally overwritten by `next_obs` right
+                    // after this loop, so `obs_batch[i]` is dead after this read —
+                    // move it out instead of cloning it.
+                    obs: std::mem::take(&mut obs_batch[i]),
                     action: actions[i],
                     log_prob: log_prob_data[i],
                     reward: rewards[i],
@@ -213,7 +223,10 @@ where
         }
 
         // Bootstrap: one batched inference for all N last observations.
-        let last_flat: Vec<f32> = obs_batch.iter().flat_map(|o| o.iter().copied()).collect();
+        let mut last_flat: Vec<f32> = Vec::with_capacity(n * self.obs_dim);
+        for o in &obs_batch {
+            last_flat.extend_from_slice(o);
+        }
         let last_obs_t = Tensor::<B::InnerBackend, 2>::from_data(
             TensorData::new(last_flat, vec![n, self.obs_dim]),
             &inner_device,
@@ -231,17 +244,14 @@ where
             buf.compute_gae(last_values[i], self.gamma, self.gae_lambda);
         }
 
-        // Merge into one buffer for minibatch updates.
+        // Merge into one buffer for minibatch updates. `append` moves each
+        // per-env buffer's storage rather than cloning every `RolloutStep`
+        // (and the `Vec<f32>` obs each one owns) — the per-env buffers are
+        // dropped right after this loop, so cloning them bought nothing.
         let total = steps_per_env * n;
         let mut merged = RolloutBuffer::with_capacity(total);
-        merged.advantages = Vec::with_capacity(total);
-        merged.returns = Vec::with_capacity(total);
-        for buf in &env_buffers {
-            for step in &buf.steps {
-                merged.steps.push(step.clone());
-            }
-            merged.advantages.extend_from_slice(&buf.advantages);
-            merged.returns.extend_from_slice(&buf.returns);
+        for buf in env_buffers {
+            merged.append(buf);
         }
         merged.normalize_advantages();
 
@@ -279,6 +289,18 @@ where
         let mut num_metric_samples = 0usize;
         let mut indices: Vec<usize> = (0..n).collect();
 
+        // `obs` is the only per-step field that's a separate heap allocation
+        // (`action`/`log_prob`/etc. are inline `RolloutStep` fields, same as
+        // `advantages`/`returns` which are already flat on `buffer`). Flattening
+        // it into one contiguous arena once, up front, means every epoch's
+        // shuffled minibatch gather reads via a direct offset into one array
+        // instead of chasing a different heap pointer (`buffer.steps[i].obs`)
+        // per sample — same bytes copied, better cache locality on the gather.
+        let mut all_obs: Vec<f32> = Vec::with_capacity(n * self.obs_dim);
+        for step in &buffer.steps {
+            all_obs.extend_from_slice(&step.obs);
+        }
+
         for _epoch in 0..self.n_epochs {
             // Shuffle indices.
             for (i, value) in indices.iter_mut().enumerate() {
@@ -300,8 +322,9 @@ where
                 let mut ret_batch = Vec::with_capacity(mb);
 
                 for &i in idx {
+                    let ostart = i * self.obs_dim;
+                    obs_flat.extend_from_slice(&all_obs[ostart..ostart + self.obs_dim]);
                     let step = &buffer.steps[i];
-                    obs_flat.extend_from_slice(&step.obs);
                     act_flat.extend_from_slice(&step.action);
                     lp_old.push(step.log_prob);
                     adv_batch.push(buffer.advantages[i]);

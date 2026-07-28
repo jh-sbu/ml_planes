@@ -37,14 +37,30 @@ impl RolloutBuffer {
         self.steps.push(step);
     }
 
+    /// Move all of `other`'s steps/advantages/returns onto the end of `self`,
+    /// preserving order. Uses `Vec::append` (an O(1) pointer move of `other`'s
+    /// backing storage), so merging per-env rollout buffers doesn't clone every
+    /// `RolloutStep` the way a `for step in &other.steps { self.push(step.clone()) }`
+    /// loop would.
+    pub fn append(&mut self, mut other: RolloutBuffer) {
+        self.steps.append(&mut other.steps);
+        self.advantages.append(&mut other.advantages);
+        self.returns.append(&mut other.returns);
+    }
+
     /// Compute GAE advantages and TD-lambda returns.
     ///
     /// Must be called after the rollout is complete.  `last_value` is the
     /// bootstrap value estimate at the step after the final step.
     pub fn compute_gae(&mut self, last_value: f32, gamma: f32, gae_lambda: f32) {
         let n = self.steps.len();
-        self.advantages = vec![0.0; n];
-        self.returns = vec![0.0; n];
+        // Resize in place rather than `self.advantages = vec![0.0; n]`, which
+        // would discard whatever capacity `with_capacity` already reserved and
+        // allocate fresh every call.
+        self.advantages.clear();
+        self.advantages.resize(n, 0.0);
+        self.returns.clear();
+        self.returns.resize(n, 0.0);
 
         let mut gae = 0.0_f32;
         for t in (0..n).rev() {
@@ -179,6 +195,29 @@ mod tests {
             "adv[0]={}",
             buf.advantages[0]
         );
+    }
+
+    #[test]
+    fn append_moves_steps_in_order_without_dropping_data() {
+        let mut a = RolloutBuffer::new();
+        a.push(make_step(1.0, 0.0, false));
+        a.push(make_step(2.0, 0.0, false));
+        a.advantages = vec![0.1, 0.2];
+        a.returns = vec![0.1, 0.2];
+
+        let mut b = RolloutBuffer::new();
+        b.push(make_step(3.0, 0.0, false));
+        b.push(make_step(4.0, 0.0, false));
+        b.advantages = vec![0.3, 0.4];
+        b.returns = vec![0.3, 0.4];
+
+        a.append(b);
+
+        assert_eq!(a.steps.len(), 4);
+        let rewards: Vec<f32> = a.steps.iter().map(|s| s.reward).collect();
+        assert_eq!(rewards, vec![1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(a.advantages, vec![0.1, 0.2, 0.3, 0.4]);
+        assert_eq!(a.returns, vec![0.1, 0.2, 0.3, 0.4]);
     }
 
     #[test]
