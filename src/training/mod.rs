@@ -1,3 +1,5 @@
+#[cfg(feature = "training")]
+pub mod backend;
 pub mod bc;
 pub mod env;
 pub mod eval;
@@ -14,6 +16,8 @@ pub mod vec_env;
 pub mod wu_orbit_env;
 pub mod wu_orbit_reward;
 
+#[cfg(feature = "training")]
+pub use backend::Backend;
 pub use bc::{collect_demonstrations, BcDataset, DemonstrationEnv};
 pub use env::{Observation, SpawnSpec, StepInfo, TrainingEnv};
 pub use eval::{evaluate_policy, EvaluationSummary};

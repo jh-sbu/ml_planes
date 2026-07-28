@@ -8,7 +8,7 @@
 - Physics: `bevy_rapier3d` (Rapier rigid-body dynamics)
 - Rendering: `bevy` + `bevy_egui` HUD (feature-flagged off for training)
 - Aerodynamics: custom coefficient-based model (coefficient tables in `.plane.ron` assets)
-- ML: `burn` (pure Rust; no Python, no IPC). CPU `ndarray` backend at inference (the `inference` feature); GPU `wgpu` + `autodiff` for training (the `training` feature)
+- ML: `burn` (pure Rust; no Python, no IPC). CPU `ndarray` backend at inference (the `inference` feature) and, by default, at training too (the `training` feature adds `autodiff`); GPU `wgpu` training is opt-in via the `wgpu` feature
 - Asset format: RON (Rusty Object Notation). `.plane.ron` (aero config) and `.plan.ron` (flight plan) use Bevy's asset loader; `.tuning.ron` (PID gain pools), `*.reward.ron` (reward/termination, in `assets/training/`), `*.ppo.ron` (PPO hyperparameters, in `assets/training/`), and multi-plane `*.scenario.ron` (in `assets/scenarios/`) are loaded directly via `ron::de` (`implicit_some` enabled for scenarios) — no Bevy asset server required
 
 **Development philosophy:** Test-Driven Development (TDD) is mandatory. Write a failing test before writing any implementation code. The Red-Green-Refactor cycle governs all new features: red (failing test), green (minimal implementation to pass), refactor (clean up). The environment, aerodynamic model, and test suite must be solid before any controller or ML work begins.
@@ -248,7 +248,8 @@ net = ["dep:bevy_replicon", "dep:bevy_replicon_renet", "bevy/serialize"]
 mcp = ["net", ...]                      # MCP control client (feature parity with `server`)
 wasm = ["visual", "inference"]          # browser build; no net (deferred)
 inference = ["burn/std", "burn/ndarray", "bevy/bevy_log"]
-training = ["inference", "burn/wgpu", "burn/autodiff", "burn/train", "burn/tui"]
+training = ["inference", "burn/autodiff", "burn/train", "burn/tui"]
+wgpu = ["training", "burn/wgpu"]         # opt-in GPU training backend
 ```
 
 - `client` (**default**): `visual` + `net`. The renderer is a **pure client** — it runs no
@@ -261,8 +262,10 @@ training = ["inference", "burn/wgpu", "burn/autodiff", "burn/train", "burn/tui"]
 - `visual`: full Bevy rendering pipeline + egui HUD + `rfd` native file dialogs
 - `inference`: `burn` CPU (`ndarray`) backend only — loads/runs trained RL policies
   headlessly, no training stack. Layered into both `visual` (via `wasm`) and `training`.
-- `training`: builds on `inference`, adds `burn` GPU (`wgpu`), `autodiff`, `train`, and
-  `tui`; no rendering, max-speed simulation
+- `training`: builds on `inference`, adds `burn` `autodiff`, `train`, and `tui`; defaults to the
+  CPU (`ndarray`) backend — no rendering, max-speed simulation
+- `wgpu`: opt-in GPU training backend (builds on `training`, adds `burn/wgpu`); pass
+  `--backend wgpu` to `train_ppo`/`train_bc` to use it
 - `wasm`: `visual` + `inference` — browser build (CPU inference in the renderer); no `net`
 - All tests run with `--no-default-features` (headless); no rendering in CI. Net/server tests
   need `--features "mcp server"` (see §6)
@@ -610,7 +613,8 @@ client = ["visual", "net"]
 visual = ["bevy/default", "bevy_egui", "rfd"]
 wasm = ["visual", "inference"]
 inference = ["burn/std", "burn/ndarray", "bevy/bevy_log"]
-training = ["inference", "burn/wgpu", "burn/autodiff", "burn/train", "burn/tui"]
+training = ["inference", "burn/autodiff", "burn/train", "burn/tui"]
+wgpu = ["training", "burn/wgpu"]         # opt-in GPU training backend
 net = ["dep:bevy_replicon", "dep:bevy_replicon_renet", "bevy/serialize"]
 server = ["net"]                                  # headless authoritative sim
 # MCP control client (headless replicon client + rmcp stdio server). Feature parity with
@@ -634,10 +638,10 @@ tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter
 naga = { version = "26", features = ["termcolor"] }
 
 [[bin]]
-name = "train_ppo"         # required-features = ["training"]
+name = "train_ppo"         # required-features = ["training"]; --backend wgpu needs feature "wgpu"
 path = "src/bin/train_ppo.rs"
 [[bin]]
-name = "train_bc"          # required-features = ["training"] — BC pretraining
+name = "train_bc"          # required-features = ["training"] — BC pretraining; wgpu as above
 path = "src/bin/train_bc.rs"
 [[bin]]
 name = "evaluate_policy"   # required-features = ["inference"] — policy rollout/metrics
@@ -651,8 +655,10 @@ path = "src/bin/mcp.rs"
 ```
 
 > `burn` features are selected per crate-feature (`default-features = false`): `ndarray` =
-> CPU backend (enabled by `inference`, used in production and WASM); `wgpu` = GPU backend +
-> `autodiff`/`train` for training; `tui` = training progress display. `train_ppo` tasks:
+> CPU backend (enabled by `inference`, used in production, WASM, and as the default training
+> backend); `autodiff`/`train` (from `training`) run PPO/BC on top of it; `wgpu` (its own opt-in
+> crate feature) = GPU backend for training, selected at runtime via `--backend wgpu`
+> (`ml_planes::training::Backend`); `tui` = training progress display. `train_ppo` tasks:
 > `level_hold`, `orbit`, `residual_orbit`, `lstm_orbit`.
 
 > **Bevy feature flag note:** `default-features = false` disables all optional
@@ -811,7 +817,8 @@ so it also re-runs the core sim suite and compile-checks the local-sim/`wasm` bi
 - All tests must pass with `cargo test --no-default-features`
 - **The complete supported test matrix is `just test-all`** (justfile at repo root): core
   (`--no-default-features`), net parity (`--features "mcp server"`), and RL inference
-  (`--features inference`). `just test-training` (heavy wgpu build, needs a GPU) and
+  (`--features inference`). `just test-training` (CPU/ndarray, the default training backend;
+  `just test-training-gpu` covers the opt-in `wgpu` backend, heavy build, needs a GPU) and
   `just test-visual` cover the training- and `visual`-gated suites separately. Feature combos
   outside the justfile are **not supported test configurations** — a green ad-hoc run (e.g. bare
   `--features mcp`, where the sim tests compile out) is not coverage. Run the full matrix before

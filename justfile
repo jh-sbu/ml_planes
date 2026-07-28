@@ -25,6 +25,10 @@ test-all:
 test-visual:
     cargo test --no-default-features --features visual
 
-# RL training suite — heavy wgpu build, needs a GPU; not part of test-all
+# RL training suite — CPU (ndarray) build, the default training backend; not part of test-all
 test-training:
     cargo test --no-default-features --features training
+
+# GPU training suite — opt-in wgpu/cubecl backend (heavy build, needs a GPU); not part of test-all
+test-training-gpu:
+    cargo test --no-default-features --features "training wgpu"

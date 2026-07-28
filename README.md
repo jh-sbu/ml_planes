@@ -32,7 +32,8 @@ cargo test --no-default-features
 # Full supported test matrix (see justfile)
 just test-all        # core + net/mcp/server + RL inference
 just test-visual      # UI/camera tests (visual-gated, headless egui — no display)
-just test-training    # RL training-loop tests (heavy wgpu build, needs a GPU)
+just test-training    # RL training-loop tests (CPU/ndarray, the default training backend)
+just test-training-gpu # RL training-loop tests on the opt-in wgpu backend (heavy build, needs a GPU)
 ```
 
 `cargo run --no-default-features` builds headless with no rendering and no networking —
@@ -47,8 +48,9 @@ useful for CI/build checks, not for interactive play.
 | `net` | Shared client/server replication protocol (`bevy_replicon` + renet transport) |
 | `server` | Headless authoritative sim (`ml_planes_server` binary) — Rapier + controllers + fuel at 64 Hz, no rendering |
 | `mcp` | `ml_planes_mcp` binary — headless MCP control client exposing a running server to an LLM agent |
-| `inference` | `burn` CPU (ndarray) backend — loads/runs trained RL policies headlessly (incl. `evaluate_policy`), no GPU/training stack |
-| `training` | Builds on `inference`; adds the `burn` GPU/autodiff/train stack for the PPO/BC training loops |
+| `inference` | `burn` CPU (ndarray) backend — loads/runs trained RL policies headlessly (incl. `evaluate_policy`), no training stack |
+| `training` | Builds on `inference`; adds the `burn` autodiff/train stack for the PPO/BC training loops. Defaults to the CPU (ndarray) backend — no GPU required |
+| `wgpu` | Opt-in GPU training backend (builds on `training`); adds `burn/wgpu`. Pass `--backend wgpu` to `train_ppo`/`train_bc` to use it |
 | `wasm` | `visual` + `inference` — browser build target (CPU inference in the renderer); networking not yet supported in-browser (see `plans/wasm_feasibility.md`) |
 | *(none — `--no-default-features`)* | Headless, no rendering, no networking; used for tests and the training loops |
 

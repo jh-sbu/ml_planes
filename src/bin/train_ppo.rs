@@ -13,7 +13,8 @@
 //!                             If omitted, auto-increments: ppo_level_hold_1.mpk,
 //!                             ppo_orbit_1.mpk, … (never overwrites an existing file).
 //!   --steps <n>               Total environment steps (default: 2_000_000).
-//!   --backend <wgpu|ndarray>  Compute backend (default: wgpu).
+//!   --backend <ndarray|wgpu>  Compute backend (default: ndarray; wgpu requires
+//!                             --features wgpu).
 //!   --log-file <path>         Write a CSV training log (reward config header + per-iteration
 //!                             metrics) to <path>. Compatible with pandas / gnuplot / Excel.
 //!   --reward-config <path>    Load reward/termination profile from <path> instead of the
@@ -33,7 +34,10 @@ fn main() {
 
 #[cfg(feature = "training")]
 fn main() {
-    use burn::backend::{Autodiff, NdArray, Wgpu};
+    #[cfg(feature = "wgpu")]
+    use burn::backend::Wgpu;
+    use burn::backend::{Autodiff, NdArray};
+    use ml_planes::training::Backend;
 
     let plain = std::env::args().any(|a| a == "--plain");
 
@@ -58,11 +62,12 @@ fn main() {
         .windows(2)
         .find(|w| w[0] == "--backend")
         .map(|w| Backend::parse(&w[1]))
-        .unwrap_or(Ok(Backend::Wgpu))
+        .unwrap_or(Ok(Backend::default()))
         .unwrap_or_else(|e| {
             eprintln!("{e}");
             std::process::exit(2);
         });
+    println!("Backend: {}", backend.label());
 
     let total_timesteps: usize = args
         .windows(2)
@@ -138,6 +143,7 @@ fn main() {
             bc_steps,
             bc_epochs,
         ),
+        #[cfg(feature = "wgpu")]
         Backend::Wgpu => run::<Autodiff<Wgpu>>(
             plain,
             save_path,
@@ -150,26 +156,6 @@ fn main() {
             bc_steps,
             bc_epochs,
         ),
-    }
-}
-
-#[cfg(feature = "training")]
-#[derive(Clone, Copy)]
-enum Backend {
-    NdArray,
-    Wgpu,
-}
-
-#[cfg(feature = "training")]
-impl Backend {
-    fn parse(value: &str) -> Result<Self, String> {
-        match value {
-            "ndarray" | "cpu" => Ok(Self::NdArray),
-            "wgpu" => Ok(Self::Wgpu),
-            other => Err(format!(
-                "Unsupported --backend '{other}'. Use 'wgpu', 'ndarray', or 'cpu'."
-            )),
-        }
     }
 }
 

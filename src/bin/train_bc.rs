@@ -15,7 +15,8 @@
 //!   --bc-epochs <n>             Supervised epochs over the dataset (default: 10).
 //!   --minibatch <n>             Minibatch size (default: 256).
 //!   --output <stem>             Save to models/<task>/<stem>.mpk (auto-increments if omitted).
-//!   --backend <wgpu|ndarray>    Compute backend (default: wgpu).
+//!   --backend <ndarray|wgpu>    Compute backend (default: ndarray; wgpu requires
+//!                               --features wgpu).
 //!   --reward-config <path>      Reward/termination profile path, overriding the task default
 //!                               (assets/training/<task>.reward.ron). Missing file → defaults.
 
@@ -27,7 +28,10 @@ fn main() {
 
 #[cfg(feature = "training")]
 fn main() {
-    use burn::backend::{Autodiff, NdArray, Wgpu};
+    #[cfg(feature = "wgpu")]
+    use burn::backend::Wgpu;
+    use burn::backend::{Autodiff, NdArray};
+    use ml_planes::training::Backend;
 
     let args: Vec<String> = std::env::args().collect();
 
@@ -72,11 +76,12 @@ fn main() {
 
     let backend = find("--backend")
         .map(|v| Backend::parse(&v))
-        .unwrap_or(Ok(Backend::Wgpu))
+        .unwrap_or(Ok(Backend::default()))
         .unwrap_or_else(|e| {
             eprintln!("{e}");
             std::process::exit(2);
         });
+    println!("Backend: {}", backend.label());
 
     let save_path = save_path_for(task, find("--output"));
 
@@ -87,28 +92,9 @@ fn main() {
         Backend::NdArray => {
             run::<Autodiff<NdArray>>(task, steps, bc_epochs, minibatch, save_path, reward_config)
         }
+        #[cfg(feature = "wgpu")]
         Backend::Wgpu => {
             run::<Autodiff<Wgpu>>(task, steps, bc_epochs, minibatch, save_path, reward_config)
-        }
-    }
-}
-
-#[cfg(feature = "training")]
-#[derive(Clone, Copy)]
-enum Backend {
-    NdArray,
-    Wgpu,
-}
-
-#[cfg(feature = "training")]
-impl Backend {
-    fn parse(value: &str) -> Result<Self, String> {
-        match value {
-            "ndarray" | "cpu" => Ok(Self::NdArray),
-            "wgpu" => Ok(Self::Wgpu),
-            other => Err(format!(
-                "Unsupported --backend '{other}'. Use 'wgpu', 'ndarray', or 'cpu'."
-            )),
         }
     }
 }
