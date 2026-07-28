@@ -793,7 +793,9 @@ the binary + a module filter, e.g. `cargo test --no-default-features --test core
 
 **`tests/rl/` (`inference`/`training`; the whole binary compiles out without an RL backend):**
 - `rl_inference` — RL controller load + deterministic inference (`inference`/`training`-gated)
-- `ppo_training` — RL trainer instantiation (training-gated; run with `--features training --test rl ppo_training::`)
+- `ppo_training` — short PPO rollout/update loops (level_hold + orbit), asserting no NaN in
+  policy output after training; **not** a convergence/reward-trend check (see the "Known
+  nondeterminism" note below) (training-gated; run with `--features training --test rl ppo_training::`)
 
 **Visual/UI unit tests (`visual`-gated, in `src/`; run with `just test-visual`):** `src/ui/**` and
 `src/camera/**` are `#[cfg(feature = "visual")]` modules (`src/lib.rs`), so their `mod tests` are
@@ -845,7 +847,19 @@ so it also re-runs the core sim suite and compile-checks the local-sim/`wasm` bi
 - No rendering, no Bevy `App` window, no GPU resources in tests — including the `visual` suite,
   which stays pure math / headless `egui::Context` (drive layout via `ctx.run(RawInput { .. })`,
   never a real window). A test that needs a display is out of scope.
-- Tests are deterministic (fixed seed where randomness is needed)
+- Tests are deterministic (fixed seed where randomness is needed). **Known exception:** `burn`
+  module init (`LinearConfig::init` etc., used by `ActorCritic::new`) draws from burn's default
+  backend RNG, which nothing in this codebase seeds — `PpoTrainer`'s own `rng_seed` only covers
+  minibatch shuffling (`lcg_shuffle`), and `VecEnv`'s per-env seed offset only covers env resets.
+  This is fixable (`Backend::seed(device, seed)` exists in burn 0.20) but isn't wired up anywhere
+  yet, so any `cargo test` that trains a fresh `PpoTrainer`/`ActorCritic` — e.g. `tests/rl/ppo_training`
+  — gets different weights, and therefore a different stochastic trajectory, on every run. Such
+  tests must only assert seed-independent invariants (no NaN, correct shapes/dims, no panics) —
+  never a specific reward value or trend (a prior version of `ppo_training::ppo_50_iterations_no_nan`
+  asserted the reward didn't regress over 50 iterations and failed reproducibly on unmodified
+  `main` purely from this, not from any actual bug). Convergence/reward-quality checks belong in
+  the slower `evaluate_policy` / `train-evaluate-optimize` workflows, which run full-length
+  training and are not part of `cargo test`.
 - Run `cargo fmt` at the end of every editing session before committing — always run it, even if you believe the code is already correctly formatted. Never skip it based on visual inspection.
 - Tests are written **before** the implementation they cover — never after
 - A PR that adds implementation without a prior failing test is not accepted

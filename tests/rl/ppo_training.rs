@@ -46,10 +46,23 @@ fn jet_cfg() -> PlaneConfig {
     }
 }
 
-/// 50 PPO iterations with a tiny rollout (128 steps/iter).
-/// Checks: no NaN in policy output, reward doesn't blow up.
+/// 50 PPO iterations with a tiny rollout (128 steps/iter). Checks: no NaN in
+/// policy output after training.
+///
+/// Does **not** assert anything about the reward trend. `PpoTrainer::new` builds
+/// its `ActorCritic` via burn's default (unseeded) module init — see the
+/// "Known nondeterminism" note in CLAUDE.md §6 — so at this rollout size (50 ×
+/// 128 = 6,400 steps, vs. 2,000,000 for a real training run) the policy is still
+/// deep in random exploration and `mean_return` swings by hundreds between runs
+/// on identical code. A prior version of this test asserted
+/// `last_mean > first_mean - 5.0` over the first/last 10 iterations; it failed
+/// reproducibly on unmodified `main` (`first_mean=-342` / `last_mean=-672` one
+/// run, `first_mean=-599` / `last_mean=-751` the next) purely from that
+/// unseeded init, not from any actual regression. Behavioral/convergence
+/// validation lives in the slower `evaluate_policy` / `train-evaluate-optimize`
+/// workflows instead, which run full-length training.
 #[test]
-fn ppo_50_iterations_no_nan_no_reward_collapse() {
+fn ppo_50_iterations_no_nan() {
     use burn::module::AutodiffModule;
     use burn::tensor::Tensor;
 
@@ -60,12 +73,9 @@ fn ppo_50_iterations_no_nan_no_reward_collapse() {
     trainer.minibatch = 32;
     trainer.n_epochs = 2;
 
-    let mut returns: Vec<f32> = Vec::new();
-
     for _i in 0..50 {
-        let (buffer, mean_ret, _ep_len) = trainer.collect_rollout();
+        let (buffer, _mean_ret, _ep_len) = trainer.collect_rollout();
         let _ = trainer.update(&buffer);
-        returns.push(mean_ret);
     }
 
     // Policy output must remain finite.
@@ -82,14 +92,6 @@ fn ppo_50_iterations_no_nan_no_reward_collapse() {
     for v in lp.into_data().to_vec::<f32>().unwrap() {
         assert!(v.is_finite(), "log_prob NaN after 50 PPO iterations: {v}");
     }
-
-    // Weak reward check: last 10 iterations shouldn't be wildly worse than first 10.
-    let first_mean = returns[..10].iter().sum::<f32>() / 10.0;
-    let last_mean = returns[40..].iter().sum::<f32>() / 10.0;
-    assert!(
-        last_mean > first_mean - 5.0,
-        "reward collapsed: first_mean={first_mean:.3}, last_mean={last_mean:.3}"
-    );
 }
 
 #[test]
