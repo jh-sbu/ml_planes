@@ -19,6 +19,14 @@
 //!                               --features wgpu).
 //!   --reward-config <path>      Reward/termination profile path, overriding the task default
 //!                               (assets/training/<task>.reward.ron). Missing file → defaults.
+//!   --seed <u64>                Fix the model's weight init and the minibatch-shuffle RNG
+//!                               for a reproducible run. Omitted → unseeded (original behavior).
+//!                               The starting weights are exactly reproducible (verified
+//!                               bit-exact), but burn's `ndarray` matmul backend has its own tiny
+//!                               floating-point non-associativity that compounds over epochs, so
+//!                               a long run's final checkpoint may not be byte-for-byte identical
+//!                               — see `train_ppo`'s `--seed` doc for detail. `wgpu` is
+//!                               best-effort only.
 
 #[cfg(not(feature = "training"))]
 fn main() {
@@ -88,14 +96,33 @@ fn main() {
     // Optional reward-profile override; defaults to the task baseline profile.
     let reward_config = find("--reward-config");
 
+    let seed: Option<u64> = find("--seed").map(|v| {
+        v.parse::<u64>().unwrap_or_else(|_| {
+            eprintln!("--seed must be a non-negative integer");
+            std::process::exit(2);
+        })
+    });
+
     match backend {
-        Backend::NdArray => {
-            run::<Autodiff<NdArray>>(task, steps, bc_epochs, minibatch, save_path, reward_config)
-        }
+        Backend::NdArray => run::<Autodiff<NdArray>>(
+            task,
+            steps,
+            bc_epochs,
+            minibatch,
+            save_path,
+            reward_config,
+            seed,
+        ),
         #[cfg(feature = "wgpu")]
-        Backend::Wgpu => {
-            run::<Autodiff<Wgpu>>(task, steps, bc_epochs, minibatch, save_path, reward_config)
-        }
+        Backend::Wgpu => run::<Autodiff<Wgpu>>(
+            task,
+            steps,
+            bc_epochs,
+            minibatch,
+            save_path,
+            reward_config,
+            seed,
+        ),
     }
 }
 
@@ -159,6 +186,7 @@ fn save_path_for(task: Task, output_stem: Option<String>) -> String {
 }
 
 #[cfg(feature = "training")]
+#[allow(clippy::too_many_arguments)]
 fn run<B>(
     task: Task,
     steps: usize,
@@ -166,6 +194,7 @@ fn run<B>(
     minibatch: usize,
     save_path: String,
     reward_config: Option<String>,
+    seed: Option<u64>,
 ) where
     B: burn::tensor::backend::AutodiffBackend,
     B::Device: Default,
@@ -226,21 +255,32 @@ fn run<B>(
 
     let path = reward_config.unwrap_or_else(|| task.reward_config_path().to_string());
     let path = path.as_str();
+    if let Some(s) = seed {
+        println!("Seed: {s} (weight init, minibatch shuffling)");
+    }
+
     match task {
         Task::LevelHold => {
             let reward_cfg: LevelHoldRewardConfig = load_or_default(path);
             let env = LevelHoldEnv::with_reward_config(1000.0, 100.0, cfg, reward_cfg);
-            pretrain::<B, _>(env, steps, bc_epochs, minibatch, &save_path);
+            pretrain::<B, _>(env, steps, bc_epochs, minibatch, &save_path, seed);
         }
         Task::Orbit => {
             let reward_cfg: OrbitRewardConfig = load_or_default(path);
             let env = OrbitEnv::with_reward_config(1000.0, 100.0, 1000.0, cfg, reward_cfg);
-            pretrain::<B, _>(env, steps, bc_epochs, minibatch, &save_path);
+            pretrain::<B, _>(env, steps, bc_epochs, minibatch, &save_path, seed);
         }
     }
 
-    fn pretrain<B, E>(env: E, steps: usize, bc_epochs: usize, minibatch: usize, save_path: &str)
-    where
+    #[allow(clippy::too_many_arguments)]
+    fn pretrain<B, E>(
+        env: E,
+        steps: usize,
+        bc_epochs: usize,
+        minibatch: usize,
+        save_path: &str,
+        seed: Option<u64>,
+    ) where
         B: burn::tensor::backend::AutodiffBackend,
         B::Device: Default,
         E: DemonstrationEnv + Clone,
@@ -257,7 +297,7 @@ fn run<B>(
             collect_start.elapsed().as_secs_f64()
         );
 
-        let mut trainer = PpoTrainer::<B, E>::new(env, device);
+        let mut trainer = PpoTrainer::<B, E>::new_seeded(env, device, seed);
         println!("Behavior cloning for {bc_epochs} epochs (minibatch {minibatch})...");
         let train_start = Instant::now();
         let print_every = (bc_epochs / 10).max(1);

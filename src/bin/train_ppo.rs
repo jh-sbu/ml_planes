@@ -22,9 +22,23 @@
 //!                             file falls back to the compiled defaults with a warning.
 //!   --ppo-config <path>       Load PPO training-loop hyperparameters (gamma, gae_lambda,
 //!                             clip_epsilon, value/entropy coefs, lr, rollout_steps,
-//!                             n_epochs, minibatch) from a RON file. Applies to the MLP
+//!                             n_epochs, minibatch, seed) from a RON file. Applies to the MLP
 //!                             tasks (level_hold/orbit/residual_orbit); the lstm_orbit task
-//!                             ignores it. Absent or invalid → compiled defaults.
+//!                             ignores everything except `seed`. Absent or invalid → compiled
+//!                             defaults.
+//!   --seed <u64>              Fix the model's weight init, the minibatch-shuffle RNG, and
+//!                             per-env episode resets, for a reproducible run. Applies to every
+//!                             task (incl. lstm_orbit) and overrides `--ppo-config`'s `seed`
+//!                             field if both are given. Omitted → unseeded (today's original
+//!                             behavior). This makes the *starting point* (weights, env sample
+//!                             order, minibatch order) exactly reproducible, verified bit-exact
+//!                             — but NOT the full multi-iteration trajectory: burn's `ndarray`
+//!                             matmul backend has its own tiny (~1 ULP/iteration) floating-point
+//!                             non-associativity that compounds over a run, independent of this
+//!                             seed. Two `--seed`-matched runs will start identically and track
+//!                             closely, but a long run's final checkpoint may not be byte-for-byte
+//!                             identical. `wgpu` is best-effort only (GPU reduction order isn't
+//!                             guaranteed stable either).
 
 #[cfg(not(feature = "training"))]
 fn main() {
@@ -128,6 +142,22 @@ fn main() {
         .find(|w| w[0] == "--ppo-config")
         .map(|w| w[1].clone());
 
+    // Optional fixed seed: fixes the model's weight init (and any later unseeded
+    // `sample_action` noise, on backends whose `Backend::seed` sets a
+    // process-global generator), the minibatch-shuffle RNG, and per-env episode
+    // resets — see `ml_planes::training::PpoHyperparams::seed`. Overrides
+    // whatever `--ppo-config`'s `seed` field is set to, if both are given.
+    // Applies to every task, including `lstm_orbit` (which otherwise ignores
+    // `--ppo-config`). Best-effort (not guaranteed bit-reproducible) on the
+    // `wgpu` backend — burn's cubecl `Backend::seed` is likewise process-global,
+    // but GPU reduction order isn't guaranteed stable.
+    let cli_seed: Option<u64> = args.windows(2).find(|w| w[0] == "--seed").map(|w| {
+        w[1].parse::<u64>().unwrap_or_else(|_| {
+            eprintln!("--seed must be a non-negative integer");
+            std::process::exit(2);
+        })
+    });
+
     let save_path = save_path_for(task, output_stem);
 
     match backend {
@@ -140,6 +170,7 @@ fn main() {
             log_file,
             reward_config,
             ppo_config,
+            cli_seed,
             bc_steps,
             bc_epochs,
         ),
@@ -153,6 +184,7 @@ fn main() {
             log_file,
             reward_config,
             ppo_config,
+            cli_seed,
             bc_steps,
             bc_epochs,
         ),
@@ -238,6 +270,7 @@ fn run<B>(
     log_file: Option<String>,
     reward_config: Option<String>,
     ppo_config: Option<String>,
+    cli_seed: Option<u64>,
     bc_steps: usize,
     bc_epochs: usize,
 ) where
@@ -317,7 +350,7 @@ fn run<B>(
     // PPO hyperparameters: CLI override if given, else compiled defaults.
     // Applies to the MLP `PpoTrainer` tasks only (level_hold / orbit / residual_orbit);
     // the LSTM task uses its own trainer and ignores this.
-    let hp: PpoHyperparams = match ppo_config.as_deref() {
+    let mut hp: PpoHyperparams = match ppo_config.as_deref() {
         Some(p) => match load_ron_config(p) {
             Ok(cfg) => {
                 println!("Loaded PPO config from {p}");
@@ -330,6 +363,13 @@ fn run<B>(
         },
         None => PpoHyperparams::default(),
     };
+    // A CLI `--seed` overrides whatever `--ppo-config`'s `seed` field is set to.
+    if let Some(s) = cli_seed {
+        hp.seed = Some(s);
+    }
+    if let Some(s) = hp.seed {
+        println!("Seed: {s} (weight init, minibatch shuffling, env resets)");
+    }
 
     match task {
         Task::LevelHold => {
@@ -431,6 +471,7 @@ fn run<B>(
                 init_from,
                 WuOrbitEnv::with_reward_config(1000.0, 100.0, 3000.0, cfg, reward_cfg),
                 log,
+                hp.seed,
             )
         }
     }
@@ -453,7 +494,7 @@ fn run_training_loop<B, E>(
     use ml_planes::training::ppo::PpoTrainer;
 
     let device: B::Device = Default::default();
-    let mut trainer = PpoTrainer::<B, E>::with_n_envs(env, 8, device);
+    let mut trainer = PpoTrainer::<B, E>::with_n_envs_seeded(env, 8, device, hp.seed);
     trainer.apply_hyperparams(hp);
     if let Some(ref path) = init_from {
         trainer.load_policy(path);
@@ -484,7 +525,7 @@ fn run_training_loop_bc<B, E>(
     use ml_planes::training::{collect_demonstrations, ppo::PpoTrainer};
 
     let device: B::Device = Default::default();
-    let mut trainer = PpoTrainer::<B, E>::with_n_envs(env.clone(), 8, device);
+    let mut trainer = PpoTrainer::<B, E>::with_n_envs_seeded(env.clone(), 8, device, hp.seed);
     trainer.apply_hyperparams(hp);
     if let Some(ref path) = init_from {
         trainer.load_policy(path);
@@ -717,6 +758,7 @@ fn run_ppo_loop<B, E>(
 }
 
 #[cfg(feature = "training")]
+#[allow(clippy::too_many_arguments)]
 fn run_lstm_training_loop<B>(
     plain: bool,
     save_path: String,
@@ -724,6 +766,9 @@ fn run_lstm_training_loop<B>(
     init_from: Option<String>,
     env: ml_planes::training::WuOrbitEnv,
     mut log: Option<ml_planes::training::ppo::CsvLog>,
+    // Passed explicitly (rather than via `PpoHyperparams`) since `lstm_orbit`
+    // otherwise ignores `--ppo-config` entirely — see the flag docs above.
+    seed: Option<u64>,
 ) where
     B: burn::tensor::backend::AutodiffBackend,
     B::Device: Default,
@@ -740,7 +785,7 @@ fn run_lstm_training_loop<B>(
     use ml_planes::training::ppo::LstmPpoTrainer;
 
     let device: B::Device = Default::default();
-    let mut trainer = LstmPpoTrainer::<B, _>::with_n_envs(env, 32, device);
+    let mut trainer = LstmPpoTrainer::<B, _>::with_n_envs_seeded(env, 32, device, seed);
     if let Some(ref path) = init_from {
         trainer.load_policy(path);
     }

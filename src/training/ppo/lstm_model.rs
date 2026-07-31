@@ -251,12 +251,38 @@ pub struct LstmActorCritic<B: Backend> {
 
 impl<B: Backend> LstmActorCritic<B> {
     pub fn new(device: &B::Device, obs_dim: usize) -> Self {
+        // See `super::rng_lock` — serializes against concurrent RNG draws
+        // (elsewhere in this process) so `new_seeded`'s determinism guarantee
+        // isn't perturbed by an interleaved, unrelated draw.
+        let _guard = super::rng_lock();
+        Self::new_locked(device, obs_dim)
+    }
+
+    /// Like [`Self::new`], but seeds the backend's global RNG first so weight
+    /// init is reproducible given the same `seed`. See
+    /// `ActorCritic::new_seeded` (the MLP counterpart) for the same pattern.
+    pub fn new_seeded(device: &B::Device, obs_dim: usize, seed: u64) -> Self {
+        let _guard = super::rng_lock();
+        B::seed(device, seed);
+        Self::new_locked(device, obs_dim)
+    }
+
+    /// Shared body of `new`/`new_seeded`, called with `rng_lock()` already
+    /// held by the caller — see `ActorCritic::new_locked` for why the warmup
+    /// forward pass below (forcing burn's lazy `Param` init to run now,
+    /// under the lock) is required for `new_seeded` to actually be
+    /// deterministic.
+    fn new_locked(device: &B::Device, obs_dim: usize) -> Self {
         let log_std_init = Tensor::<B, 1>::full([4], -0.5, device);
-        Self {
+        let model = Self {
             policy: LstmPolicyNet::new(device, obs_dim),
             value: LstmValueNet::new(device, obs_dim),
             log_std: Param::from_tensor(log_std_init),
-        }
+        };
+        let warmup = Tensor::<B, 2>::zeros([1, obs_dim], device);
+        let _ = model.policy.forward_step(warmup.clone(), None);
+        let _ = model.value.forward_step(warmup, None);
+        model
     }
 
     /// Observation dimension the policy network expects (see [`LstmPolicyNet::input_dim`]).
@@ -348,11 +374,16 @@ impl<B: Backend> LstmActorCritic<B> {
         let device = self.log_std.val().device();
         let (pre_tanh_mean, new_state) = self.policy.forward_step(obs, state);
         let std = self.log_std.val().unsqueeze::<2>().expand([batch, 4]).exp();
-        let noise = Tensor::<B, 2>::random(
-            Shape::new([batch, 4]),
-            Distribution::Normal(0.0, 1.0),
-            &device,
-        );
+        let noise = {
+            // See `super::rng_lock` — serializes this RNG draw against any
+            // concurrent seeded-determinism check running in another thread.
+            let _guard = super::rng_lock();
+            Tensor::<B, 2>::random(
+                Shape::new([batch, 4]),
+                Distribution::Normal(0.0, 1.0),
+                &device,
+            )
+        };
         let pre_tanh_sample = pre_tanh_mean.clone() + noise * std.clone();
         let action = pre_tanh_sample.clone().tanh();
         let log_prob =
@@ -469,14 +500,56 @@ mod tests {
     }
 
     #[test]
+    fn new_seeded_is_deterministic() {
+        let obs_dim = 13;
+        // Locked: see `super::rng_lock` — a raw `Tensor::random` draw outside
+        // the production entry points still consumes the shared backend RNG
+        // and must not interleave with another thread's seeded-determinism
+        // critical section.
+        let obs = {
+            let _guard = super::super::rng_lock();
+            Tensor::<B, 2>::random(
+                Shape::new([1, obs_dim]),
+                Distribution::Normal(0.0, 1.0),
+                &device(),
+            )
+        };
+
+        let a = LstmActorCritic::<B>::new_seeded(&device(), obs_dim, 7);
+        let (out_a, _) = a.mean_action_step(obs.clone(), None);
+        let out_a = out_a.into_data().to_vec::<f32>().unwrap();
+
+        let b = LstmActorCritic::<B>::new_seeded(&device(), obs_dim, 7);
+        let (out_b, _) = b.mean_action_step(obs.clone(), None);
+        let out_b = out_b.into_data().to_vec::<f32>().unwrap();
+
+        assert_eq!(
+            out_a, out_b,
+            "same seed must yield identical weights/output"
+        );
+
+        let c = LstmActorCritic::<B>::new_seeded(&device(), obs_dim, 8);
+        let (out_c, _) = c.mean_action_step(obs, None);
+        let out_c = out_c.into_data().to_vec::<f32>().unwrap();
+        assert_ne!(
+            out_a, out_c,
+            "different seeds should (almost surely) diverge"
+        );
+    }
+
+    #[test]
     fn lstm_state_carries_across_steps() {
         let obs_dim = 13;
         let model = LstmActorCritic::<B>::new(&device(), obs_dim);
-        let obs = Tensor::<B, 2>::random(
-            Shape::new([1, obs_dim]),
-            Distribution::Normal(0.0, 1.0),
-            &device(),
-        );
+        // Locked: see `new_seeded_is_deterministic`'s comment above.
+        let obs = {
+            let _guard = super::super::rng_lock();
+            Tensor::<B, 2>::random(
+                Shape::new([1, obs_dim]),
+                Distribution::Normal(0.0, 1.0),
+                &device(),
+            )
+        };
         let (_, state1) = model.mean_action_step(obs.clone(), None);
         let (a2_with_state, _) = model.mean_action_step(obs.clone(), Some(state1));
         let (a2_zero_state, _) = model.mean_action_step(obs, None);
@@ -494,11 +567,15 @@ mod tests {
         let obs_dim = 13;
         let model = LstmActorCritic::<B>::new(&device(), obs_dim);
         let obs = Tensor::<B, 3>::zeros([2, 8, obs_dim], &device());
-        let actions = Tensor::<B, 3>::random(
-            Shape::new([2, 8, 4]),
-            Distribution::Uniform(-0.9, 0.9),
-            &device(),
-        );
+        // Locked: see `new_seeded_is_deterministic`'s comment above.
+        let actions = {
+            let _guard = super::super::rng_lock();
+            Tensor::<B, 3>::random(
+                Shape::new([2, 8, 4]),
+                Distribution::Uniform(-0.9, 0.9),
+                &device(),
+            )
+        };
         let (log_probs, entropy, values) = model.evaluate_sequence(obs, actions, None, None);
         assert_eq!(log_probs.dims(), [16]); // B*T = 2*8
         assert_eq!(entropy.dims(), [16]);
@@ -509,16 +586,21 @@ mod tests {
     fn evaluate_sequence_values_finite() {
         let obs_dim = 13;
         let model = LstmActorCritic::<B>::new(&device(), obs_dim);
-        let obs = Tensor::<B, 3>::random(
-            Shape::new([2, 4, obs_dim]),
-            Distribution::Normal(0.0, 1.0),
-            &device(),
-        );
-        let actions = Tensor::<B, 3>::random(
-            Shape::new([2, 4, 4]),
-            Distribution::Uniform(-0.9, 0.9),
-            &device(),
-        );
+        // Locked: see `new_seeded_is_deterministic`'s comment above.
+        let (obs, actions) = {
+            let _guard = super::super::rng_lock();
+            let obs = Tensor::<B, 3>::random(
+                Shape::new([2, 4, obs_dim]),
+                Distribution::Normal(0.0, 1.0),
+                &device(),
+            );
+            let actions = Tensor::<B, 3>::random(
+                Shape::new([2, 4, 4]),
+                Distribution::Uniform(-0.9, 0.9),
+                &device(),
+            );
+            (obs, actions)
+        };
         let (lp, ent, vals) = model.evaluate_sequence(obs, actions, None, None);
         for v in lp.into_data().to_vec::<f32>().unwrap() {
             assert!(v.is_finite(), "log_prob not finite: {v}");

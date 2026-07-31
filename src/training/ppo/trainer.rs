@@ -60,8 +60,43 @@ where
         Self::with_n_envs(env, 1, device)
     }
 
+    /// Like [`Self::new`], but seeds every RNG stream construction touches
+    /// (model weight init, minibatch shuffling, env spawns) from `seed`. See
+    /// [`Self::with_n_envs_seeded`].
+    pub fn new_seeded(env: E, device: B::Device, seed: Option<u64>) -> Self {
+        Self::with_n_envs_seeded(env, 1, device, seed)
+    }
+
     /// Create a trainer with `n` independent copies of `template_env`.
     pub fn with_n_envs(template_env: E, n: usize, device: B::Device) -> Self {
+        Self::with_n_envs_seeded(template_env, n, device, None)
+    }
+
+    /// Like [`Self::with_n_envs`], but with `seed = Some(s)` fixes the
+    /// trainer's *starting point*:
+    ///
+    /// - the backend RNG is seeded with `s` before the model is built, so
+    ///   weight init (and later unseeded `sample_action` noise) is fixed;
+    /// - the minibatch-shuffle RNG (`rng_seed`) starts from `s` instead of the
+    ///   hardcoded `12345`;
+    /// - every env (including env 0) has its episode-reset RNG offset from
+    ///   `s`, rather than only envs `1..n` being offset from an unseeded base.
+    ///
+    /// `seed = None` reproduces the original unseeded behavior exactly
+    /// (env 0 unoffset, `rng_seed = 12345`, no `Backend::seed` call).
+    ///
+    /// Weight init itself is verified bit-identical for a given seed (see
+    /// `ActorCritic::new_seeded`'s tests), but this does **not** make an
+    /// entire multi-iteration training run bit-reproducible: burn's `ndarray`
+    /// matmul backend has its own tiny (~1 ULP/iteration) floating-point
+    /// non-associativity that compounds across iterations, independent of
+    /// this seed — an upstream burn/backend property, not a gap here.
+    pub fn with_n_envs_seeded(
+        template_env: E,
+        n: usize,
+        device: B::Device,
+        seed: Option<u64>,
+    ) -> Self {
         assert!(n >= 1, "n_envs must be at least 1");
         let obs_dim = template_env.observation_dim();
         assert_eq!(
@@ -69,7 +104,10 @@ where
             4,
             "PPO trainer currently expects 4 direct-control actions"
         );
-        let model = ActorCritic::<B>::new(&device, obs_dim);
+        let model = match seed {
+            Some(s) => ActorCritic::<B>::new_seeded(&device, obs_dim, s),
+            None => ActorCritic::<B>::new(&device, obs_dim),
+        };
         let optimizer = AdamConfig::new()
             .with_grad_clipping(Some(GradientClippingConfig::Norm(0.5)))
             .init::<B, ActorCritic<B>>();
@@ -77,8 +115,13 @@ where
             (0..n)
                 .map(|i| {
                     let mut e = template_env.clone();
-                    if i > 0 {
-                        e.offset_rng_seed(i as u64 * 1_000);
+                    match seed {
+                        Some(s) => e.offset_rng_seed(s.wrapping_add(i as u64 * 1_000)),
+                        None => {
+                            if i > 0 {
+                                e.offset_rng_seed(i as u64 * 1_000);
+                            }
+                        }
                     }
                     e
                 })
@@ -99,7 +142,7 @@ where
             rollout_steps: 2048,
             n_epochs: 4,
             minibatch: 64,
-            rng_seed: 12345,
+            rng_seed: seed.unwrap_or(12345),
             last_obs: None,
             ep_returns: vec![0.0; n],
             ep_lengths: vec![0; n],
@@ -584,6 +627,7 @@ mod tests {
             rollout_steps: 512,
             n_epochs: 10,
             minibatch: 32,
+            seed: None,
         };
         trainer.apply_hyperparams(&hp);
         assert_eq!(trainer.gamma, 0.9);
@@ -608,6 +652,59 @@ mod tests {
         assert!(
             !all_same,
             "all envs produced identical initial observations — RNG seeds are not offset"
+        );
+    }
+
+    #[test]
+    fn with_n_envs_seeded_gives_reproducible_weight_init() {
+        // Compare the model's forward output on a fixed observation right after
+        // construction (not a full `collect_rollout`, which draws hundreds of
+        // random samples over real wall-clock time and would be vulnerable to
+        // interleaving with unrelated tests racing burn-ndarray's *process-global*
+        // RNG mutex — see the "Known nondeterminism" note in CLAUDE.md §6).
+        // Seed → construct → forward is fast enough to keep that race window
+        // negligible in practice.
+        let env = LevelHoldEnv::new(1000.0, 80.0, jet_cfg());
+        let obs_dim = env.observation_dim();
+        let obs = Tensor::<B, 2>::zeros([1, obs_dim], &Default::default());
+
+        let trainer_a =
+            PpoTrainer::<B>::with_n_envs_seeded(env.clone(), 4, Default::default(), Some(99));
+        let out_a = trainer_a
+            .model
+            .mean_action(obs.clone())
+            .into_data()
+            .to_vec::<f32>()
+            .unwrap();
+
+        let trainer_b = PpoTrainer::<B>::with_n_envs_seeded(env, 4, Default::default(), Some(99));
+        let out_b = trainer_b
+            .model
+            .mean_action(obs)
+            .into_data()
+            .to_vec::<f32>()
+            .unwrap();
+
+        assert_eq!(out_a, out_b, "same seed must produce identical weight init");
+    }
+
+    #[test]
+    fn with_n_envs_seeded_offsets_every_env_including_zero() {
+        // The per-env `Lcg` (offset_rng_seed) is a plain hand-rolled RNG with no
+        // shared global state, so — unlike the burn-backend weight init above —
+        // this is not subject to cross-test interleaving and can safely assert
+        // on a full `reset_all()`.
+        let env = LevelHoldEnv::new(1000.0, 80.0, jet_cfg());
+        let mut trainer = PpoTrainer::<B>::with_n_envs_seeded(env, 4, Default::default(), Some(99));
+        assert_eq!(
+            trainer.rng_seed, 99,
+            "rng_seed should adopt the supplied seed"
+        );
+        let obs0 = trainer.envs.reset_all();
+        let all_same = obs0.windows(2).all(|w| w[0] == w[1]);
+        assert!(
+            !all_same,
+            "seeded envs must still get distinct spawns (env 0 included)"
         );
     }
 

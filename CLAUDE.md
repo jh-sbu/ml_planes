@@ -659,7 +659,10 @@ path = "src/bin/mcp.rs"
 > backend); `autodiff`/`train` (from `training`) run PPO/BC on top of it; `wgpu` (its own opt-in
 > crate feature) = GPU backend for training, selected at runtime via `--backend wgpu`
 > (`ml_planes::training::Backend`); `tui` = training progress display. `train_ppo` tasks:
-> `level_hold`, `orbit`, `residual_orbit`, `lstm_orbit`.
+> `level_hold`, `orbit`, `residual_orbit`, `lstm_orbit`. Both `train_ppo` and `train_bc` accept
+> `--seed <u64>` to fix weight init, minibatch shuffling, and (per-env) episode resets for a
+> reproducible run's starting point — see the "Known nondeterminism" note in §6 for what it does
+> and does not guarantee.
 
 > **Bevy feature flag note:** `default-features = false` disables all optional
 > subsystems. `bevy_asset` **is** an optional feature of the `bevy` meta-crate
@@ -848,18 +851,41 @@ so it also re-runs the core sim suite and compile-checks the local-sim/`wasm` bi
   which stays pure math / headless `egui::Context` (drive layout via `ctx.run(RawInput { .. })`,
   never a real window). A test that needs a display is out of scope.
 - Tests are deterministic (fixed seed where randomness is needed). **Known exception:** `burn`
-  module init (`LinearConfig::init` etc., used by `ActorCritic::new`) draws from burn's default
-  backend RNG, which nothing in this codebase seeds — `PpoTrainer`'s own `rng_seed` only covers
-  minibatch shuffling (`lcg_shuffle`), and `VecEnv`'s per-env seed offset only covers env resets.
-  This is fixable (`Backend::seed(device, seed)` exists in burn 0.20) but isn't wired up anywhere
-  yet, so any `cargo test` that trains a fresh `PpoTrainer`/`ActorCritic` — e.g. `tests/rl/ppo_training`
-  — gets different weights, and therefore a different stochastic trajectory, on every run. Such
-  tests must only assert seed-independent invariants (no NaN, correct shapes/dims, no panics) —
-  never a specific reward value or trend (a prior version of `ppo_training::ppo_50_iterations_no_nan`
-  asserted the reward didn't regress over 50 iterations and failed reproducibly on unmodified
-  `main` purely from this, not from any actual bug). Convergence/reward-quality checks belong in
-  the slower `evaluate_policy` / `train-evaluate-optimize` workflows, which run full-length
-  training and are not part of `cargo test`.
+  module init (`LinearConfig::init` etc., used by `ActorCritic::new`/`LstmActorCritic::new`) draws
+  from burn's default backend RNG. A fixed seed is now wired up end-to-end —
+  `ActorCritic::new_seeded`/`LstmActorCritic::new_seeded` seed the backend RNG before constructing
+  the model (and force-realize burn 0.20's lazily-initialized `Param`s via a throwaway forward
+  pass while the seed is still in effect — otherwise the actual random draw is deferred to
+  whatever later moment/thread first calls `forward`); `PpoTrainer::with_n_envs_seeded` /
+  `LstmPpoTrainer::with_n_envs_seeded` additionally seed `rng_seed` (minibatch shuffling) and
+  every env's `offset_rng_seed` (episode resets) from the same seed. Plumbed through
+  `train_ppo`/`train_bc`'s `--seed` flag and `PpoHyperparams.seed` (`*.ppo.ron`, CLI wins if both
+  given). Any code path that still calls the **unseeded** `new()`/`with_n_envs()` (`seed: None`,
+  the default) is exactly as nondeterministic as before — that includes most existing tests, e.g.
+  `tests/rl/ppo_training`, which must still only assert seed-independent invariants (no NaN,
+  correct shapes/dims, no panics), never a specific reward value or trend (a prior version of
+  `ppo_50_iterations_no_nan` asserted the reward didn't regress over 50 iterations and failed
+  reproducibly on unmodified `main` purely from this, not from any actual bug).
+  **Even with a seed supplied, only the run's *starting point* is guaranteed bit-identical**
+  (verified: `ActorCritic::new_seeded`'s weight init, checked via exact `mean_action` output
+  equality) — not necessarily a full multi-iteration training run's final checkpoint. burn's
+  `ndarray` matmul backend (`matrixmultiply`) has its own tiny (~1 ULP/iteration) floating-point
+  non-associativity in the forward/backward computation that compounds across PPO updates,
+  independent of this seed and not fixable from application code; two `--seed`-matched real
+  `train_ppo` runs start identically and track closely but were observed to diverge by a few ULP
+  after a single gradient update and further over subsequent iterations. (Separately: burn's
+  `Param` IDs, serialized into every `.mpk`, are randomly generated per run regardless of
+  seeding — comparing checkpoints for reproducibility must load and compare tensor *values*, e.g.
+  via `mean_action`, never raw file bytes / `cmp`.) A test-suite-specific hazard: burn-ndarray
+  keeps its RNG behind one **process-global** mutex, so under `cargo test`'s default
+  multi-threaded harness, an unrelated concurrent test that also constructs/samples a model can
+  perturb a seeded-determinism assertion even though each individual burn call is thread-safe —
+  `ppo::rng_lock()` (`src/training/ppo/mod.rs`) serializes every RNG-touching call (production
+  and test) against this; any new test that seeds and reads model output must acquire it too (see
+  `ActorCritic::new_seeded`'s tests for the pattern) or it can flake under parallel execution.
+  Convergence/reward-quality checks belong in the slower `evaluate_policy` /
+  `train-evaluate-optimize` workflows, which run full-length training and are not part of
+  `cargo test`.
 - Run `cargo fmt` at the end of every editing session before committing — always run it, even if you believe the code is already correctly formatted. Never skip it based on visual inspection.
 - Tests are written **before** the implementation they cover — never after
 - A PR that adds implementation without a prior failing test is not accepted

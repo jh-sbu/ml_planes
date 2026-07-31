@@ -22,6 +22,21 @@ pub struct PpoHyperparams {
     pub rollout_steps: usize,
     pub n_epochs: usize,
     pub minibatch: usize,
+    /// Optional fixed seed for burn's backend RNG (weight init + sampling
+    /// noise), the trainer's minibatch-shuffle RNG, and per-env episode
+    /// resets. `None` (the default, and every pre-existing `.ppo.ron` file
+    /// that predates this field) reproduces the original unseeded behavior.
+    /// `#[serde(default)]` keeps old RON files parsing unchanged. A CLI
+    /// `--seed` passed to `train_ppo`/`train_bc` overrides this field.
+    ///
+    /// This fixes the run's *starting point* exactly (verified bit-identical
+    /// weight init) but not necessarily every later iteration: burn's
+    /// `ndarray` matmul backend has its own tiny, ~1-ULP-per-iteration
+    /// floating-point non-associativity that compounds over a training run,
+    /// independent of this seed — an upstream burn/`ndarray`-backend property,
+    /// not a gap in this field's wiring.
+    #[serde(default)]
+    pub seed: Option<u64>,
 }
 
 impl PpoHyperparams {
@@ -37,6 +52,11 @@ impl PpoHyperparams {
             ("rollout_steps", self.rollout_steps.to_string()),
             ("n_epochs", self.n_epochs.to_string()),
             ("minibatch", self.minibatch.to_string()),
+            (
+                "seed",
+                self.seed
+                    .map_or_else(|| "none".to_string(), |s| s.to_string()),
+            ),
         ]
     }
 }
@@ -53,6 +73,7 @@ impl Default for PpoHyperparams {
             rollout_steps: 2048,
             n_epochs: 4,
             minibatch: 64,
+            seed: None,
         }
     }
 }
@@ -73,6 +94,7 @@ mod tests {
             rollout_steps: 1024,
             n_epochs: 8,
             minibatch: 128,
+            seed: Some(7),
         )"#;
         let cfg: PpoHyperparams = ron::de::from_str(src).expect("parse failed");
         assert_eq!(cfg.gamma, 0.97);
@@ -84,11 +106,45 @@ mod tests {
         assert_eq!(cfg.rollout_steps, 1024);
         assert_eq!(cfg.n_epochs, 8);
         assert_eq!(cfg.minibatch, 128);
+        assert_eq!(cfg.seed, Some(7));
+    }
+
+    #[test]
+    fn ron_without_seed_field_still_parses() {
+        // Back-compat: every `.ppo.ron` file shipped before this field was
+        // added must keep parsing with `seed` defaulting to `None`.
+        let src = r#"(
+            gamma: 0.99,
+            gae_lambda: 0.95,
+            clip_epsilon: 0.2,
+            value_coef: 0.5,
+            entropy_coef: 0.01,
+            lr: 0.0003,
+            rollout_steps: 2048,
+            n_epochs: 4,
+            minibatch: 64,
+        )"#;
+        let cfg: PpoHyperparams = ron::de::from_str(src).expect("parse failed");
+        assert_eq!(cfg.seed, None);
     }
 
     #[test]
     fn log_fields_cover_all_params() {
         let cfg = PpoHyperparams::default();
-        assert_eq!(cfg.log_fields().len(), 9);
+        assert_eq!(cfg.log_fields().len(), 10);
+    }
+
+    #[test]
+    fn shipped_ppo_ron_files_parse_without_seed() {
+        // The two `.ppo.ron` assets predate the `seed` field; pin that they
+        // still parse (via `#[serde(default)]`) and default `seed` to `None`.
+        for path in [
+            "assets/training/default.ppo.ron",
+            "assets/training/codex_orbit_stable.ppo.ron",
+        ] {
+            let cfg: PpoHyperparams = crate::training::reward_config::load_ron_config(path)
+                .unwrap_or_else(|e| panic!("failed to parse {path}: {e}"));
+            assert_eq!(cfg.seed, None, "{path} should default seed to None");
+        }
     }
 }

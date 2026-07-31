@@ -2,6 +2,13 @@
 // update / rollout collection — never persisted in a checkpoint, ignored at
 // inference). These values match the compiled `PpoHyperparams::default()`.
 // Pass with: train_ppo --ppo-config assets/training/default.ppo.ron
+//
+// Optional `seed: Some(<u64>)` fixes burn's backend RNG (weight init +
+// sampling noise), the minibatch-shuffle RNG, and per-env episode resets —
+// giving a run an exactly reproducible starting point (not necessarily every
+// later iteration; see `PpoHyperparams::seed`'s doc comment). Omitted here
+// (defaults to `None`, i.e. unseeded) — a CLI `--seed` overrides whatever
+// this field is set to.
 (
     gamma: 0.99,
     gae_lambda: 0.95,
@@ -12,4 +19,5 @@
     rollout_steps: 2048,
     n_epochs: 4,
     minibatch: 64,
+    // seed: Some(1234),
 )

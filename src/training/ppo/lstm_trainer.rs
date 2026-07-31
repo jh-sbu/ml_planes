@@ -82,10 +82,32 @@ where
         Self::with_n_envs(env, 1, device)
     }
 
+    /// Like [`Self::new`], but with `seed = Some(s)` fixes the model's weight
+    /// init and the per-env episode-reset RNGs. See
+    /// `PpoTrainer::with_n_envs_seeded` (the MLP counterpart) for the same
+    /// pattern and rationale.
+    pub fn new_seeded(env: E, device: B::Device, seed: Option<u64>) -> Self {
+        Self::with_n_envs_seeded(env, 1, device, seed)
+    }
+
     pub fn with_n_envs(template_env: E, n: usize, device: B::Device) -> Self {
+        Self::with_n_envs_seeded(template_env, n, device, None)
+    }
+
+    /// See `PpoTrainer::with_n_envs_seeded` — identical seeding contract
+    /// (`None` reproduces the original unseeded behavior exactly).
+    pub fn with_n_envs_seeded(
+        template_env: E,
+        n: usize,
+        device: B::Device,
+        seed: Option<u64>,
+    ) -> Self {
         assert!(n >= 1);
         let obs_dim = template_env.observation_dim();
-        let model = LstmActorCritic::<B>::new(&device, obs_dim);
+        let model = match seed {
+            Some(s) => LstmActorCritic::<B>::new_seeded(&device, obs_dim, s),
+            None => LstmActorCritic::<B>::new(&device, obs_dim),
+        };
         let optimizer = AdamConfig::new()
             .with_grad_clipping(Some(GradientClippingConfig::Norm(0.5)))
             .init::<B, LstmActorCritic<B>>();
@@ -93,8 +115,13 @@ where
             (0..n)
                 .map(|i| {
                     let mut e = template_env.clone();
-                    if i > 0 {
-                        e.offset_rng_seed(i as u64 * 1_000);
+                    match seed {
+                        Some(s) => e.offset_rng_seed(s.wrapping_add(i as u64 * 1_000)),
+                        None => {
+                            if i > 0 {
+                                e.offset_rng_seed(i as u64 * 1_000);
+                            }
+                        }
                     }
                     e
                 })
@@ -118,7 +145,7 @@ where
             seq_len: 64,
             policy_hidden: vec![LstmHiddenState::default(); n],
             value_hidden: vec![LstmHiddenState::default(); n],
-            rng_seed: 12345,
+            rng_seed: seed.unwrap_or(12345),
             last_obs: None,
             ep_returns: vec![0.0; n],
             ep_lengths: vec![0; n],
@@ -653,6 +680,60 @@ mod tests {
                 assert!(v.is_finite(), "hidden state NaN");
             }
         }
+    }
+
+    #[test]
+    fn with_n_envs_seeded_gives_reproducible_weight_init() {
+        // See `PpoTrainer::with_n_envs_seeded_gives_reproducible_weight_init`
+        // for why this compares a single forward pass right after
+        // construction rather than a full rollout: burn-ndarray's RNG is a
+        // process-global mutex, and a full rollout draws hundreds of samples
+        // over real wall-clock time, exposing the comparison to interleaving
+        // from unrelated tests running concurrently in the same process.
+        let env = WuOrbitEnv::new(1000.0, 100.0, 3000.0, jet_cfg());
+        let obs_dim = env.observation_dim();
+        let obs = Tensor::<B, 2>::zeros([1, obs_dim], &Default::default());
+
+        let trainer_a = LstmPpoTrainer::<B, WuOrbitEnv>::with_n_envs_seeded(
+            env.clone(),
+            2,
+            Default::default(),
+            Some(99),
+        );
+        let (out_a, _) = trainer_a.model.mean_action_step(obs.clone(), None);
+        let out_a = out_a.into_data().to_vec::<f32>().unwrap();
+
+        let trainer_b = LstmPpoTrainer::<B, WuOrbitEnv>::with_n_envs_seeded(
+            env,
+            2,
+            Default::default(),
+            Some(99),
+        );
+        let (out_b, _) = trainer_b.model.mean_action_step(obs, None);
+        let out_b = out_b.into_data().to_vec::<f32>().unwrap();
+
+        assert_eq!(out_a, out_b, "same seed must produce identical weight init");
+    }
+
+    #[test]
+    fn with_n_envs_seeded_offsets_every_env_including_zero() {
+        let env = WuOrbitEnv::new(1000.0, 100.0, 3000.0, jet_cfg());
+        let mut trainer = LstmPpoTrainer::<B, WuOrbitEnv>::with_n_envs_seeded(
+            env,
+            4,
+            Default::default(),
+            Some(99),
+        );
+        assert_eq!(
+            trainer.rng_seed, 99,
+            "rng_seed should adopt the supplied seed"
+        );
+        let obs0 = trainer.envs.reset_all();
+        let all_same = obs0.windows(2).all(|w| w[0] == w[1]);
+        assert!(
+            !all_same,
+            "seeded envs must still get distinct spawns (env 0 included)"
+        );
     }
 
     #[test]

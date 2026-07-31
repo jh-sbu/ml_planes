@@ -88,12 +88,45 @@ pub struct ActorCritic<B: Backend> {
 
 impl<B: Backend> ActorCritic<B> {
     pub fn new(device: &B::Device, obs_dim: usize) -> Self {
+        // See `super::rng_lock` — serializes against concurrent RNG draws
+        // (elsewhere in this process) so `new_seeded`'s determinism guarantee
+        // isn't perturbed by an interleaved, unrelated draw.
+        let _guard = super::rng_lock();
+        Self::new_locked(device, obs_dim)
+    }
+
+    /// Like [`Self::new`], but seeds the backend's global RNG first so weight
+    /// init (and any later unseeded `sample_action` noise, on backends whose
+    /// `Backend::seed` sets a process-global generator) is reproducible given
+    /// the same `seed`.
+    pub fn new_seeded(device: &B::Device, obs_dim: usize, seed: u64) -> Self {
+        let _guard = super::rng_lock();
+        B::seed(device, seed);
+        Self::new_locked(device, obs_dim)
+    }
+
+    /// Shared body of `new`/`new_seeded`, called with `rng_lock()` already held
+    /// by the caller. Not reentrant-safe to call with the lock unheld twice —
+    /// keep this private and only reachable through the two lock-holding
+    /// constructors above.
+    fn new_locked(device: &B::Device, obs_dim: usize) -> Self {
         let log_std_init = Tensor::<B, 1>::full([4], -0.5, device);
-        Self {
+        let model = Self {
             policy: PolicyNet::new(device, obs_dim),
             value: ValueNet::new(device, obs_dim),
             log_std: Param::from_tensor(log_std_init),
-        }
+        };
+        // burn 0.20's `Param` lazily defers its random draw to first access
+        // (`Param::val`), not to `LinearConfig::init` — so without this, the
+        // weight init consumes RNG at whatever later moment/thread first
+        // calls `forward`/`sample_action`, entirely outside this lock. A
+        // throwaway forward pass here forces every layer's `Param` to
+        // materialize now, while the caller still holds `rng_lock()`, so
+        // `new_seeded`'s determinism guarantee actually covers the draws.
+        let warmup = Tensor::<B, 2>::zeros([1, obs_dim], device);
+        let _ = model.policy.forward(warmup.clone());
+        let _ = model.value.forward(warmup);
+        model
     }
 
     /// Observation dimension the policy network expects (see [`PolicyNet::input_dim`]).
@@ -121,11 +154,16 @@ impl<B: Backend> ActorCritic<B> {
             .expand([batch, 4])
             .exp();
 
-        let noise = Tensor::<B, 2>::random(
-            Shape::new([batch, 4]),
-            Distribution::Normal(0.0, 1.0),
-            &device,
-        );
+        let noise = {
+            // See `super::rng_lock` — serializes this RNG draw against any
+            // concurrent seeded-determinism check running in another thread.
+            let _guard = super::rng_lock();
+            Tensor::<B, 2>::random(
+                Shape::new([batch, 4]),
+                Distribution::Normal(0.0, 1.0),
+                &device,
+            )
+        };
         let pre_tanh_sample = pre_tanh_mean.clone() + noise * std.clone();
         let action = pre_tanh_sample.clone().tanh();
         let log_prob =
@@ -239,7 +277,14 @@ mod tests {
     #[test]
     fn policy_output_in_range() {
         let model = ActorCritic::<B>::new(&device(), 10);
-        let obs = Tensor::<B, 2>::random([8, 10], Distribution::Normal(0.0, 1.0), &device());
+        // Locked: see `super::rng_lock` doc comment — a raw `Tensor::random`
+        // draw outside the production entry points still consumes the shared
+        // backend RNG and must not be allowed to interleave with another
+        // thread's seeded-determinism critical section.
+        let obs = {
+            let _guard = super::super::rng_lock();
+            Tensor::<B, 2>::random([8, 10], Distribution::Normal(0.0, 1.0), &device())
+        };
         let (action, _) = model.sample_action(obs);
         let data = action.into_data().to_vec::<f32>().unwrap();
         for v in &data {
@@ -271,6 +316,41 @@ mod tests {
     }
 
     #[test]
+    fn new_seeded_is_deterministic() {
+        // Locked for the same reason as `policy_output_in_range`'s comment.
+        let obs = {
+            let _guard = super::super::rng_lock();
+            Tensor::<B, 2>::random([4, 10], Distribution::Normal(0.0, 1.0), &device())
+        };
+
+        let a = ActorCritic::<B>::new_seeded(&device(), 10, 7);
+        let out_a = a
+            .mean_action(obs.clone())
+            .into_data()
+            .to_vec::<f32>()
+            .unwrap();
+
+        let b = ActorCritic::<B>::new_seeded(&device(), 10, 7);
+        let out_b = b
+            .mean_action(obs.clone())
+            .into_data()
+            .to_vec::<f32>()
+            .unwrap();
+
+        assert_eq!(
+            out_a, out_b,
+            "same seed must yield identical weights/output"
+        );
+
+        let c = ActorCritic::<B>::new_seeded(&device(), 10, 8);
+        let out_c = c.mean_action(obs).into_data().to_vec::<f32>().unwrap();
+        assert_ne!(
+            out_a, out_c,
+            "different seeds should (almost surely) diverge"
+        );
+    }
+
+    #[test]
     fn log_std_init() {
         let model = ActorCritic::<B>::new(&device(), 10);
         let vals = model.log_std.val().into_data().to_vec::<f32>().unwrap();
@@ -293,7 +373,11 @@ mod tests {
     #[test]
     fn log_prob_is_finite() {
         let model = ActorCritic::<B>::new(&device(), 10);
-        let obs = Tensor::<B, 2>::random([4, 10], Distribution::Normal(0.0, 1.0), &device());
+        // Locked for the same reason as `policy_output_in_range`'s comment.
+        let obs = {
+            let _guard = super::super::rng_lock();
+            Tensor::<B, 2>::random([4, 10], Distribution::Normal(0.0, 1.0), &device())
+        };
         let (action, log_prob) = model.sample_action(obs.clone());
         let (log_prob2, entropy) = model.evaluate_actions(obs, action);
         for v in log_prob.into_data().to_vec::<f32>().unwrap() {
