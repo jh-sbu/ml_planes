@@ -290,7 +290,7 @@ pub fn draw_map(
                 painter.circle_stroke(
                     w2s(r.pos),
                     14.0,
-                    egui::Stroke::new(2.0, egui::Color32::WHITE),
+                    egui::Stroke::new(2.0_f32, egui::Color32::WHITE),
                 );
                 if let Some(center) = r.orbit_center {
                     draw_orbit_pin(&painter, w2s(center));
@@ -343,8 +343,8 @@ fn draw_grid(painter: &egui::Painter, rect: egui::Rect, map: &MapState, view_cen
         return;
     }
 
-    let grid = egui::Stroke::new(1.0, egui::Color32::from_rgb(30, 38, 50));
-    let axis = egui::Stroke::new(1.5, egui::Color32::from_rgb(70, 90, 110));
+    let grid = egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(30, 38, 50));
+    let axis = egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(70, 90, 110));
 
     // World coords at the screen edges.
     let top_left = map.screen_to_world(Vec2::new(rect.left(), rect.top()), view_center);
@@ -387,7 +387,7 @@ fn draw_flight_plan(
     for (i, leg) in legs.iter().enumerate() {
         let is_active = i == active;
         let col = if is_active { base } else { dim };
-        let stroke = egui::Stroke::new(if is_active { 2.5 } else { 1.5 }, col);
+        let stroke = egui::Stroke::new(if is_active { 2.5_f32 } else { 1.5_f32 }, col);
         match leg {
             FlightPlanLeg::Waypoint { x, z, .. } => {
                 let wp = Vec2::new(*x, *z);
@@ -434,7 +434,7 @@ fn draw_plane_glyph(painter: &egui::Painter, w2s: &impl Fn(Vec2) -> egui::Pos2, 
     painter.add(egui::Shape::convex_polygon(
         vec![tip, left, right],
         col,
-        egui::Stroke::new(1.0, egui::Color32::BLACK),
+        egui::Stroke::new(1.0_f32, egui::Color32::BLACK),
     ));
     painter.text(
         c + perp * 0.0 - dir * (size + 8.0),
@@ -452,9 +452,14 @@ fn draw_orbit_pin(painter: &egui::Painter, at: egui::Pos2) {
     let col = egui::Color32::from_rgb(255, 230, 50);
     let stem = 14.0;
     let head = egui::pos2(at.x, at.y - stem);
-    painter.line_segment([at, head], egui::Stroke::new(2.0, egui::Color32::BLACK));
-    painter.line_segment([at, head], egui::Stroke::new(1.5, col));
-    painter.circle(head, 5.0, col, egui::Stroke::new(1.5, egui::Color32::BLACK));
+    painter.line_segment([at, head], egui::Stroke::new(2.0_f32, egui::Color32::BLACK));
+    painter.line_segment([at, head], egui::Stroke::new(1.5_f32, col));
+    painter.circle(
+        head,
+        5.0,
+        col,
+        egui::Stroke::new(1.5_f32, egui::Color32::BLACK),
+    );
     // Mark the exact center point.
     painter.circle_filled(at, 1.5, egui::Color32::BLACK);
 }
@@ -487,7 +492,7 @@ fn draw_scale_bar(painter: &egui::Painter, rect: egui::Rect, mpp: f32) {
     let y = rect.bottom() - 24.0;
     let x1 = rect.right() - 20.0;
     let x0 = x1 - len_px;
-    let stroke = egui::Stroke::new(2.0, egui::Color32::from_gray(200));
+    let stroke = egui::Stroke::new(2.0_f32, egui::Color32::from_gray(200));
     painter.line_segment([egui::pos2(x0, y), egui::pos2(x1, y)], stroke);
     painter.line_segment([egui::pos2(x0, y - 5.0), egui::pos2(x0, y + 5.0)], stroke);
     painter.line_segment([egui::pos2(x1, y - 5.0), egui::pos2(x1, y + 5.0)], stroke);
@@ -510,7 +515,7 @@ fn draw_north(painter: &egui::Painter, rect: egui::Rect) {
     let x = rect.right() - 30.0;
     let top = egui::pos2(x, rect.top() + 24.0);
     let bottom = egui::pos2(x, rect.top() + 50.0);
-    let stroke = egui::Stroke::new(2.0, egui::Color32::from_gray(200));
+    let stroke = egui::Stroke::new(2.0_f32, egui::Color32::from_gray(200));
     painter.line_segment([bottom, top], stroke);
     painter.line_segment([top, top + egui::vec2(-4.0, 7.0)], stroke);
     painter.line_segment([top, top + egui::vec2(4.0, 7.0)], stroke);

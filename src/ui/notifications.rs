@@ -28,7 +28,10 @@ pub fn draw_notifications(
             for message in notes.active() {
                 egui::Frame::NONE
                     .fill(egui::Color32::from_rgb(80, 50, 0))
-                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(200, 150, 0)))
+                    .stroke(egui::Stroke::new(
+                        1.0_f32,
+                        egui::Color32::from_rgb(200, 150, 0),
+                    ))
                     .inner_margin(egui::Margin::symmetric(10, 6))
                     .corner_radius(4.0)
                     .show(ui, |ui| {
