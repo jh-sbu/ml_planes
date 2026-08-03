@@ -1,0 +1,26 @@
+// PPO training-loop hyperparameters for the level_hold task (category 1:
+// affect only the gradient update / rollout collection — never persisted in
+// a checkpoint, ignored at inference).
+//
+// Promoted from the `train-evaluate-optimize` run
+// target/skill-runs/level_hold-20260731-100011 (experiment
+// clip_entropy_combo, run skill_level_hold_clip_entropy_combo_b3): a tighter
+// PPO clip range plus zero entropy bonus took mean_return from -582.56
+// (baseline, compiled defaults) to -93.90 and mean_abs_altitude_m from
+// 30.24 m to 4.66 m over 64 eval episodes, at the same 1.0 success rate.
+//
+// This is `Task::LevelHold`'s default `--ppo-config` (see
+// `Task::ppo_config_path` in src/bin/train_ppo.rs); pass an explicit
+// `--ppo-config` to override it for a one-off experiment.
+(
+    gamma: 0.99,
+    gae_lambda: 0.95,
+    clip_epsilon: 0.1,
+    value_coef: 0.5,
+    entropy_coef: 0.0,
+    lr: 0.0003,
+    rollout_steps: 2048,
+    n_epochs: 4,
+    minibatch: 64,
+    // seed: Some(1234),
+)

@@ -24,8 +24,10 @@
 //!                             clip_epsilon, value/entropy coefs, lr, rollout_steps,
 //!                             n_epochs, minibatch, seed) from a RON file. Applies to the MLP
 //!                             tasks (level_hold/orbit/residual_orbit); the lstm_orbit task
-//!                             ignores everything except `seed`. Absent or invalid → compiled
-//!                             defaults.
+//!                             ignores everything except `seed`. Absent → the task's tuned
+//!                             default if it has one (level_hold:
+//!                             assets/training/level_hold.ppo.ron), else compiled defaults.
+//!                             Invalid file → compiled defaults, with a warning.
 //!   --seed <u64>              Fix the model's weight init, the minibatch-shuffle RNG, and
 //!                             per-env episode resets, for a reproducible run. Applies to every
 //!                             task (incl. lstm_orbit) and overrides `--ppo-config`'s `seed`
@@ -136,7 +138,8 @@ fn main() {
         .map(|w| w[1].clone());
 
     // Optional PPO hyperparameter override (level_hold / orbit / residual_orbit).
-    // Absent → compiled defaults; a missing/invalid file falls back with a warning.
+    // Absent → the task's tuned default (`Task::default_ppo_config_path`), else
+    // compiled defaults; a missing/invalid file falls back with a warning.
     let ppo_config: Option<String> = args
         .windows(2)
         .find(|w| w[0] == "--ppo-config")
@@ -219,6 +222,17 @@ impl Task {
             Self::LevelHold => "assets/training/level_hold.reward.ron",
             Self::Orbit | Self::ResidualOrbit => "assets/training/orbit.reward.ron",
             Self::LstmOrbit => "assets/training/wu_orbit.reward.ron",
+        }
+    }
+
+    /// Per-task default `--ppo-config` path, loaded when `--ppo-config` is
+    /// not passed on the CLI. `None` means the task has no tuned default and
+    /// falls back to `PpoHyperparams::default()` (mirrors
+    /// `assets/training/default.ppo.ron`).
+    fn default_ppo_config_path(self) -> Option<&'static str> {
+        match self {
+            Self::LevelHold => Some("assets/training/level_hold.ppo.ron"),
+            Self::Orbit | Self::ResidualOrbit | Self::LstmOrbit => None,
         }
     }
 
@@ -347,10 +361,12 @@ fn run<B>(
     // Effective reward-profile path: the CLI override if given, else the task default.
     let reward_path = reward_config.unwrap_or_else(|| task.reward_config_path().to_string());
 
-    // PPO hyperparameters: CLI override if given, else compiled defaults.
+    // PPO hyperparameters: CLI override if given, else the task's tuned
+    // default (`Task::default_ppo_config_path`), else compiled defaults.
     // Applies to the MLP `PpoTrainer` tasks only (level_hold / orbit / residual_orbit);
     // the LSTM task uses its own trainer and ignores this.
-    let mut hp: PpoHyperparams = match ppo_config.as_deref() {
+    let ppo_path = ppo_config.or_else(|| task.default_ppo_config_path().map(str::to_string));
+    let mut hp: PpoHyperparams = match ppo_path.as_deref() {
         Some(p) => match load_ron_config(p) {
             Ok(cfg) => {
                 println!("Loaded PPO config from {p}");

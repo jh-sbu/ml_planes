@@ -88,7 +88,9 @@ Also unless supplied:
 - `--steps 2000000`.
 - `--episodes 64`.
 - Default task reward config.
-- Compiled PPO defaults.
+- Default task PPO config (the task's tuned `assets/training/<task>.ppo.ron` if
+  one exists — currently only `level_hold` — else compiled defaults; i.e. no
+  `--ppo-config` flag).
 
 Reject `0`, negative, or non-numeric values for `total_runs` or
 `runs_per_batch`. Clamp `runs_per_batch` down to `total_runs` if it's larger
@@ -133,8 +135,8 @@ its own stem, followed by evaluating every checkpoint the batch produced. In
 sequential mode (`runs_per_batch = 1`) a batch is just one run — everything
 below still applies, only the concurrency mechanics are moot.
 
-**Batch 1 always starts with the baseline** (default reward config, compiled
-PPO defaults, no `--init-from`) as one of its `runs_per_batch` slots. If
+**Batch 1 always starts with the baseline** (default reward config, default
+PPO config, no `--init-from`) as one of its `runs_per_batch` slots. If
 `runs_per_batch > 1`, fill the remaining slots in batch 1 with distinct no-code
 PPO-hyperparameter variants (§ Step 4, rule 2) — don't waste batch-1
 concurrency running only the baseline while cores sit idle.
