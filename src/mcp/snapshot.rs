@@ -18,7 +18,9 @@ use bevy::prelude::*;
 use bevy_replicon::prelude::ClientState;
 use serde::{Deserialize, Serialize};
 
-use crate::controllers::{ControllerKind, ControllerTelemetry, SelectedTuningProfile};
+use crate::controllers::{
+    ControllerKind, ControllerTargets, ControllerTelemetry, SelectedTuningProfile,
+};
 use crate::net::{ConnectTarget, PROTOCOL_ID};
 use crate::plane::{ControlInputs, FlightState, PlaneId, PlaneIndex};
 use crate::sim_speed::SimSpeed;
@@ -49,6 +51,9 @@ pub struct PlaneSnapshot {
     pub control_inputs: ControlInputs,
     pub tuning_profile: Option<String>,
     pub telemetry: ControllerTelemetry,
+    /// Editable controller setpoints — the settable counterpart to `telemetry`. The
+    /// `set_controller_targets` MCP tool edits this via `ControlRequest::SetControllerTargets`.
+    pub targets: ControllerTargets,
     /// Selected RL model path stem, if any. Only present in `inference` builds (the
     /// `SelectedModel` component is `inference`-gated, like its replication).
     #[cfg(feature = "inference")]
@@ -105,6 +110,7 @@ pub fn plane_snapshot(
     kind: &ControllerKind,
     tuning: Option<&SelectedTuningProfile>,
     telemetry: Option<&ControllerTelemetry>,
+    targets: Option<&ControllerTargets>,
     #[cfg(feature = "inference")] model: Option<&SelectedModel>,
 ) -> PlaneSnapshot {
     PlaneSnapshot {
@@ -123,6 +129,7 @@ pub fn plane_snapshot(
         control_inputs: inputs.clone(),
         tuning_profile: tuning.map(|t| t.0.clone()),
         telemetry: telemetry.cloned().unwrap_or_default(),
+        targets: targets.copied().unwrap_or_default(),
         #[cfg(feature = "inference")]
         model: model.map(|m| m.0.clone()),
     }
@@ -165,6 +172,7 @@ pub fn collect_snapshot(
         &ControllerKind,
         Option<&SelectedTuningProfile>,
         Option<&ControllerTelemetry>,
+        Option<&ControllerTargets>,
     )>,
     #[cfg(feature = "inference")] models: Query<&SelectedModel>,
 ) {
@@ -175,7 +183,7 @@ pub fn collect_snapshot(
     let snapshots: Vec<PlaneSnapshot> = planes
         .iter()
         .map(
-            |(_entity, id, index, state, inputs, kind, tuning, telemetry)| {
+            |(_entity, id, index, state, inputs, kind, tuning, telemetry, targets)| {
                 plane_snapshot(
                     id,
                     index,
@@ -184,6 +192,7 @@ pub fn collect_snapshot(
                     kind,
                     tuning,
                     telemetry,
+                    targets,
                     #[cfg(feature = "inference")]
                     models.get(_entity).ok(),
                 )
@@ -231,6 +240,14 @@ mod tests {
         let kind = ControllerKind::Orbit;
         let tuning = SelectedTuningProfile("aggressive".to_string());
         let telemetry = ControllerTelemetry::Orbit { radial_error: 12.5 };
+        let targets = ControllerTargets::Orbit(crate::controllers::OrbitParams {
+            center_x: 0.0,
+            center_z: 0.0,
+            target_radius: 3000.0,
+            target_altitude: 1500.0,
+            target_airspeed: 123.0,
+            direction: crate::controllers::OrbitDirection::CounterClockwise,
+        });
 
         plane_snapshot(
             &id,
@@ -240,6 +257,7 @@ mod tests {
             &kind,
             Some(&tuning),
             Some(&telemetry),
+            Some(&targets),
             #[cfg(feature = "inference")]
             None,
         )
@@ -263,10 +281,22 @@ mod tests {
             ControllerTelemetry::Orbit { radial_error: 12.5 },
             "controller telemetry should carry through unchanged"
         );
+        assert_eq!(
+            snap.targets,
+            ControllerTargets::Orbit(crate::controllers::OrbitParams {
+                center_x: 0.0,
+                center_z: 0.0,
+                target_radius: 3000.0,
+                target_altitude: 1500.0,
+                target_airspeed: 123.0,
+                direction: crate::controllers::OrbitDirection::CounterClockwise,
+            }),
+            "controller targets should carry through unchanged"
+        );
     }
 
     #[test]
-    fn plane_snapshot_defaults_telemetry_when_absent() {
+    fn plane_snapshot_defaults_telemetry_and_targets_when_absent() {
         let id = PlaneId(0);
         let index = PlaneIndex(0);
         let state = FlightState::default();
@@ -279,10 +309,12 @@ mod tests {
             &ControllerKind::LevelHold,
             None,
             None,
+            None,
             #[cfg(feature = "inference")]
             None,
         );
         assert_eq!(snap.telemetry, ControllerTelemetry::None);
+        assert_eq!(snap.targets, ControllerTargets::None);
         assert_eq!(snap.tuning_profile, None);
     }
 

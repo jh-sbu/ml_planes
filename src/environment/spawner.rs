@@ -2,8 +2,8 @@ use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
 
 use crate::controllers::{
-    ActiveController, ControllerKind, ControllerTelemetry, FlightController, PlaneTuning,
-    SelectedTuningProfile,
+    ActiveController, ControllerKind, ControllerTargets, ControllerTelemetry, FlightController,
+    PlaneTuning, SelectedTuningProfile,
 };
 use crate::plane::{
     ControlInputs, FlightState, NextPlaneId, PlaneConfig, PlaneConfigHandle, PlaneId, PlaneIndex,
@@ -172,9 +172,12 @@ pub fn spawn_plane_with_id(
             state,
             ControlInputs::default(),
             ActiveController(controller),
-            // Replicated controller-telemetry view, populated each tick by
-            // `sync_controller_telemetry`; replicon carries it to the client HUD.
-            ControllerTelemetry::default(),
+            // Replicated controller-telemetry / -targets views, populated each tick by
+            // `sync_controller_telemetry` / `sync_controller_targets`; replicon carries
+            // them to the client HUD (status display and editable setpoints
+            // respectively — nested here since the spawn bundle is already at Bevy's
+            // 15-element tuple-`Bundle` ceiling).
+            (ControllerTelemetry::default(), ControllerTargets::default()),
             kind,
             // `PlaneIndex` is the display/cycle ordinal used by the camera, map,
             // and HUD. Deriving it from the already-unique, monotonic `PlaneId`

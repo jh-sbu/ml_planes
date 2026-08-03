@@ -20,9 +20,10 @@ use rmcp::model::{CallToolResult, ContentBlock};
 use rmcp::serde_json::{json, to_value, Value};
 use rmcp::{schemars, tool, tool_handler, tool_router, ServerHandler};
 
-use crate::controllers::ControllerKind;
+use crate::controllers::{ControllerKind, ControllerTargets};
 use crate::mcp::bridge::{
-    parse_sim_speed, parse_spawnable_controller_kind, ControlRequest, ControlSender,
+    merge_controller_targets, parse_sim_speed, parse_spawnable_controller_kind, ControlRequest,
+    ControlSender,
 };
 use crate::mcp::snapshot::{PlaneSnapshot, SimSnapshot, SnapshotHandle};
 use crate::plane::PlaneId;
@@ -168,6 +169,39 @@ impl PlanesService {
         self.send(ControlRequest::SetSimSpeed { speed })
     }
 
+    /// Guard + read the plane's current targets + merge the caller's partial edit + enqueue.
+    /// Errors if the plane isn't live/connected, or its controller has no editable targets
+    /// (Manual, FlightPlan), or an unparseable `direction` was supplied.
+    fn dispatch_set_controller_targets(
+        &self,
+        args: &SetControllerTargetsArgs,
+    ) -> Result<(), CallToolResult> {
+        self.require_live_plane(args.plane_id)?;
+        let snap = self.read_snapshot();
+        let current: ControllerTargets = snap
+            .planes
+            .iter()
+            .find(|p| p.plane_id == args.plane_id)
+            .map(|p| p.targets)
+            .unwrap_or_default();
+        let targets = merge_controller_targets(
+            current,
+            args.altitude,
+            args.airspeed,
+            args.heading_deg,
+            args.center_x,
+            args.center_z,
+            args.radius,
+            args.direction.as_deref(),
+            args.leader_id,
+        )
+        .map_err(tool_error)?;
+        self.send(ControlRequest::SetControllerTargets {
+            plane: PlaneId(args.plane_id),
+            targets,
+        })
+    }
+
     /// Guard + enqueue an RL model selection for a live plane. `model_stem` is a full path stem
     /// rooted at `models/` (see the tool doc); the server silently drops a stem that does not
     /// match the plane's controller kind.
@@ -280,6 +314,37 @@ struct SetTuningProfileArgs {
 struct SetSimSpeedArgs {
     /// Serde variant name of the playback speed: `"Paused"`, `"X1"`, `"X5"`, or `"X10"`.
     speed: String,
+}
+
+/// Typed arguments for [`PlanesService::set_controller_targets`].
+///
+/// A flat, all-optional field set spanning every controller kind's setpoints — the plane's
+/// *current* [`ControllerTargets`] variant (from the snapshot) decides which fields actually
+/// apply; the rest are ignored. This lets the caller change one setpoint (e.g. just `altitude`)
+/// without restating the plane's whole target set. See [`merge_controller_targets`] for the
+/// per-variant field mapping.
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct SetControllerTargetsArgs {
+    /// The `PlaneId(u32)` of the plane to edit.
+    plane_id: u32,
+    /// Target altitude \[m\]. Applies to LevelHold/RlLevelHold, Ascent, HeadingHold, and
+    /// Orbit/RlOrbit/RlOrbitResidual/RlLstmOrbit.
+    altitude: Option<f32>,
+    /// Target airspeed \[m/s\]. Applies to LevelHold/RlLevelHold, HeadingHold, and the orbit
+    /// family.
+    airspeed: Option<f32>,
+    /// Target heading in **degrees**. Applies to HeadingHold only.
+    heading_deg: Option<f32>,
+    /// Orbit center world-frame X \[m\]. Applies to the orbit family only.
+    center_x: Option<f32>,
+    /// Orbit center world-frame Z \[m\]. Applies to the orbit family only.
+    center_z: Option<f32>,
+    /// Orbit radius \[m\]. Applies to the orbit family only.
+    radius: Option<f32>,
+    /// Orbit direction: `"CW"` or `"CCW"`. Applies to the orbit family only.
+    direction: Option<String>,
+    /// The `PlaneId(u32)` of the new formation leader. Applies to Wingman only.
+    leader_id: Option<u32>,
 }
 
 /// Typed arguments for [`PlanesService::set_model`].
@@ -513,6 +578,32 @@ impl PlanesService {
             Err(err) => err,
         }
     }
+
+    /// Edit a plane's controller setpoints.
+    #[tool(
+        description = "Edit a plane's controller setpoints: { plane_id, altitude?, airspeed?, \
+                       heading_deg?, center_x?, center_z?, radius?, direction?, leader_id? }. \
+                       Only the fields that apply to the plane's *current* controller kind take \
+                       effect — unset fields, and fields that don't apply, keep their current \
+                       value: LevelHold/RlLevelHold use altitude+airspeed; Ascent uses altitude; \
+                       HeadingHold uses heading_deg (degrees)+altitude+airspeed; \
+                       Orbit/RlOrbit/RlOrbitResidual/RlLstmOrbit use \
+                       center_x+center_z+radius+altitude+airspeed+direction (\"CW\"/\"CCW\"); \
+                       Wingman uses leader_id (the new leader's PlaneId). Errors if not \
+                       connected, the id is unknown, or the plane's controller has nothing \
+                       editable (Manual, FlightPlan). Fire-and-forget: returns \
+                       { status: \"sent\" }; re-read get_plane_state to observe the applied \
+                       targets (eventually consistent)."
+    )]
+    async fn set_controller_targets(
+        &self,
+        Parameters(args): Parameters<SetControllerTargetsArgs>,
+    ) -> CallToolResult {
+        match self.dispatch_set_controller_targets(&args) {
+            Ok(()) => sent(),
+            Err(err) => err,
+        }
+    }
 }
 
 /// The `set_model` tool lives in its own `inference`-gated router: rmcp 2.0's `#[tool_router]`
@@ -562,23 +653,29 @@ impl PlanesService {
     name = "ml_planes_mcp",
     instructions = "Inspect and control a running ml_planes flight simulation. Read tools: \
                     `get_sim_status` (connection + plane count), `list_planes` (roster), and \
-                    `get_plane_state { plane_id }` (full per-plane state). Write tools: \
-                    `spawn_plane` (add a plane), `remove_plane { plane_id }`, \
+                    `get_plane_state { plane_id }` (full per-plane state, including `targets` — \
+                    the plane's current editable setpoints). Write tools: `spawn_plane` (add a \
+                    plane), `remove_plane { plane_id }`, \
                     `switch_controller { plane_id, controller_kind }`, \
-                    `set_tuning_profile { plane_id, profile }`, `set_sim_speed { speed }`, and \
-                    (on inference builds) `set_model { plane_id, model_path_stem }`. State \
-                    tracks the live sim and updates across calls; writes are \
-                    eventually-consistent round-trips through the server. spawn_plane/\
-                    remove_plane poll briefly and report confirmed/timeout; the other writes \
-                    return { status: \"sent\" } immediately — re-read get_plane_state / \
-                    get_sim_status to observe the applied change."
+                    `set_tuning_profile { plane_id, profile }`, `set_sim_speed { speed }`, \
+                    `set_controller_targets { plane_id, altitude?, airspeed?, heading_deg?, \
+                    center_x?, center_z?, radius?, direction?, leader_id? }` (edit a plane's \
+                    target altitude/speed/heading/orbit-geometry/formation-leader — only the \
+                    fields matching its current controller kind take effect), and (on inference \
+                    builds) `set_model { plane_id, model_path_stem }`. State tracks the live sim \
+                    and updates across calls; writes are eventually-consistent round-trips \
+                    through the server. spawn_plane/remove_plane poll briefly and report \
+                    confirmed/timeout; the other writes return { status: \"sent\" } immediately \
+                    — re-read get_plane_state / get_sim_status to observe the applied change."
 )]
 impl ServerHandler for PlanesService {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::controllers::{ControllerKind, ControllerTelemetry, SelectedTuningProfile};
+    use crate::controllers::{
+        ControllerKind, ControllerTargets, ControllerTelemetry, SelectedTuningProfile,
+    };
     use crate::mcp::snapshot::{build_snapshot, plane_snapshot};
     use crate::plane::{ControlInputs, FlightState, PlaneId, PlaneIndex};
     use crate::sim_speed::SimSpeed;
@@ -605,6 +702,14 @@ mod tests {
         };
         let tuning = SelectedTuningProfile("aggressive".to_string());
         let telemetry = ControllerTelemetry::Orbit { radial_error: 12.5 };
+        let targets = ControllerTargets::Orbit(crate::controllers::OrbitParams {
+            center_x: 0.0,
+            center_z: 0.0,
+            target_radius: 3000.0,
+            target_altitude: 1500.0,
+            target_airspeed: 123.0,
+            direction: crate::controllers::OrbitDirection::CounterClockwise,
+        });
         plane_snapshot(
             &PlaneId(7),
             &PlaneIndex(2),
@@ -613,6 +718,7 @@ mod tests {
             &ControllerKind::Orbit,
             Some(&tuning),
             Some(&telemetry),
+            Some(&targets),
             #[cfg(feature = "inference")]
             None,
         )
@@ -981,6 +1087,143 @@ mod tests {
         let (service, rx) = service_and_rx(snap);
         assert!(service.dispatch_set_sim_speed("X5").is_err());
         assert!(rx.0.try_recv().is_err());
+    }
+
+    #[test]
+    fn dispatch_set_controller_targets_enqueues_merged_targets() {
+        let (service, rx) = service_and_rx(connected_snapshot());
+        let args = SetControllerTargetsArgs {
+            plane_id: 7,
+            altitude: Some(1800.0),
+            airspeed: None,
+            heading_deg: None,
+            center_x: None,
+            center_z: None,
+            radius: None,
+            direction: Some("CW".to_string()),
+            leader_id: None,
+        };
+        service.dispatch_set_controller_targets(&args).unwrap();
+        match rx
+            .0
+            .try_recv()
+            .expect("a set-targets request should be queued")
+        {
+            ControlRequest::SetControllerTargets { plane, targets } => {
+                assert_eq!(plane, PlaneId(7));
+                // sample_plane()'s Orbit targets: center (0,0), radius 3000, alt 1500, spd 123,
+                // CCW. altitude and direction are overridden; everything else carries through.
+                assert_eq!(
+                    targets,
+                    ControllerTargets::Orbit(crate::controllers::OrbitParams {
+                        center_x: 0.0,
+                        center_z: 0.0,
+                        target_radius: 3000.0,
+                        target_altitude: 1800.0,
+                        target_airspeed: 123.0,
+                        direction: crate::controllers::OrbitDirection::Clockwise,
+                    })
+                );
+            }
+            other => panic!("unexpected request: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_set_controller_targets_errors_on_unknown_id() {
+        let (service, rx) = service_and_rx(connected_snapshot());
+        let args = SetControllerTargetsArgs {
+            plane_id: 9999,
+            altitude: Some(1800.0),
+            airspeed: None,
+            heading_deg: None,
+            center_x: None,
+            center_z: None,
+            radius: None,
+            direction: None,
+            leader_id: None,
+        };
+        assert!(service.dispatch_set_controller_targets(&args).is_err());
+        assert!(
+            rx.0.try_recv().is_err(),
+            "nothing enqueued for a missing id"
+        );
+    }
+
+    #[test]
+    fn dispatch_set_controller_targets_errors_while_disconnected() {
+        let snap = build_snapshot(vec![], false, "127.0.0.1:5555".to_string(), None);
+        let (service, rx) = service_and_rx(snap);
+        let args = SetControllerTargetsArgs {
+            plane_id: 7,
+            altitude: Some(1800.0),
+            airspeed: None,
+            heading_deg: None,
+            center_x: None,
+            center_z: None,
+            radius: None,
+            direction: None,
+            leader_id: None,
+        };
+        assert!(service.dispatch_set_controller_targets(&args).is_err());
+        assert!(rx.0.try_recv().is_err());
+    }
+
+    #[test]
+    fn dispatch_set_controller_targets_errors_when_plane_has_no_editable_targets() {
+        // A Manual-kind plane reports ControllerTargets::None.
+        let state = FlightState::default();
+        let inputs = ControlInputs::default();
+        let manual_plane = plane_snapshot(
+            &PlaneId(3),
+            &PlaneIndex(0),
+            &state,
+            &inputs,
+            &ControllerKind::Manual,
+            None,
+            None,
+            None,
+            #[cfg(feature = "inference")]
+            None,
+        );
+        let snap = build_snapshot(vec![manual_plane], true, "127.0.0.1:5555".to_string(), None);
+        let (service, rx) = service_and_rx(snap);
+        let args = SetControllerTargetsArgs {
+            plane_id: 3,
+            altitude: Some(1000.0),
+            airspeed: None,
+            heading_deg: None,
+            center_x: None,
+            center_z: None,
+            radius: None,
+            direction: None,
+            leader_id: None,
+        };
+        assert!(service.dispatch_set_controller_targets(&args).is_err());
+        assert!(rx.0.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn set_controller_targets_tool_returns_sent_when_connected() {
+        let (service, _rx) = service_and_rx(connected_snapshot());
+        let result = service
+            .set_controller_targets(Parameters(SetControllerTargetsArgs {
+                plane_id: 7,
+                altitude: Some(1800.0),
+                airspeed: None,
+                heading_deg: None,
+                center_x: None,
+                center_z: None,
+                radius: None,
+                direction: None,
+                leader_id: None,
+            }))
+            .await;
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(
+            result.structured_content.expect("structured")["status"],
+            json!("sent")
+        );
     }
 
     #[cfg(feature = "inference")]

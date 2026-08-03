@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use bevy_rapier3d::prelude::{AdditionalMassProperties, ExternalForce, Velocity};
 
 use crate::aerodynamics::{compute_aero_forces, engine_thrust};
-use crate::controllers::{ActiveController, ControllerTelemetry};
+use crate::controllers::{ActiveController, ControllerTargets, ControllerTelemetry};
 use crate::plane::context::{ControllerContext, PlaneSnapshot};
 use crate::plane::plugin::PlaneConfigHandle;
 use crate::plane::{ControlInputs, FlightState, PlaneConfig, PlaneId};
@@ -73,6 +73,22 @@ pub fn sync_controller_telemetry(
         let next = ctrl.0.telemetry(state);
         if *telemetry != next {
             *telemetry = next;
+        }
+    }
+}
+
+/// Snapshot each controller's editable setpoints into its replicated
+/// [`ControllerTargets`] component, after the controller has run this tick.
+///
+/// The settable counterpart to [`sync_controller_telemetry`] — see
+/// `controllers::targets` module docs for why the two are kept separate. The
+/// `PartialEq` guard keeps replicon's change detection (and the client's mid-edit
+/// display) quiet when nothing was actually edited.
+pub fn sync_controller_targets(mut query: Query<(&ActiveController, &mut ControllerTargets)>) {
+    for (ctrl, mut targets) in query.iter_mut() {
+        let next = ctrl.0.targets();
+        if *targets != next {
+            *targets = next;
         }
     }
 }

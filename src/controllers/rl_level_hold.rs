@@ -121,6 +121,26 @@ impl FlightController for RlLevelHoldController {
         "RlLevelHold"
     }
 
+    fn targets(&self) -> crate::controllers::targets::ControllerTargets {
+        crate::controllers::targets::ControllerTargets::LevelHold {
+            altitude: self.target_altitude,
+            airspeed: self.target_airspeed,
+        }
+    }
+
+    fn apply_targets(
+        &mut self,
+        targets: &crate::controllers::targets::ControllerTargets,
+        _state: &FlightState,
+    ) {
+        if let crate::controllers::targets::ControllerTargets::LevelHold { altitude, airspeed } =
+            targets
+        {
+            self.target_altitude = *altitude;
+            self.target_airspeed = *airspeed;
+        }
+    }
+
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }

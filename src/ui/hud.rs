@@ -4,9 +4,9 @@ use std::f32::consts::PI;
 
 use crate::camera::CameraMode;
 use crate::controllers::{
-    ActiveController, AscentController, ControllerKind, ControllerTelemetry, HeadingHoldController,
-    L1Controller, L1Status, LevelHoldController, ModelLibrary, OrbitController, OrbitDirection,
-    PlaneTuning, SelectedModel, SelectedTuningProfile, WingmanController,
+    ActiveController, AscentController, ControllerKind, ControllerTargets, ControllerTelemetry,
+    L1Controller, L1Status, ModelLibrary, OrbitDirection, OrbitParams, PlaneTuning, SelectedModel,
+    SelectedTuningProfile, WingmanController,
 };
 use crate::plane::{
     ControlInputs, FlightState, PlaneConfig, PlaneConfigHandle, PlaneId, PlaneIndex,
@@ -15,14 +15,84 @@ use crate::plane::{
 use crate::ui::file_load::{self, PendingLoads};
 use crate::ui::map::MapState;
 
-// Phase 6: on the networked client the HUD sends commands instead of mutating
-// local (replicated) components.
+// On the networked client the HUD sends commands instead of mutating local
+// (replicated) components.
 #[cfg(all(feature = "net", feature = "inference"))]
 use crate::net::SetModelCommand;
 #[cfg(feature = "net")]
-use crate::net::{SetTuningProfileCommand, SwitchControllerCommand};
+use crate::net::{SetControllerTargetsCommand, SetTuningProfileCommand, SwitchControllerCommand};
 #[cfg(feature = "net")]
 use bevy_replicon::prelude::ClientTriggerExt;
+
+/// Client-side shadow of an in-flight controller-target edit. While it is live (and
+/// matches the followed entity + the replicated value's variant) the HUD draws its
+/// target-editor widgets against this instead of the freshly-replicated
+/// `ControllerTargets` snapshot, so a snapshot arriving mid-drag can't snap a
+/// `DragValue` backwards. Only meaningful on the networked client — the local-sim
+/// path edits the live controller directly and never touches this resource.
+// Only meaningfully read/written on a networked client (`cfg(feature = "net")`
+// branches below); on a non-net local-sim build the fields/methods/helper below are
+// legitimately unused, exactly like `commands`/`pending_target` in `draw_flight_hud`
+// (see its `#[allow(unused_variables, unused_mut)]`).
+#[cfg_attr(not(feature = "net"), allow(dead_code))]
+#[derive(Resource, Default)]
+pub struct PendingTargetEdit {
+    entity: Option<Entity>,
+    targets: ControllerTargets,
+    last_sent: ControllerTargets,
+    last_edit_secs: f64,
+}
+
+/// How long an edited value is trusted over the replicated snapshot before falling
+/// back — comfortably longer than a round trip plus the ~2-tick client render delay
+/// (`NetInterpolation`), so by expiry the server's echo should have caught up.
+#[cfg_attr(not(feature = "net"), allow(dead_code))]
+const TARGET_EDIT_HOLD_SECS: f64 = 0.75;
+
+#[cfg_attr(not(feature = "net"), allow(dead_code))]
+impl PendingTargetEdit {
+    /// Record a fresh edit for `entity` at time `now`.
+    fn record(&mut self, entity: Entity, targets: ControllerTargets, now: f64) {
+        self.entity = Some(entity);
+        self.targets = targets;
+        self.last_edit_secs = now;
+    }
+
+    /// `true` (and updates `last_sent`) iff `targets` differs from the last value
+    /// sent. Guards against an out-of-range replicated value — e.g. an orbit radius
+    /// a `DragValue::range()` would clamp — causing the widget to report `changed()`
+    /// (and thus resend the same command) on every single frame forever.
+    fn take_if_new(&mut self, targets: ControllerTargets) -> bool {
+        if self.last_sent == targets {
+            return false;
+        }
+        self.last_sent = targets;
+        true
+    }
+}
+
+/// Which value the target-editor widgets should be drawn against this frame: the
+/// pending edit (if it's still within its hold window, for the same entity, and the
+/// same `ControllerTargets` variant as the replicated snapshot), or `replicated`
+/// itself. A variant mismatch means the server rebuilt the controller into a
+/// different kind since the edit — the replicated value must win. Pure, so it's
+/// unit-tested without egui.
+#[cfg_attr(not(feature = "net"), allow(dead_code))]
+fn seed_targets(
+    replicated: ControllerTargets,
+    pending: &PendingTargetEdit,
+    entity: Entity,
+    now: f64,
+) -> ControllerTargets {
+    let live = pending.entity == Some(entity)
+        && now - pending.last_edit_secs < TARGET_EDIT_HOLD_SECS
+        && std::mem::discriminant(&pending.targets) == std::mem::discriminant(&replicated);
+    if live {
+        pending.targets
+    } else {
+        replicated
+    }
+}
 
 #[allow(unused_variables, unused_mut)]
 pub fn draw_flight_hud(
@@ -46,12 +116,17 @@ pub fn draw_flight_hud(
         // Replicated read-only controller status — the only telemetry source on a
         // networked client (where `ActiveController` isn't replicated).
         Option<&ControllerTelemetry>,
+        // Replicated editable setpoints — the seed for the target-editor widgets on
+        // a networked client (where `ActiveController` isn't replicated either).
+        Option<&ControllerTargets>,
     )>,
     all_planes: Query<(Entity, &PlaneId, &PlaneIndex), With<FlightState>>,
     plane_configs: Res<Assets<PlaneConfig>>,
     tuning_assets: Res<Assets<PlaneTuning>>,
     model_lib: Res<ModelLibrary>,
     mut pending: ResMut<PendingLoads>,
+    mut pending_target: ResMut<PendingTargetEdit>,
+    real_time: Res<Time<Real>>,
     // Used only by the networked client to send commands; unused in local-sim
     // (covered by the `#[allow(unused_variables, unused_mut)]` on this system).
     mut commands: Commands,
@@ -78,6 +153,7 @@ pub fn draw_flight_hud(
         mut selected_model,
         config_handle,
         telemetry,
+        replicated_targets,
     )) = result
     else {
         return;
@@ -224,10 +300,56 @@ pub fn draw_flight_hud(
                 draw_replicated_telemetry(ui, telemetry);
             }
 
-            // Everything below edits the live controller. On a networked client the
-            // `ActiveController` isn't replicated, so skip the per-kind panels and
-            // the RL model picker — the flight data above is already live. (Phase 6
-            // converts these into network commands; see `plans/client_server.md`.)
+            // Controller-target editor: one widget body serves both the local-sim
+            // path (edits the live controller directly, below) and the networked
+            // client (shadows the edit locally and sends a `SetControllerTargetsCommand`
+            // — the server is authoritative). This is what used to be unreachable on a
+            // client because `ActiveController` isn't replicated.
+            let now = real_time.elapsed_secs_f64();
+            let mut edited = match controller.as_ref() {
+                Some(c) => c.0.targets(),
+                None => {
+                    #[cfg(feature = "net")]
+                    {
+                        seed_targets(
+                            replicated_targets.copied().unwrap_or_default(),
+                            &pending_target,
+                            current_entity,
+                            now,
+                        )
+                    }
+                    #[cfg(not(feature = "net"))]
+                    {
+                        ControllerTargets::None
+                    }
+                }
+            };
+            if draw_controller_targets(ui, state, &pairs, current_entity, &mut edited) {
+                match controller.as_mut() {
+                    Some(c) => c.0.apply_targets(&edited, state),
+                    None =>
+                    {
+                        #[cfg(feature = "net")]
+                        if let Some(plane) = plane_id_of(&pairs, current_entity) {
+                            pending_target.record(current_entity, edited, now);
+                            if pending_target.take_if_new(edited) {
+                                commands.client_trigger(SetControllerTargetsCommand {
+                                    plane,
+                                    targets: edited,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Everything below is live-controller-only extras that the shared editor
+            // above doesn't cover: read-only diagnostics/status the client already
+            // gets via `draw_replicated_telemetry`, the L1 flight-plan display, local
+            // tuning-profile combos + file-dialog buttons, and the local RL model
+            // picker. On a networked client `ActiveController` isn't replicated, so
+            // all of it is skipped here — the flight data and target editor above are
+            // already live.
             let Some(mut controller) = controller else {
                 return;
             };
@@ -238,31 +360,6 @@ pub fn draw_flight_hud(
                     .as_any_mut()
                     .downcast_mut::<WingmanController>()
                 {
-                    let current_leader_id = wc.leader_id;
-                    let mut selected_leader_id = current_leader_id;
-                    let leader_label = pairs
-                        .iter()
-                        .find(|&&(_, pid, _)| pid == current_leader_id)
-                        .map(|&(_, _, idx)| format!("Plane {}", idx))
-                        .unwrap_or_else(|| "Unknown".to_string());
-                    egui::ComboBox::from_label("Leader")
-                        .selected_text(&leader_label)
-                        .show_ui(ui, |ui| {
-                            for &(entity, pid, idx) in &pairs {
-                                if entity == current_entity {
-                                    continue;
-                                }
-                                ui.selectable_value(
-                                    &mut selected_leader_id,
-                                    pid,
-                                    format!("Plane {}", idx),
-                                );
-                            }
-                        });
-                    if selected_leader_id != current_leader_id {
-                        wc.leader_id = selected_leader_id;
-                    }
-
                     let d = &wc.diagnostics;
                     if d.leader_found {
                         ui.label(format!("Pos error: {:.1} m", d.pos_error_mag));
@@ -277,19 +374,6 @@ pub fn draw_flight_hud(
 
             if *kind == ControllerKind::Ascent {
                 if let Some(ascent) = controller.0.as_any_mut().downcast_mut::<AscentController>() {
-                    let prev = ascent.target_altitude;
-                    ui.horizontal(|ui| {
-                        ui.label("Target Alt:");
-                        ui.add(
-                            egui::DragValue::new(&mut ascent.target_altitude)
-                                .speed(10.0)
-                                .range(100.0..=15000.0)
-                                .suffix(" m"),
-                        );
-                    });
-                    if ascent.target_altitude != prev {
-                        ascent.complete = false;
-                    }
                     let status = if ascent.complete {
                         "Complete"
                     } else {
@@ -300,32 +384,6 @@ pub fn draw_flight_hud(
             }
 
             if *kind == ControllerKind::LevelHold {
-                if let Some(lh) = controller
-                    .0
-                    .as_any_mut()
-                    .downcast_mut::<LevelHoldController>()
-                {
-                    ui.horizontal(|ui| {
-                        ui.label("Target Alt:");
-                        ui.add(
-                            egui::DragValue::new(&mut lh.target_altitude)
-                                .speed(10.0)
-                                .range(100.0..=15000.0)
-                                .suffix(" m"),
-                        );
-                    });
-                    let tgt_kts = lh.target_airspeed * 1.944;
-                    ui.horizontal(|ui| {
-                        ui.label("Target Spd:");
-                        ui.add(
-                            egui::DragValue::new(&mut lh.target_airspeed)
-                                .speed(1.0)
-                                .range(30.0..=200.0)
-                                .suffix(" m/s"),
-                        );
-                        ui.label(format!("({:.0} kts)", tgt_kts));
-                    });
-                }
                 if let (Some(ref mut profile), Some(handle)) =
                     (profile.as_mut().map(|p| p.reborrow()), tuning_handle)
                 {
@@ -354,49 +412,6 @@ pub fn draw_flight_hud(
             }
 
             if *kind == ControllerKind::HeadingHold {
-                if let Some(hh) = controller
-                    .0
-                    .as_any_mut()
-                    .downcast_mut::<HeadingHoldController>()
-                {
-                    // Display current heading in degrees for reference.
-                    let speed_xz = (state.velocity.x.powi(2) + state.velocity.z.powi(2)).sqrt();
-                    let cur_heading_deg = if speed_xz > 1.0 {
-                        state.velocity.z.atan2(state.velocity.x).to_degrees()
-                    } else {
-                        0.0
-                    };
-                    ui.label(format!("Heading: {:.1}°", cur_heading_deg));
-
-                    // Target heading: edit in degrees, store in radians.
-                    let mut tgt_deg = hh.target_heading.to_degrees();
-                    ui.horizontal(|ui| {
-                        ui.label("Target Hdg:");
-                        ui.add(egui::DragValue::new(&mut tgt_deg).speed(1.0).suffix("°"));
-                    });
-                    hh.target_heading = tgt_deg.to_radians();
-
-                    ui.horizontal(|ui| {
-                        ui.label("Target Alt:");
-                        ui.add(
-                            egui::DragValue::new(&mut hh.inner.target_altitude)
-                                .speed(10.0)
-                                .range(100.0..=15000.0)
-                                .suffix(" m"),
-                        );
-                    });
-                    let tgt_kts = hh.inner.target_airspeed * 1.944;
-                    ui.horizontal(|ui| {
-                        ui.label("Target Spd:");
-                        ui.add(
-                            egui::DragValue::new(&mut hh.inner.target_airspeed)
-                                .speed(1.0)
-                                .range(30.0..=200.0)
-                                .suffix(" m/s"),
-                        );
-                        ui.label(format!("({:.0} kts)", tgt_kts));
-                    });
-                }
                 if let (Some(ref mut profile), Some(handle)) =
                     (profile.as_mut().map(|p| p.reborrow()), tuning_handle)
                 {
@@ -425,21 +440,6 @@ pub fn draw_flight_hud(
             }
 
             if *kind == ControllerKind::Orbit {
-                if let Some(orbit) = controller.0.as_any_mut().downcast_mut::<OrbitController>() {
-                    if draw_orbit_controls(
-                        ui,
-                        state,
-                        &mut orbit.center_x,
-                        &mut orbit.center_z,
-                        &mut orbit.target_radius,
-                        &mut orbit.target_altitude,
-                        &mut orbit.target_airspeed,
-                        &mut orbit.direction,
-                    ) {
-                        orbit.radial_pid.reset();
-                        orbit.heading_pid.reset();
-                    }
-                }
                 if let (Some(ref mut profile), Some(handle)) =
                     (profile.as_mut().map(|p| p.reborrow()), tuning_handle)
                 {
@@ -522,179 +522,13 @@ pub fn draw_flight_hud(
                 }
             }
 
-            #[cfg(feature = "inference")]
-            if *kind == ControllerKind::RlLevelHold {
-                use crate::controllers::RlLevelHoldController;
-
-                // During the transition frames before the RL model is loaded the active
-                // controller may still be a LevelHoldController (fallback from build()); try
-                // both so targets are always editable regardless of which is present.
-                if let Some(rl) = controller
-                    .0
-                    .as_any_mut()
-                    .downcast_mut::<RlLevelHoldController>()
-                {
-                    ui.horizontal(|ui| {
-                        ui.label("Target Alt:");
-                        ui.add(
-                            egui::DragValue::new(&mut rl.target_altitude)
-                                .speed(10.0)
-                                .range(100.0..=15000.0)
-                                .suffix(" m"),
-                        );
-                    });
-                    let tgt_kts = rl.target_airspeed * 1.944;
-                    ui.horizontal(|ui| {
-                        ui.label("Target Spd:");
-                        ui.add(
-                            egui::DragValue::new(&mut rl.target_airspeed)
-                                .speed(1.0)
-                                .range(30.0..=200.0)
-                                .suffix(" m/s"),
-                        );
-                        ui.label(format!("({:.0} kts)", tgt_kts));
-                    });
-                } else if let Some(lh) = controller
-                    .0
-                    .as_any_mut()
-                    .downcast_mut::<LevelHoldController>()
-                {
-                    ui.horizontal(|ui| {
-                        ui.label("Target Alt:");
-                        ui.add(
-                            egui::DragValue::new(&mut lh.target_altitude)
-                                .speed(10.0)
-                                .range(100.0..=15000.0)
-                                .suffix(" m"),
-                        );
-                    });
-                    let tgt_kts = lh.target_airspeed * 1.944;
-                    ui.horizontal(|ui| {
-                        ui.label("Target Spd:");
-                        ui.add(
-                            egui::DragValue::new(&mut lh.target_airspeed)
-                                .speed(1.0)
-                                .range(30.0..=200.0)
-                                .suffix(" m/s"),
-                        );
-                        ui.label(format!("({:.0} kts)", tgt_kts));
-                    });
-                }
-            }
-
-            #[cfg(feature = "inference")]
-            if *kind == ControllerKind::RlOrbit {
-                use crate::controllers::RlOrbitController;
-
-                if let Some(rl) = controller
-                    .0
-                    .as_any_mut()
-                    .downcast_mut::<RlOrbitController>()
-                {
-                    draw_orbit_controls(
-                        ui,
-                        state,
-                        &mut rl.center_x,
-                        &mut rl.center_z,
-                        &mut rl.target_radius,
-                        &mut rl.target_altitude,
-                        &mut rl.target_airspeed,
-                        &mut rl.direction,
-                    );
-                } else if let Some(orbit) =
-                    controller.0.as_any_mut().downcast_mut::<OrbitController>()
-                {
-                    if draw_orbit_controls(
-                        ui,
-                        state,
-                        &mut orbit.center_x,
-                        &mut orbit.center_z,
-                        &mut orbit.target_radius,
-                        &mut orbit.target_altitude,
-                        &mut orbit.target_airspeed,
-                        &mut orbit.direction,
-                    ) {
-                        orbit.radial_pid.reset();
-                        orbit.heading_pid.reset();
-                    }
-                }
-            }
-
-            #[cfg(feature = "inference")]
-            if *kind == ControllerKind::RlOrbitResidual {
-                use crate::controllers::RlOrbitResidualController;
-
-                if let Some(rl) = controller
-                    .0
-                    .as_any_mut()
-                    .downcast_mut::<RlOrbitResidualController>()
-                {
-                    draw_orbit_controls(
-                        ui,
-                        state,
-                        &mut rl.center_x,
-                        &mut rl.center_z,
-                        &mut rl.target_radius,
-                        &mut rl.target_altitude,
-                        &mut rl.target_airspeed,
-                        &mut rl.direction,
-                    );
-                } else if let Some(orbit) =
-                    controller.0.as_any_mut().downcast_mut::<OrbitController>()
-                {
-                    if draw_orbit_controls(
-                        ui,
-                        state,
-                        &mut orbit.center_x,
-                        &mut orbit.center_z,
-                        &mut orbit.target_radius,
-                        &mut orbit.target_altitude,
-                        &mut orbit.target_airspeed,
-                        &mut orbit.direction,
-                    ) {
-                        orbit.radial_pid.reset();
-                        orbit.heading_pid.reset();
-                    }
-                }
-            }
-
-            #[cfg(feature = "inference")]
-            if *kind == ControllerKind::RlLstmOrbit {
-                use crate::controllers::RlLstmOrbitController;
-
-                if let Some(rl) = controller
-                    .0
-                    .as_any_mut()
-                    .downcast_mut::<RlLstmOrbitController>()
-                {
-                    draw_orbit_controls(
-                        ui,
-                        state,
-                        &mut rl.center_x,
-                        &mut rl.center_z,
-                        &mut rl.target_radius,
-                        &mut rl.target_altitude,
-                        &mut rl.target_airspeed,
-                        &mut rl.direction,
-                    );
-                } else if let Some(orbit) =
-                    controller.0.as_any_mut().downcast_mut::<OrbitController>()
-                {
-                    if draw_orbit_controls(
-                        ui,
-                        state,
-                        &mut orbit.center_x,
-                        &mut orbit.center_z,
-                        &mut orbit.target_radius,
-                        &mut orbit.target_altitude,
-                        &mut orbit.target_airspeed,
-                        &mut orbit.direction,
-                    ) {
-                        orbit.radial_pid.reset();
-                        orbit.heading_pid.reset();
-                    }
-                }
-            }
+            // RL target editors (level-hold/orbit) are no longer special-cased here:
+            // `RlLevelHoldController`/`RlOrbitController`/`RlOrbitResidualController`/
+            // `RlLstmOrbitController` all report through the same `LevelHold`/`Orbit`
+            // `ControllerTargets` variants as their PID counterparts (see
+            // `controllers::targets`), so the shared editor above already handles
+            // them — including the transition frames before an RL model finishes
+            // loading, when the active controller is still the PID fallback.
 
             #[cfg(feature = "inference")]
             if let Some(dir_key) = kind.model_dir() {
@@ -852,81 +686,189 @@ fn net_selection_combos(
     }
 }
 
-fn draw_orbit_controls(
+/// Draw the editable setpoint widgets for whatever variant `targets` holds, mutating
+/// it in place. Returns `true` iff a widget actually changed a value this frame.
+///
+/// Shared by both paths: the local-sim caller writes the result straight back into
+/// the live controller (`FlightController::apply_targets`); the networked-client
+/// caller shadows it in `PendingTargetEdit` and sends a `SetControllerTargetsCommand`
+/// — see the call site in `draw_flight_hud`. `pairs` + `current_entity` are only used
+/// by the `Wingman` leader combo.
+fn draw_controller_targets(
     ui: &mut egui::Ui,
     state: &FlightState,
-    center_x: &mut f32,
-    center_z: &mut f32,
-    target_radius: &mut f32,
-    target_altitude: &mut f32,
-    target_airspeed: &mut f32,
-    direction: &mut OrbitDirection,
+    pairs: &[(Entity, PlaneId, u32)],
+    current_entity: Entity,
+    targets: &mut ControllerTargets,
 ) -> bool {
+    match targets {
+        ControllerTargets::None => false,
+        ControllerTargets::LevelHold { altitude, airspeed } => draw_alt_spd(ui, altitude, airspeed),
+        ControllerTargets::Ascent { altitude } => {
+            drag_row(ui, "Target Alt:", altitude, 10.0, 100.0..=15000.0, " m")
+        }
+        ControllerTargets::HeadingHold {
+            heading,
+            altitude,
+            airspeed,
+        } => {
+            // Current heading display for reference — read-only, from live state.
+            let speed_xz = (state.velocity.x.powi(2) + state.velocity.z.powi(2)).sqrt();
+            let cur_heading_deg = if speed_xz > 1.0 {
+                state.velocity.z.atan2(state.velocity.x).to_degrees()
+            } else {
+                0.0
+            };
+            ui.label(format!("Heading: {:.1}°", cur_heading_deg));
+
+            let mut changed = draw_heading_row(ui, heading);
+            changed |= draw_alt_spd(ui, altitude, airspeed);
+            changed
+        }
+        ControllerTargets::Orbit(params) => draw_orbit_targets(ui, state, params),
+        ControllerTargets::Wingman { leader } => {
+            draw_leader_combo(ui, pairs, current_entity, leader)
+        }
+    }
+}
+
+/// A single labeled `DragValue` row. Returns whether the value changed this frame.
+fn drag_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut f32,
+    speed: f32,
+    range: std::ops::RangeInclusive<f32>,
+    suffix: &str,
+) -> bool {
+    let mut changed = false;
     ui.horizontal(|ui| {
-        ui.label("Center X:");
-        ui.add(
-            egui::DragValue::new(center_x)
-                .speed(10.0)
-                .range(-50_000.0..=50_000.0)
-                .suffix(" m"),
-        );
+        ui.label(label);
+        changed = ui
+            .add(
+                egui::DragValue::new(value)
+                    .speed(speed)
+                    .range(range)
+                    .suffix(suffix),
+            )
+            .changed();
     });
-    ui.horizontal(|ui| {
-        ui.label("Center Z:");
-        ui.add(
-            egui::DragValue::new(center_z)
-                .speed(10.0)
-                .range(-50_000.0..=50_000.0)
-                .suffix(" m"),
-        );
-    });
-    ui.horizontal(|ui| {
-        ui.label("Radius:");
-        ui.add(
-            egui::DragValue::new(target_radius)
-                .speed(10.0)
-                .range(500.0..=20_000.0)
-                .suffix(" m"),
-        );
-    });
-    ui.horizontal(|ui| {
-        ui.label("Target Alt:");
-        ui.add(
-            egui::DragValue::new(target_altitude)
-                .speed(10.0)
-                .range(100.0..=15000.0)
-                .suffix(" m"),
-        );
-    });
-    let tgt_kts = *target_airspeed * 1.944;
+    changed
+}
+
+/// The "Target Alt:" + "Target Spd:" row pair shared by every altitude/airspeed-based
+/// controller kind (level-hold, heading-hold's inner loop, orbit).
+fn draw_alt_spd(ui: &mut egui::Ui, altitude: &mut f32, airspeed: &mut f32) -> bool {
+    let mut changed = drag_row(ui, "Target Alt:", altitude, 10.0, 100.0..=15000.0, " m");
+    let tgt_kts = *airspeed * 1.944;
     ui.horizontal(|ui| {
         ui.label("Target Spd:");
-        ui.add(
-            egui::DragValue::new(target_airspeed)
+        let resp = ui.add(
+            egui::DragValue::new(airspeed)
                 .speed(1.0)
                 .range(30.0..=200.0)
                 .suffix(" m/s"),
         );
         ui.label(format!("({:.0} kts)", tgt_kts));
+        changed |= resp.changed();
     });
-    let dir_label = match *direction {
-        OrbitDirection::Clockwise => "CW",
-        OrbitDirection::CounterClockwise => "CCW",
-    };
-    let direction_changed = if ui.button(format!("Dir: {}", dir_label)).clicked() {
-        *direction = match *direction {
-            OrbitDirection::Clockwise => OrbitDirection::CounterClockwise,
-            OrbitDirection::CounterClockwise => OrbitDirection::Clockwise,
-        };
+    changed
+}
+
+/// Target heading, edited in degrees and stored in radians.
+fn draw_heading_row(ui: &mut egui::Ui, heading: &mut f32) -> bool {
+    let mut tgt_deg = heading.to_degrees();
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.label("Target Hdg:");
+        changed = ui
+            .add(egui::DragValue::new(&mut tgt_deg).speed(1.0).suffix("°"))
+            .changed();
+    });
+    if changed {
+        *heading = tgt_deg.to_radians();
+    }
+    changed
+}
+
+/// The wingman formation-leader combo. Returns whether a different leader was picked.
+fn draw_leader_combo(
+    ui: &mut egui::Ui,
+    pairs: &[(Entity, PlaneId, u32)],
+    current_entity: Entity,
+    leader: &mut PlaneId,
+) -> bool {
+    let current_leader_id = *leader;
+    let mut selected_leader_id = current_leader_id;
+    let leader_label = pairs
+        .iter()
+        .find(|&&(_, pid, _)| pid == current_leader_id)
+        .map(|&(_, _, idx)| format!("Plane {}", idx))
+        .unwrap_or_else(|| "Unknown".to_string());
+    egui::ComboBox::from_label("Leader")
+        .selected_text(&leader_label)
+        .show_ui(ui, |ui| {
+            for &(entity, pid, idx) in pairs {
+                if entity == current_entity {
+                    continue;
+                }
+                ui.selectable_value(&mut selected_leader_id, pid, format!("Plane {}", idx));
+            }
+        });
+    if selected_leader_id != current_leader_id {
+        *leader = selected_leader_id;
         true
     } else {
         false
+    }
+}
+
+/// Orbit geometry editor (center/radius/target alt/spd/direction) shared by
+/// `OrbitController` and all three RL orbit variants via `ControllerTargets::Orbit`.
+fn draw_orbit_targets(ui: &mut egui::Ui, state: &FlightState, params: &mut OrbitParams) -> bool {
+    let mut changed = drag_row(
+        ui,
+        "Center X:",
+        &mut params.center_x,
+        10.0,
+        -50_000.0..=50_000.0,
+        " m",
+    );
+    changed |= drag_row(
+        ui,
+        "Center Z:",
+        &mut params.center_z,
+        10.0,
+        -50_000.0..=50_000.0,
+        " m",
+    );
+    changed |= drag_row(
+        ui,
+        "Radius:",
+        &mut params.target_radius,
+        10.0,
+        500.0..=20_000.0,
+        " m",
+    );
+    changed |= draw_alt_spd(ui, &mut params.target_altitude, &mut params.target_airspeed);
+
+    let dir_label = match params.direction {
+        OrbitDirection::Clockwise => "CW",
+        OrbitDirection::CounterClockwise => "CCW",
     };
-    let rx = state.position.x - *center_x;
-    let rz = state.position.z - *center_z;
+    if ui.button(format!("Dir: {}", dir_label)).clicked() {
+        params.direction = match params.direction {
+            OrbitDirection::Clockwise => OrbitDirection::CounterClockwise,
+            OrbitDirection::CounterClockwise => OrbitDirection::Clockwise,
+        };
+        changed = true;
+    }
+
+    let rx = state.position.x - params.center_x;
+    let rz = state.position.z - params.center_z;
     let r = (rx * rx + rz * rz).sqrt();
-    ui.label(format!("Radius err: {:.1} m", r - *target_radius));
-    direction_changed
+    ui.label(format!("Radius err: {:.1} m", r - params.target_radius));
+    changed
 }
 
 /// Render the read-only controller status on a networked client from the replicated
@@ -1053,5 +995,211 @@ mod tests {
     fn camera_follow_index_missing_entity_returns_zero() {
         let pairs = vec![(entity(20), PlaneId(2), 2u32)];
         assert_eq!(camera_follow_index(&pairs, entity(99)), 0);
+    }
+
+    use crate::controllers::ControllerTargets;
+    use crate::controllers::OrbitParams;
+
+    #[test]
+    fn seed_targets_prefers_pending_within_hold_window() {
+        let e = entity(1);
+        let mut pending = PendingTargetEdit::default();
+        let edited = ControllerTargets::LevelHold {
+            altitude: 1600.0,
+            airspeed: 110.0,
+        };
+        pending.record(e, edited, 10.0);
+        let replicated = ControllerTargets::LevelHold {
+            altitude: 1000.0,
+            airspeed: 80.0,
+        };
+        assert_eq!(seed_targets(replicated, &pending, e, 10.1), edited);
+    }
+
+    #[test]
+    fn seed_targets_falls_back_to_replicated_after_hold_expires() {
+        let e = entity(1);
+        let mut pending = PendingTargetEdit::default();
+        pending.record(
+            e,
+            ControllerTargets::LevelHold {
+                altitude: 1600.0,
+                airspeed: 110.0,
+            },
+            10.0,
+        );
+        let replicated = ControllerTargets::LevelHold {
+            altitude: 1000.0,
+            airspeed: 80.0,
+        };
+        let now = 10.0 + TARGET_EDIT_HOLD_SECS + 0.01;
+        assert_eq!(seed_targets(replicated, &pending, e, now), replicated);
+    }
+
+    #[test]
+    fn seed_targets_discards_pending_when_variant_changes() {
+        let e = entity(1);
+        let mut pending = PendingTargetEdit::default();
+        pending.record(
+            e,
+            ControllerTargets::LevelHold {
+                altitude: 1600.0,
+                airspeed: 110.0,
+            },
+            10.0,
+        );
+        // Server rebuilt the controller into Orbit — a variant mismatch must defer
+        // to the replicated value, not the stale pending edit for the old kind.
+        let replicated = ControllerTargets::Orbit(OrbitParams {
+            center_x: 0.0,
+            center_z: 0.0,
+            target_radius: 1000.0,
+            target_altitude: 1000.0,
+            target_airspeed: 100.0,
+            direction: OrbitDirection::CounterClockwise,
+        });
+        assert_eq!(seed_targets(replicated, &pending, e, 10.1), replicated);
+    }
+
+    #[test]
+    fn seed_targets_discards_pending_for_a_different_entity() {
+        let e1 = entity(1);
+        let e2 = entity(2);
+        let mut pending = PendingTargetEdit::default();
+        pending.record(
+            e1,
+            ControllerTargets::LevelHold {
+                altitude: 1600.0,
+                airspeed: 110.0,
+            },
+            10.0,
+        );
+        let replicated = ControllerTargets::LevelHold {
+            altitude: 900.0,
+            airspeed: 85.0,
+        };
+        assert_eq!(seed_targets(replicated, &pending, e2, 10.1), replicated);
+    }
+
+    #[test]
+    fn pending_edit_suppresses_duplicate_sends() {
+        let mut pending = PendingTargetEdit::default();
+        let t = ControllerTargets::LevelHold {
+            altitude: 1600.0,
+            airspeed: 110.0,
+        };
+        assert!(pending.take_if_new(t), "first send should go out");
+        assert!(!pending.take_if_new(t), "unchanged value must not resend");
+        let t2 = ControllerTargets::LevelHold {
+            altitude: 1650.0,
+            airspeed: 110.0,
+        };
+        assert!(pending.take_if_new(t2), "changed value should send again");
+    }
+
+    /// Lay `draw_controller_targets` out in a headless egui context (mirrors
+    /// `lifecycle_panel`'s `layout_panel` pattern) and return whether any widget
+    /// reported a change over the run.
+    fn run_draw_controller_targets(
+        targets: &mut ControllerTargets,
+        state: &FlightState,
+        pairs: &[(Entity, PlaneId, u32)],
+        current_entity: Entity,
+    ) -> bool {
+        let ctx = egui::Context::default();
+        let mut changed = false;
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(400.0, 400.0),
+            )),
+            ..Default::default()
+        };
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                changed = draw_controller_targets(ui, state, pairs, current_entity, targets);
+            });
+        });
+        changed
+    }
+
+    /// The likeliest regression in the shared editor: merely *rendering* the
+    /// widgets (no simulated drag) must never report a change or mutate the
+    /// value — otherwise the networked client would spam
+    /// `SetControllerTargetsCommand` every single frame.
+    #[test]
+    fn drawing_targets_without_input_reports_no_change() {
+        let state = FlightState::default();
+        let current_entity = entity(1);
+        let pairs = vec![(current_entity, PlaneId(1), 1u32)];
+
+        let variants = [
+            ControllerTargets::None,
+            ControllerTargets::LevelHold {
+                altitude: 1000.0,
+                airspeed: 80.0,
+            },
+            ControllerTargets::Ascent { altitude: 1500.0 },
+            ControllerTargets::HeadingHold {
+                heading: 0.3,
+                altitude: 1000.0,
+                airspeed: 80.0,
+            },
+            ControllerTargets::Orbit(OrbitParams {
+                center_x: 0.0,
+                center_z: 0.0,
+                target_radius: 1000.0,
+                target_altitude: 1000.0,
+                target_airspeed: 100.0,
+                direction: OrbitDirection::CounterClockwise,
+            }),
+            ControllerTargets::Wingman { leader: PlaneId(1) },
+        ];
+
+        for original in variants {
+            let mut targets = original;
+            for frame in 0..3 {
+                let changed =
+                    run_draw_controller_targets(&mut targets, &state, &pairs, current_entity);
+                assert!(
+                    !changed,
+                    "frame {frame}: empty input should never report changed for {original:?}"
+                );
+            }
+            assert_eq!(
+                targets, original,
+                "empty input must not mutate targets for {original:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn none_variant_draws_nothing() {
+        let state = FlightState::default();
+        let current_entity = entity(1);
+        let pairs = vec![(current_entity, PlaneId(1), 1u32)];
+        let mut targets = ControllerTargets::None;
+
+        let ctx = egui::Context::default();
+        let mut before = f32::NAN;
+        let mut after = f32::NAN;
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(400.0, 400.0),
+            )),
+            ..Default::default()
+        };
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                before = ui.cursor().top();
+                draw_controller_targets(ui, &state, &pairs, current_entity, &mut targets);
+                after = ui.cursor().top();
+            });
+        });
+        assert_eq!(
+            before, after,
+            "None variant should not advance the layout cursor (i.e. draw nothing)"
+        );
     }
 }

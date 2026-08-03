@@ -93,7 +93,7 @@ src/
 | `FlightPlan` | RON asset | Ordered legs (`Waypoint`/`Orbit`) + L1 period/damping; loaded from `assets/plans/*.plan.ron` via the Bevy asset loader |
 | `FlightState` | ECS component | Position, velocity, attitude (quat), angular velocity, α, β, airspeed, altitude |
 | `ControlInputs` | ECS component | Aileron/elevator/rudder/throttle **or** rate commands (see Action Spaces) |
-| `FlightController` | trait | `fn update(&mut self, state: &FlightState, dt: f32) -> ControlInputs` |
+| `FlightController` | trait | `fn update(&mut self, state: &FlightState, dt: f32) -> ControlInputs`, plus `telemetry()`/`targets()` (read-only status / editable setpoints, both default to publishing nothing) and `apply_targets()` (applies an edit, ignoring a mismatched variant) |
 | `PidController<T>` | generic struct | PID with integral wind-up clamp and output limits |
 | `TrainingEnv` | trait | `reset()`, `step(action) -> (obs, reward, done, info)` |
 | `PlaneConfigHandle` | ECS component | Newtype wrapping `Handle<PlaneConfig>` — required because `Handle<T>` is not a `Component` in Bevy 0.18 |
@@ -114,7 +114,8 @@ src/
 | `VecEnv<E>` | struct | Wraps any `TrainingEnv` to run N parallel episodes (seeds offset per env) |
 | `DemonstrationEnv` / `BcDataset` | trait / struct | Behavior cloning: `collect_demonstrations()` rolls out a PID expert into a supervised dataset for `train_bc` pretraining |
 | `EvaluationSummary` / `TaskMetrics` | structs | Policy-evaluation output from `evaluate_policy` (success rate + per-metric families) |
-| `ControllerTelemetry` | ECS component (enum) | Read-only per-controller status (`Orbit { radial_error }`, `FlightPlan { leg, status }`, `Ascent`, `Wingman`, `None`, …) the server snapshots off the active controller each tick and **replicates**, so the thin client — which never steps a controller — can show it on the HUD. Default `None` (`controllers/telemetry.rs`) |
+| `ControllerTelemetry` | ECS component (enum) | Read-only **derived** per-controller status (`Orbit { radial_error }`, `FlightPlan { leg, status }`, `Ascent`, `Wingman`, `None`, …) the server snapshots off the active controller each tick and **replicates**, so the thin client — which never steps a controller — can show it on the HUD. Default `None` (`controllers/telemetry.rs`). The *settable* half of controller state lives in `ControllerTargets`, not here — see its row below |
+| `ControllerTargets` | ECS component (enum) | Editable controller setpoints (`LevelHold { altitude, airspeed }`, `Ascent { altitude }`, `HeadingHold { heading, altitude, airspeed }`, `Orbit(OrbitParams)`, `Wingman { leader }`, `None`) built by `FlightController::targets()`, snapshotted server-side each tick (`sync_controller_targets`), and **replicated** so a networked client's HUD can seed its target-editor widgets from it. Edits flow back via `SetControllerTargetsCommand`, applied through `FlightController::apply_targets()`. One variant per *widget set*, not per controller kind — e.g. all three RL orbit controllers report through the same `Orbit` variant as the PID `OrbitController`. Default `None` (`controllers/targets.rs`) |
 | `SimSpeed` | resource (enum) | Authoritative sim playback speed (pause/1×/5×/10×) in `src/sim_speed.rs`; replicated so the client displays server-side time acceleration rather than scaling its own clock. Set via `SetSimSpeedCommand` |
 | `Scenario` / `ResolvedScenario` | RON model (`src/scenario.rs`) | Multi-plane `.scenario.ron`: per-plane initial state, optional `fuel_fraction` (0–1; default full tank → loaded mass), `.plane.ron` config, and a `ControllerSpec` (incl. `Wingman` peer references by name, optional inline tuning, RL specs). `resolve()` assigns **scenario-local** `PlaneId`s (`idx + 1`) and computes initial states — the live spawner remaps these to runtime ids (see `spawn_resolved_scenario` below), since `NextPlaneId` is a separate, never-reset allocator; `build_controller()` builds the boxed controller; `ControllerSpec::kind()` maps a spec to its `ControllerKind`. A wingman naming itself as leader is rejected at `resolve()` time. RL specs **always parse** (so `default.scenario.ron` loads in every build) but only *build* on a native `--features inference` build; otherwise `build_controller` returns `Err` and the live spawner skips that plane. Drives `examples/observe_state.rs` via `--scenario` and the visual menu's Start Scenario flow (`environment::spawn_resolved_scenario`). CSV output ends with a `fuel_remaining` column. |
 
@@ -394,21 +395,28 @@ authoritative 64 Hz Rapier sim, all `FlightController`s, and fuel burn live in t
 mutation goes out as a command. Shared code (`aerodynamics/`, `controllers/`, `plane/`,
 `environment/` core, `scenario.rs`) is unchanged and compiled into both. The protocol lives in
 `src/net/` and is registered identically on both peers by `NetProtocolPlugin` (same order, or
-replicon rejects the connection); `PROTOCOL_ID` (currently **2** — v2 added `ControllerTelemetry`)
-gates version-mismatched peers.
+replicon rejects the connection); `PROTOCOL_ID` (currently **3** — v2 added `ControllerTelemetry`;
+v3 added `ControllerTargets` + `SetControllerTargetsCommand`) gates version-mismatched peers.
 
 - **Replicated (server → client), in registration order:** `Transform`, `FlightState`,
   `ControlInputs`, `PlaneId`, `PlaneIndex`, `ControllerKind`, `SelectedTuningProfile`,
-  `PlaneTuningPath`, `ControllerTelemetry`, and (`inference`-gated) `SelectedModel`. The client
-  HUD/map/camera read these read-only. `PlaneTuningPath` lets the client rebuild a
-  `PlaneTuningHandle` and reuse the existing profile enumeration for its dropdown.
+  `PlaneTuningPath`, `ControllerTelemetry`, `ControllerTargets`, and (`inference`-gated)
+  `SelectedModel`. The client HUD/map/camera read these read-only. `PlaneTuningPath` lets the
+  client rebuild a `PlaneTuningHandle` and reuse the existing profile enumeration for its
+  dropdown. `ControllerTargets` is the settable counterpart to `ControllerTelemetry` — see its
+  Key Types row below — and is what the HUD's target-editor widgets (Target Alt/Spd/Hdg, orbit
+  geometry, wingman leader) seed from on a client, since `ActiveController` itself never is.
 - **Commands (client → server)** — all `add_client_event`, `Channel::Ordered`, received on the
   server as `On<FromClient<…>>` observers: `SwitchControllerCommand`, `SetTuningProfileCommand`,
   `ManualInputCommand` (sent every client frame while manually flying; latest-wins),
-  `SpawnPlaneNetCommand`, `RemovePlaneNetCommand`, `SetSimSpeedCommand`, and (`inference`-gated)
-  `SetModelCommand`. Each handler just mutates the component that `SimControlPlugin` (controller
-  rebuilds) or the `LifecyclePlugin` observers already react to, so there is **one authoritative
-  application path** shared with local play — no divergent server-only logic.
+  `SpawnPlaneNetCommand`, `RemovePlaneNetCommand`, `SetSimSpeedCommand`,
+  `SetControllerTargetsCommand` (sent on every target-editor widget edit, including mid-drag —
+  high-rate and latest-wins, like `ManualInputCommand`; applied via
+  `FlightController::apply_targets`, which ignores a variant mismatch rather than panicking), and
+  (`inference`-gated) `SetModelCommand`. Each handler just mutates the component that
+  `SimControlPlugin` (controller rebuilds) or the `LifecyclePlugin` observers already react to, so
+  there is **one authoritative application path** shared with local play — no divergent
+  server-only logic.
 - **Rendering:** the client never predicts (deferred — see the plan's Out of Scope). It only
   **interpolates**: `ClientNetPlugin` buffers the last two replicated `FlightState` poses
   (`NetInterpolation`) and blends `Transform` at `now − RENDER_DELAY` (≈ 2 server ticks at 64 Hz),
@@ -557,14 +565,21 @@ families). Supports `--task {level_hold|orbit|residual_orbit|lstm_orbit}` and, f
 4. `kind.rs` — `build()`: factory arm
 5. `main.rs` — `apply_controller_switch`: add to the correct tuning family match (`Orbit` or `LevelHold` pattern)
 6. `main.rs` — `cycle_tune_profile`: same tuning family pattern
+7. If the controller has editable setpoints, implement `FlightController::targets()`/
+   `apply_targets()` — reuse an existing `ControllerTargets` variant when the new controller's
+   widget set matches one already defined (e.g. any orbit-shaped controller reuses `Orbit`; see
+   `controllers/targets.rs`), and add a case to `tests/core/controller_targets.rs`. Skipping this
+   step means the new controller silently ships with an un-editable HUD on the networked client —
+   the exact bug class `ControllerTargets` exists to close (see the Client/Server Networking
+   section above).
 
 **RL controller — all of the above, plus:**
 
-7. `kind.rs` — `model_dir()`: return the `models/` subdirectory name (e.g. `"orbit_residual"`)
-8. `main.rs` — `#[cfg(any(feature = "inference", feature = "training"))]` import block: import `XxxController` and `XxxConfig`
-9. `main.rs` — `apply_rl_controller_switch` guard: add variant to the `matches!()` pattern
-10. `main.rs` — `apply_rl_controller_switch` match arm: call `::load()` with error fallback
-11. `main.rs` — `apply_model_switch` match arm: same `::load()` call for HUD model cycling
+8. `kind.rs` — `model_dir()`: return the `models/` subdirectory name (e.g. `"orbit_residual"`)
+9. `main.rs` — `#[cfg(any(feature = "inference", feature = "training"))]` import block: import `XxxController` and `XxxConfig`
+10. `main.rs` — `apply_rl_controller_switch` guard: add variant to the `matches!()` pattern
+11. `main.rs` — `apply_rl_controller_switch` match arm: call `::load()` with error fallback
+12. `main.rs` — `apply_model_switch` match arm: same `::load()` call for HUD model cycling
 
 **A kind whose `build()` can't reconstruct its full state** (like `Wingman`, which needs a
 leader reference the generic factory doesn't have): the tuning-rebuild systems
@@ -775,6 +790,7 @@ the binary + a module filter, e.g. `cargo test --no-default-features --test core
 - `lifecycle` — runtime spawn/remove commands, auto-indexing, orphaned-wingman + camera cleanup (camera case is `visual`-gated, so it runs only under `just test-visual`), + a `Wingman`-kind plane with no `WingmanController` installed falling back to `LevelHold`
 - `sim_control` — relocated `SimControlPlugin` controller-rebuild systems, headless (runs in core); + a `WingmanController` surviving both the initial-tuning rebuild and a later profile switch
 - `controller_telemetry` — each controller's `FlightController::telemetry()` accessor / `ControllerTelemetry` shape (runs in core)
+- `controller_targets` — each controller's `FlightController::targets()`/`apply_targets()` accessors: read/write round trip, mismatched-variant no-op, and the ascent-complete-latch / orbit-PID-reset side effects `apply_targets` owns (runs in core; RL variants' `targets()` covered in `tests/rl/rl_inference.rs`)
 - **module-gated `#[cfg(sim_enabled)]` in `tests/core/main.rs`** (compile out on net-without-server builds):
   - `aero_physics` — energy conservation over N steps in level flight
   - `level_hold` — level-hold cascade convergence to target altitude
@@ -784,13 +800,13 @@ the binary + a module filter, e.g. `cargo test --no-default-features --test core
   - `fuel` — live-sim fuel: spawn-time tank load (`fuel_fraction`), `consume_fuel` burn + `update_plane_mass`, shipped-asset powerplant parse
 
 **`tests/net/` (`net`/`server`/`mcp`; the whole binary compiles out without `net`):**
-- `net_serde` — serde round-trips for the replicated types + command events (`net`-gated)
+- `net_serde` — serde round-trips for the replicated types + command events (`net`-gated), incl. every `ControllerTargets` variant and `SetControllerTargetsCommand`
 - `net_protocol` — `NetProtocolPlugin` registration / replication-rule invariants (`net`-gated)
 - `client_net` — client interpolation math (`NetInterpolation` buffer → interpolated `Transform`) (`net`-gated)
-- `local_server` — in-process replicon client↔server command + replicated-state round-trip (`server`-gated)
-- `server_sim` — `ServerSimPlugin` boot / scenario spawn / `FromClient` command handlers, transport-free (`server`-gated)
-- `mcp_snapshot` — MCP read-path snapshot mirror, transport-free (`mcp`-gated)
-- `mcp_bridge` — MCP write-path command bridge drain, transport-free (`mcp`-gated)
+- `local_server` — `ServerProcess` drop-kills-child (a client-launched local server dies with the client); **not** an in-process replicon round trip despite the name (`server`-gated)
+- `server_sim` — `ServerSimPlugin` boot / scenario spawn / `FromClient` command handlers, transport-free (`server`-gated), incl. `ControllerTargets` replication and `SetControllerTargetsCommand` (apply + echo-back, variant-mismatch no-op, unknown-plane no-op)
+- `mcp_snapshot` — MCP read-path snapshot mirror, transport-free (`mcp`-gated), incl. `ControllerTargets` mirrored into `PlaneSnapshot.targets`
+- `mcp_bridge` — MCP write-path command bridge drain, transport-free (`mcp`-gated), incl. `ControlRequest::SetControllerTargets` and the `merge_controller_targets`/`parse_orbit_direction` helpers backing the `set_controller_targets` tool
 - `mcp_lifecycle` — MCP auto-reconnect (`poll_reconnect`) + clean shutdown (`check_shutdown`), transport-free (`mcp`-gated)
 - `mcp_e2e` — MCP end-to-end over real UDP: boots an `ml_planes_server` child, inspect + spawn/remove round-trip (`mcp`+`server`-gated, `#[ignore]`; run with `--features "mcp server" --test net -- --ignored mcp_e2e`)
 

@@ -18,11 +18,11 @@ use bevy::prelude::*;
 use bevy_replicon::prelude::ClientTriggerExt;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 
-use crate::controllers::ControllerKind;
+use crate::controllers::{ControllerKind, ControllerTargets, OrbitDirection};
 use crate::mcp::snapshot::RequestedSimSpeed;
 use crate::net::{
-    RemovePlaneNetCommand, SetSimSpeedCommand, SetTuningProfileCommand, SpawnPlaneNetCommand,
-    SwitchControllerCommand,
+    RemovePlaneNetCommand, SetControllerTargetsCommand, SetSimSpeedCommand,
+    SetTuningProfileCommand, SpawnPlaneNetCommand, SwitchControllerCommand,
 };
 use crate::plane::PlaneId;
 use crate::sim_speed::SimSpeed;
@@ -52,6 +52,11 @@ pub enum ControlRequest {
     SetTuningProfile { plane: PlaneId, profile: String },
     /// Set the authoritative playback speed (`SetSimSpeedCommand`).
     SetSimSpeed { speed: SimSpeed },
+    /// Edit a plane's controller setpoints (`SetControllerTargetsCommand`).
+    SetControllerTargets {
+        plane: PlaneId,
+        targets: ControllerTargets,
+    },
     /// Select a trained RL model by file stem (`SetModelCommand`). Inference-only, like the
     /// command it maps to.
     #[cfg(feature = "inference")]
@@ -114,6 +119,9 @@ pub fn drain_control_requests(
             ControlRequest::SetSimSpeed { speed } => {
                 requested_speed.0 = Some(speed);
                 commands.client_trigger(SetSimSpeedCommand { speed });
+            }
+            ControlRequest::SetControllerTargets { plane, targets } => {
+                commands.client_trigger(SetControllerTargetsCommand { plane, targets });
             }
             #[cfg(feature = "inference")]
             ControlRequest::SetModel { plane, model_stem } => {
@@ -200,9 +208,270 @@ pub fn parse_sim_speed(name: &str) -> Result<SimSpeed, String> {
     }
 }
 
+/// Parse an [`OrbitDirection`] name (serde variant identifier, or its `CW`/`CCW` HUD-label
+/// alias) into the enum.
+///
+/// Backs the `direction` field of `set_controller_targets`. Unknown names return an `Err`
+/// (never a panic).
+pub fn parse_orbit_direction(name: &str) -> Result<OrbitDirection, String> {
+    match name {
+        "CW" | "Clockwise" => Ok(OrbitDirection::Clockwise),
+        "CCW" | "CounterClockwise" => Ok(OrbitDirection::CounterClockwise),
+        other => Err(format!(
+            "unknown orbit direction `{other}`; expected one of: CW, CCW"
+        )),
+    }
+}
+
+/// Merge a partial edit (only the fields the caller actually supplied) onto `current`'s
+/// `ControllerTargets` variant.
+///
+/// Backs the `set_controller_targets` tool. Only the fields that apply to `current`'s variant
+/// take effect — e.g. `radius` is silently ignored against a `LevelHold` plane, mirroring
+/// `FlightController::apply_targets`'s own mismatched-variant tolerance — so the caller can
+/// change one field of a plane's setpoints without restating every other one. Returns `Err`
+/// if `current` is `None` (the plane's controller has nothing settable, e.g. Manual or
+/// FlightPlan) or `direction_name` fails to parse.
+#[allow(clippy::too_many_arguments)]
+pub fn merge_controller_targets(
+    current: ControllerTargets,
+    altitude: Option<f32>,
+    airspeed: Option<f32>,
+    heading_deg: Option<f32>,
+    center_x: Option<f32>,
+    center_z: Option<f32>,
+    radius: Option<f32>,
+    direction_name: Option<&str>,
+    leader_id: Option<u32>,
+) -> Result<ControllerTargets, String> {
+    match current {
+        ControllerTargets::None => {
+            Err("this plane's controller has no editable targets (Manual/FlightPlan)".to_string())
+        }
+        ControllerTargets::LevelHold {
+            altitude: alt,
+            airspeed: spd,
+        } => Ok(ControllerTargets::LevelHold {
+            altitude: altitude.unwrap_or(alt),
+            airspeed: airspeed.unwrap_or(spd),
+        }),
+        ControllerTargets::Ascent { altitude: alt } => Ok(ControllerTargets::Ascent {
+            altitude: altitude.unwrap_or(alt),
+        }),
+        ControllerTargets::HeadingHold {
+            heading,
+            altitude: alt,
+            airspeed: spd,
+        } => Ok(ControllerTargets::HeadingHold {
+            heading: heading_deg.map(f32::to_radians).unwrap_or(heading),
+            altitude: altitude.unwrap_or(alt),
+            airspeed: airspeed.unwrap_or(spd),
+        }),
+        ControllerTargets::Orbit(mut params) => {
+            if let Some(v) = center_x {
+                params.center_x = v;
+            }
+            if let Some(v) = center_z {
+                params.center_z = v;
+            }
+            if let Some(v) = radius {
+                params.target_radius = v;
+            }
+            if let Some(v) = altitude {
+                params.target_altitude = v;
+            }
+            if let Some(v) = airspeed {
+                params.target_airspeed = v;
+            }
+            if let Some(name) = direction_name {
+                params.direction = parse_orbit_direction(name)?;
+            }
+            Ok(ControllerTargets::Orbit(params))
+        }
+        ControllerTargets::Wingman { leader } => Ok(ControllerTargets::Wingman {
+            leader: leader_id.map(PlaneId).unwrap_or(leader),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::controllers::OrbitParams;
+
+    fn sample_orbit_params() -> OrbitParams {
+        OrbitParams {
+            center_x: 0.0,
+            center_z: 0.0,
+            target_radius: 1000.0,
+            target_altitude: 1000.0,
+            target_airspeed: 100.0,
+            direction: OrbitDirection::CounterClockwise,
+        }
+    }
+
+    #[test]
+    fn parse_orbit_direction_accepts_cw_and_ccw() {
+        assert_eq!(
+            parse_orbit_direction("CW").unwrap(),
+            OrbitDirection::Clockwise
+        );
+        assert_eq!(
+            parse_orbit_direction("CCW").unwrap(),
+            OrbitDirection::CounterClockwise
+        );
+    }
+
+    #[test]
+    fn parse_orbit_direction_rejects_unknown() {
+        assert!(parse_orbit_direction("sideways").is_err());
+    }
+
+    #[test]
+    fn merge_controller_targets_overrides_level_hold_fields() {
+        let current = ControllerTargets::LevelHold {
+            altitude: 1000.0,
+            airspeed: 80.0,
+        };
+        let merged = merge_controller_targets(
+            current,
+            Some(1600.0),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            merged,
+            ControllerTargets::LevelHold {
+                altitude: 1600.0,
+                airspeed: 80.0,
+            },
+            "unspecified airspeed should keep its current value"
+        );
+    }
+
+    #[test]
+    fn merge_controller_targets_ascent_overrides_altitude() {
+        let current = ControllerTargets::Ascent { altitude: 1000.0 };
+        let merged = merge_controller_targets(
+            current,
+            Some(2000.0),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(merged, ControllerTargets::Ascent { altitude: 2000.0 });
+    }
+
+    #[test]
+    fn merge_controller_targets_heading_hold_converts_degrees_to_radians() {
+        let current = ControllerTargets::HeadingHold {
+            heading: 0.0,
+            altitude: 1000.0,
+            airspeed: 80.0,
+        };
+        let merged = merge_controller_targets(
+            current,
+            None,
+            None,
+            Some(90.0),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        match merged {
+            ControllerTargets::HeadingHold { heading, .. } => {
+                assert!(
+                    (heading - std::f32::consts::FRAC_PI_2).abs() < 1e-5,
+                    "heading={heading}"
+                );
+            }
+            other => panic!("expected HeadingHold, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn merge_controller_targets_orbit_overrides_geometry_and_direction() {
+        let current = ControllerTargets::Orbit(sample_orbit_params());
+        let merged = merge_controller_targets(
+            current,
+            Some(1800.0),
+            Some(120.0),
+            None,
+            Some(50.0),
+            Some(60.0),
+            Some(3000.0),
+            Some("CW"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            merged,
+            ControllerTargets::Orbit(OrbitParams {
+                center_x: 50.0,
+                center_z: 60.0,
+                target_radius: 3000.0,
+                target_altitude: 1800.0,
+                target_airspeed: 120.0,
+                direction: OrbitDirection::Clockwise,
+            })
+        );
+    }
+
+    #[test]
+    fn merge_controller_targets_orbit_rejects_bad_direction() {
+        let current = ControllerTargets::Orbit(sample_orbit_params());
+        assert!(merge_controller_targets(
+            current,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("sideways"),
+            None
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn merge_controller_targets_wingman_overrides_leader() {
+        let current = ControllerTargets::Wingman { leader: PlaneId(1) };
+        let merged =
+            merge_controller_targets(current, None, None, None, None, None, None, None, Some(9))
+                .unwrap();
+        assert_eq!(merged, ControllerTargets::Wingman { leader: PlaneId(9) });
+    }
+
+    #[test]
+    fn merge_controller_targets_errors_on_none_variant() {
+        assert!(merge_controller_targets(
+            ControllerTargets::None,
+            Some(1000.0),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None
+        )
+        .is_err());
+    }
 
     #[test]
     fn parses_the_self_sufficient_pid_kinds() {

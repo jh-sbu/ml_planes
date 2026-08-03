@@ -5,9 +5,10 @@ use bevy::math::{Quat, Vec3};
 use burn::backend::NdArray;
 use burn::module::Module;
 use burn::record::{DefaultFileRecorder, FullPrecisionSettings, NamedMpkBytesRecorder, Recorder};
-use ml_planes::controllers::orbit::{OrbitDirection, ORBIT_OBS_DIM};
+use ml_planes::controllers::orbit::{OrbitDirection, OrbitParams, ORBIT_OBS_DIM};
 use ml_planes::controllers::{
-    FlightController, ModelLoadError, RlLevelHoldController, RlOrbitConfig, RlOrbitController,
+    ControllerTargets, FlightController, ModelLoadError, RlLevelHoldController, RlOrbitConfig,
+    RlOrbitController,
 };
 use ml_planes::plane::{ControllerContext, FlightState, PlaneId};
 use ml_planes::training::ppo::model::ActorCritic;
@@ -131,6 +132,34 @@ fn loading_stale_dim_level_hold_model_errors() {
         result.as_ref().map(|_| "Ok"),
     );
     let _ = std::fs::remove_file(path.with_extension("mpk"));
+}
+
+/// `RlOrbitController` must report its setpoints through the shared `Orbit` variant of
+/// `ControllerTargets` — the HUD (and the replicated read path) treats it exactly like a
+/// PID `OrbitController` with the same geometry, so the widgets stay reachable across an
+/// RL-load transition.
+#[test]
+fn rl_orbit_targets_use_the_shared_orbit_variant() {
+    let config = RlOrbitConfig {
+        center_x: 10.0,
+        center_z: -20.0,
+        target_radius: 3000.0,
+        target_altitude: 800.0,
+        target_airspeed: 100.0,
+        direction: OrbitDirection::CounterClockwise,
+    };
+    let ctrl = RlOrbitController::load_bytes(ORBIT_MPK, config).expect("load_bytes");
+    assert_eq!(
+        ctrl.targets(),
+        ControllerTargets::Orbit(OrbitParams {
+            center_x: 10.0,
+            center_z: -20.0,
+            target_radius: 3000.0,
+            target_altitude: 800.0,
+            target_airspeed: 100.0,
+            direction: OrbitDirection::CounterClockwise,
+        })
+    );
 }
 
 #[test]

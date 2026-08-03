@@ -115,6 +115,31 @@ impl FlightController for HeadingHoldController {
         "HeadingHold"
     }
 
+    fn targets(&self) -> crate::controllers::targets::ControllerTargets {
+        crate::controllers::targets::ControllerTargets::HeadingHold {
+            heading: self.target_heading,
+            altitude: self.inner.target_altitude,
+            airspeed: self.inner.target_airspeed,
+        }
+    }
+
+    fn apply_targets(
+        &mut self,
+        targets: &crate::controllers::targets::ControllerTargets,
+        _state: &FlightState,
+    ) {
+        if let crate::controllers::targets::ControllerTargets::HeadingHold {
+            heading,
+            altitude,
+            airspeed,
+        } = targets
+        {
+            self.target_heading = *heading;
+            self.inner.target_altitude = *altitude;
+            self.inner.target_airspeed = *airspeed;
+        }
+    }
+
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }

@@ -73,6 +73,23 @@ impl FlightController for AscentController {
             complete: self.complete,
         }
     }
+    fn targets(&self) -> crate::controllers::targets::ControllerTargets {
+        crate::controllers::targets::ControllerTargets::Ascent {
+            altitude: self.target_altitude,
+        }
+    }
+    fn apply_targets(
+        &mut self,
+        targets: &crate::controllers::targets::ControllerTargets,
+        _state: &FlightState,
+    ) {
+        if let crate::controllers::targets::ControllerTargets::Ascent { altitude } = targets {
+            if *altitude != self.target_altitude {
+                self.complete = false;
+            }
+            self.target_altitude = *altitude;
+        }
+    }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }

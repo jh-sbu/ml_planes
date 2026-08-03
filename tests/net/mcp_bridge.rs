@@ -14,6 +14,7 @@ use bevy::state::app::StatesPlugin;
 use bevy_replicon::prelude::RepliconPlugins;
 
 use crate::common::build_headless_app_with;
+use ml_planes::controllers::ControllerTargets;
 use ml_planes::mcp::{
     control_channel, ControlRequest, ControlSender, McpBridgePlugin, RequestedSimSpeed,
     SnapshotHandle,
@@ -53,6 +54,29 @@ fn drain_consumes_queued_requests() {
         tx.0.len(),
         0,
         "drain_control_requests should have consumed both queued requests"
+    );
+}
+
+#[test]
+fn drain_consumes_set_controller_targets_request() {
+    let (mut app, tx) = build_bridge_app();
+
+    tx.0.send(ControlRequest::SetControllerTargets {
+        plane: PlaneId(1),
+        targets: ControllerTargets::LevelHold {
+            altitude: 1600.0,
+            airspeed: 110.0,
+        },
+    })
+    .unwrap();
+    assert_eq!(tx.0.len(), 1, "one request queued before the drain runs");
+
+    app.update();
+
+    assert_eq!(
+        tx.0.len(),
+        0,
+        "drain_control_requests should have consumed the queued request"
     );
 }
 

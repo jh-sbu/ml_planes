@@ -6,7 +6,8 @@
 
 use bevy::math::{Quat, Vec3};
 use ml_planes::controllers::{
-    ControllerKind, ControllerTelemetry, L1Status, OrbitDirection, WingmanDiagnostics,
+    ControllerKind, ControllerTargets, ControllerTelemetry, L1Status, OrbitDirection, OrbitParams,
+    WingmanDiagnostics,
 };
 use ml_planes::plane::{ControlInputs, FlightState, PlaneId, PlaneIndex};
 use ml_planes::training::SpawnSpec;
@@ -122,6 +123,33 @@ fn controller_telemetry_roundtrips() {
             xtrack: -5.0,
         },
     });
+}
+
+/// The settable half of controller state — replicated separately from
+/// `ControllerTelemetry` (read-only, derived) so unedited setpoints don't get
+/// re-broadcast (and re-stomp a mid-drag client edit) every tick.
+#[test]
+fn controller_targets_roundtrips() {
+    assert_ron_roundtrip(&ControllerTargets::None);
+    assert_ron_roundtrip(&ControllerTargets::LevelHold {
+        altitude: 1200.0,
+        airspeed: 90.0,
+    });
+    assert_ron_roundtrip(&ControllerTargets::Ascent { altitude: 1500.0 });
+    assert_ron_roundtrip(&ControllerTargets::HeadingHold {
+        heading: 0.5,
+        altitude: 1000.0,
+        airspeed: 80.0,
+    });
+    assert_ron_roundtrip(&ControllerTargets::Orbit(OrbitParams {
+        center_x: 10.0,
+        center_z: -20.0,
+        target_radius: 3000.0,
+        target_altitude: 800.0,
+        target_airspeed: 100.0,
+        direction: OrbitDirection::Clockwise,
+    }));
+    assert_ron_roundtrip(&ControllerTargets::Wingman { leader: PlaneId(4) });
 }
 
 #[test]

@@ -12,7 +12,9 @@ use bevy::prelude::*;
 use bevy_replicon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::controllers::{ControllerKind, ControllerTelemetry, SelectedTuningProfile};
+use crate::controllers::{
+    ControllerKind, ControllerTargets, ControllerTelemetry, SelectedTuningProfile,
+};
 use crate::plane::{ControlInputs, FlightState, PlaneId, PlaneIndex, PlaneTuningPath};
 use crate::sim_speed::SimSpeed;
 use crate::training::SpawnSpec;
@@ -28,7 +30,9 @@ pub const DEFAULT_PORT: u16 = 5555;
 /// mismatched peers.
 ///
 /// v2: added `ControllerTelemetry` to the replicated set (controller status display).
-pub const PROTOCOL_ID: u64 = 2;
+/// v3: added `ControllerTargets` to the replicated set + `SetControllerTargetsCommand`
+/// (editable controller setpoints from the client).
+pub const PROTOCOL_ID: u64 = 3;
 
 /// Switch the target plane's active controller (server rebuilds it).
 #[derive(Event, Serialize, Deserialize, Clone, Debug)]
@@ -83,6 +87,17 @@ pub struct SetSimSpeedCommand {
     pub speed: SimSpeed,
 }
 
+/// Set the target plane's controller setpoints (server applies them to the live
+/// `ActiveController` via `FlightController::apply_targets`). Sent on every widget
+/// edit, including mid-drag, so — like `ManualInputCommand` — the stream is
+/// high-rate and latest-wins. A variant mismatch (e.g. a stale command arriving just
+/// after a kind switch) is a server-side no-op, never a panic.
+#[derive(Event, Serialize, Deserialize, Clone, Debug)]
+pub struct SetControllerTargetsCommand {
+    pub plane: PlaneId,
+    pub targets: ControllerTargets,
+}
+
 /// Registers the shared replication rules and client→server command events. Must be
 /// added on both client and server (after `RepliconPlugins`) so the protocol matches.
 pub struct NetProtocolPlugin;
@@ -104,7 +119,12 @@ impl Plugin for NetProtocolPlugin {
             // Read-only controller status (orbit radial error, L1 leg/status, wingman
             // and ascent state) the server snapshots off the active controller each
             // tick so the thin client — which never steps a controller — can display it.
-            .replicate::<ControllerTelemetry>();
+            .replicate::<ControllerTelemetry>()
+            // Editable setpoints (target altitude/airspeed/heading, orbit geometry,
+            // wingman leader) — the settable counterpart to `ControllerTelemetry`. Kept
+            // as a separate component (not folded into telemetry) because it changes
+            // only on edit, not every tick; see `controllers::targets` module docs.
+            .replicate::<ControllerTargets>();
 
         #[cfg(feature = "inference")]
         app.replicate::<SelectedModel>();
@@ -117,7 +137,8 @@ impl Plugin for NetProtocolPlugin {
             .add_client_event::<ManualInputCommand>(Channel::Ordered)
             .add_client_event::<SpawnPlaneNetCommand>(Channel::Ordered)
             .add_client_event::<RemovePlaneNetCommand>(Channel::Ordered)
-            .add_client_event::<SetSimSpeedCommand>(Channel::Ordered);
+            .add_client_event::<SetSimSpeedCommand>(Channel::Ordered)
+            .add_client_event::<SetControllerTargetsCommand>(Channel::Ordered);
 
         #[cfg(feature = "inference")]
         app.add_client_event::<SetModelCommand>(Channel::Ordered);

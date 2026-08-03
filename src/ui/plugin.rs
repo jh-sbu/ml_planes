@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use bevy_egui::EguiPrimaryContextPass;
 
 use super::file_load::{poll_pending_loads, PendingLoads};
-use super::hud::draw_flight_hud;
+use super::hud::{draw_flight_hud, PendingTargetEdit};
 use super::lifecycle_panel::{draw_plane_panel, plane_lifecycle_hotkeys, PlanePanelState};
 use super::map::{draw_map, MapState};
 use super::menu::{AppState, MenuPlugin};
@@ -21,6 +21,7 @@ impl Plugin for UiPlugin {
         app.add_plugins(MenuPlugin)
             .init_resource::<crate::controllers::ModelLibrary>()
             .init_resource::<PendingLoads>()
+            .init_resource::<PendingTargetEdit>()
             .init_resource::<MapState>()
             .init_resource::<SimSpeed>()
             .init_resource::<PlanePanelState>()

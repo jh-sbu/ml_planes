@@ -40,8 +40,11 @@ impl OrbitDirection {
 /// Orbit geometry parameters shared across all orbit controller variants.
 ///
 /// Used to transplant a prior orbit's geometry when switching between orbit controller kinds
-/// so the center, radius, altitude, airspeed, and direction are preserved.
-#[derive(Clone, Copy, Debug)]
+/// so the center, radius, altitude, airspeed, and direction are preserved. Also the payload
+/// of `ControllerTargets::Orbit` (`controllers::targets`), so it derives `PartialEq` (the
+/// replicated `ControllerTargets` change-guard) and, under `net`, serde.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "net", derive(serde::Serialize, serde::Deserialize))]
 pub struct OrbitParams {
     pub center_x: f32,
     pub center_z: f32,
@@ -329,6 +332,30 @@ impl FlightController for OrbitController {
         let rz = state.position.z - self.center_z;
         let radial_error = (rx * rx + rz * rz).sqrt() - self.target_radius;
         crate::controllers::telemetry::ControllerTelemetry::Orbit { radial_error }
+    }
+    fn targets(&self) -> crate::controllers::targets::ControllerTargets {
+        crate::controllers::targets::ControllerTargets::Orbit(OrbitParams {
+            center_x: self.center_x,
+            center_z: self.center_z,
+            target_radius: self.target_radius,
+            target_altitude: self.target_altitude,
+            target_airspeed: self.target_airspeed,
+            direction: self.direction,
+        })
+    }
+    fn apply_targets(
+        &mut self,
+        targets: &crate::controllers::targets::ControllerTargets,
+        state: &FlightState,
+    ) {
+        if let crate::controllers::targets::ControllerTargets::Orbit(params) = targets {
+            let direction_changed = params.direction != self.direction;
+            self.apply_params(params, state.airspeed);
+            if direction_changed {
+                self.radial_pid.reset();
+                self.heading_pid.reset();
+            }
+        }
     }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self

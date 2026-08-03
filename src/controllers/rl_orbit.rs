@@ -177,6 +177,34 @@ impl FlightController for RlOrbitController {
         crate::controllers::telemetry::ControllerTelemetry::Orbit { radial_error }
     }
 
+    fn targets(&self) -> crate::controllers::targets::ControllerTargets {
+        crate::controllers::targets::ControllerTargets::Orbit(
+            crate::controllers::orbit::OrbitParams {
+                center_x: self.center_x,
+                center_z: self.center_z,
+                target_radius: self.target_radius,
+                target_altitude: self.target_altitude,
+                target_airspeed: self.target_airspeed,
+                direction: self.direction,
+            },
+        )
+    }
+
+    fn apply_targets(
+        &mut self,
+        targets: &crate::controllers::targets::ControllerTargets,
+        _state: &FlightState,
+    ) {
+        if let crate::controllers::targets::ControllerTargets::Orbit(params) = targets {
+            self.center_x = params.center_x;
+            self.center_z = params.center_z;
+            self.target_radius = params.target_radius;
+            self.target_altitude = params.target_altitude;
+            self.target_airspeed = params.target_airspeed;
+            self.direction = params.direction;
+        }
+    }
+
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }

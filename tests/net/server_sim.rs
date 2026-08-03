@@ -15,12 +15,13 @@ use bevy_replicon::prelude::{ClientId, FromClient, Replicated, RepliconPlugins};
 
 use crate::common::build_headless_app_with;
 use ml_planes::controllers::{
-    ActiveController, ControllerKind, ControllerTelemetry, ManualController, SimControlPlugin,
+    ActiveController, ControllerKind, ControllerTargets, ControllerTelemetry, ManualController,
+    OrbitController, SimControlPlugin,
 };
 use ml_planes::environment::{EnvironmentPlugin, LifecyclePlugin};
 use ml_planes::net::{
     ManualInputCommand, NetProtocolPlugin, RemovePlaneNetCommand, ServerScenario, ServerSimPlugin,
-    SetSimSpeedCommand, SpawnPlaneNetCommand, SwitchControllerCommand,
+    SetControllerTargetsCommand, SetSimSpeedCommand, SpawnPlaneNetCommand, SwitchControllerCommand,
 };
 use ml_planes::plane::{ControlInputs, PlaneId};
 use ml_planes::sim_speed::SimSpeed;
@@ -145,6 +146,186 @@ fn server_populates_replicated_controller_telemetry() {
         matches!(tel, ControllerTelemetry::Orbit { .. }),
         "expected Orbit telemetry after the server stepped the controller, got {tel:?}"
     );
+}
+
+#[test]
+fn server_populates_replicated_controller_targets() {
+    let mut app = build_server_app();
+    settle(&mut app);
+
+    // Switch the first plane to Orbit so the server steps an OrbitController, whose
+    // geometry the copy system snapshots each fixed tick into `ControllerTargets`.
+    let (entity, plane) = planes(&mut app)[0];
+    app.world_mut().trigger(FromClient {
+        client_id: ClientId::Server,
+        message: SwitchControllerCommand {
+            plane,
+            kind: ControllerKind::Orbit,
+        },
+    });
+    settle(&mut app);
+
+    assert!(
+        app.world().get::<Replicated>(entity).is_some(),
+        "targets ride on the replicated plane entity"
+    );
+    let targets = app
+        .world()
+        .get::<ControllerTargets>(entity)
+        .copied()
+        .expect("plane carries a ControllerTargets component");
+    let ControllerTargets::Orbit(replicated_params) = targets else {
+        panic!("expected Orbit targets after the server stepped the controller, got {targets:?}")
+    };
+
+    let binding = app.world_mut();
+    let mut ctrl = binding.get_mut::<ActiveController>(entity).unwrap();
+    let live = ctrl
+        .0
+        .as_any_mut()
+        .downcast_mut::<OrbitController>()
+        .expect("plane should be an OrbitController");
+    assert_eq!(replicated_params.target_radius, live.target_radius);
+    assert_eq!(replicated_params.target_altitude, live.target_altitude);
+    assert_eq!(replicated_params.target_airspeed, live.target_airspeed);
+}
+
+#[test]
+fn set_controller_targets_command_updates_live_controller() {
+    let mut app = build_server_app();
+    settle(&mut app);
+
+    // Switch the first plane to LevelHold so there's a scalar target to edit.
+    let (entity, plane) = planes(&mut app)[0];
+    app.world_mut().trigger(FromClient {
+        client_id: ClientId::Server,
+        message: SwitchControllerCommand {
+            plane,
+            kind: ControllerKind::LevelHold,
+        },
+    });
+    app.update();
+    app.update();
+
+    app.world_mut().trigger(FromClient {
+        client_id: ClientId::Server,
+        message: SetControllerTargetsCommand {
+            plane,
+            targets: ControllerTargets::LevelHold {
+                altitude: 1600.0,
+                airspeed: 110.0,
+            },
+        },
+    });
+    settle(&mut app);
+
+    let binding = app.world_mut();
+    let mut ctrl = binding.get_mut::<ActiveController>(entity).unwrap();
+    let live = ctrl
+        .0
+        .as_any_mut()
+        .downcast_mut::<ml_planes::controllers::LevelHoldController>()
+        .expect("plane should be LevelHold");
+    assert_eq!(
+        live.target_altitude, 1600.0,
+        "live controller should apply the command"
+    );
+    assert_eq!(
+        live.target_airspeed, 110.0,
+        "live controller should apply the command"
+    );
+
+    // The read path echoes it back: the replicated component reflects the edit too.
+    let targets = app
+        .world()
+        .get::<ControllerTargets>(entity)
+        .copied()
+        .expect("plane carries a ControllerTargets component");
+    assert_eq!(
+        targets,
+        ControllerTargets::LevelHold {
+            altitude: 1600.0,
+            airspeed: 110.0,
+        },
+        "replicated targets should echo the applied command"
+    );
+}
+
+#[test]
+fn set_controller_targets_ignores_variant_mismatch() {
+    let mut app = build_server_app();
+    settle(&mut app);
+
+    let (entity, plane) = planes(&mut app)[0];
+    app.world_mut().trigger(FromClient {
+        client_id: ClientId::Server,
+        message: SwitchControllerCommand {
+            plane,
+            kind: ControllerKind::LevelHold,
+        },
+    });
+    app.update();
+    app.update();
+
+    let before = {
+        let binding = app.world_mut();
+        let mut ctrl = binding.get_mut::<ActiveController>(entity).unwrap();
+        let live = ctrl
+            .0
+            .as_any_mut()
+            .downcast_mut::<ml_planes::controllers::LevelHoldController>()
+            .expect("plane should be LevelHold");
+        (live.target_altitude, live.target_airspeed)
+    };
+
+    // Send Orbit targets to a LevelHold plane — must be a no-op.
+    app.world_mut().trigger(FromClient {
+        client_id: ClientId::Server,
+        message: SetControllerTargetsCommand {
+            plane,
+            targets: ControllerTargets::Orbit(ml_planes::controllers::orbit::OrbitParams {
+                center_x: 1.0,
+                center_z: 2.0,
+                target_radius: 3.0,
+                target_altitude: 4.0,
+                target_airspeed: 5.0,
+                direction: ml_planes::controllers::OrbitDirection::Clockwise,
+            }),
+        },
+    });
+    settle(&mut app);
+
+    let binding = app.world_mut();
+    let mut ctrl = binding.get_mut::<ActiveController>(entity).unwrap();
+    let live = ctrl
+        .0
+        .as_any_mut()
+        .downcast_mut::<ml_planes::controllers::LevelHoldController>()
+        .expect("plane should still be LevelHold");
+    assert_eq!(
+        (live.target_altitude, live.target_airspeed),
+        before,
+        "a mismatched-variant command must be a no-op"
+    );
+}
+
+#[test]
+fn set_controller_targets_for_unknown_plane_is_a_noop() {
+    let mut app = build_server_app();
+    settle(&mut app);
+
+    // Must not panic when the plane doesn't exist.
+    app.world_mut().trigger(FromClient {
+        client_id: ClientId::Server,
+        message: SetControllerTargetsCommand {
+            plane: PlaneId(9999),
+            targets: ControllerTargets::LevelHold {
+                altitude: 1000.0,
+                airspeed: 80.0,
+            },
+        },
+    });
+    settle(&mut app);
 }
 
 #[test]

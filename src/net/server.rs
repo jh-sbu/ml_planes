@@ -33,10 +33,11 @@ use crate::controllers::{
 };
 use crate::environment::{spawn_resolved_scenario, RemovePlaneCommand, SpawnPlaneCommand};
 use crate::net::protocol::{
-    ManualInputCommand, RemovePlaneNetCommand, SetSimSpeedCommand, SetTuningProfileCommand,
-    SpawnPlaneNetCommand, SwitchControllerCommand, DEFAULT_PORT, PROTOCOL_ID,
+    ManualInputCommand, RemovePlaneNetCommand, SetControllerTargetsCommand, SetSimSpeedCommand,
+    SetTuningProfileCommand, SpawnPlaneNetCommand, SwitchControllerCommand, DEFAULT_PORT,
+    PROTOCOL_ID,
 };
-use crate::plane::{NextPlaneId, PlaneId};
+use crate::plane::{FlightState, NextPlaneId, PlaneId};
 use crate::scenario::Scenario;
 use crate::sim_speed::SimSpeed;
 
@@ -86,7 +87,8 @@ impl Plugin for ServerSimPlugin {
             .add_observer(on_manual_input)
             .add_observer(on_spawn_plane)
             .add_observer(on_remove_plane)
-            .add_observer(on_set_sim_speed);
+            .add_observer(on_set_sim_speed)
+            .add_observer(on_set_controller_targets);
 
         #[cfg(feature = "inference")]
         app.add_observer(on_set_model);
@@ -237,6 +239,29 @@ fn on_remove_plane(
 fn on_set_sim_speed(on: On<FromClient<SetSimSpeedCommand>>, mut sim_speed: ResMut<SimSpeed>) {
     // apply_sim_speed propagates this to Time<Virtual> on the next tick.
     sim_speed.set_if_neq(on.message.speed);
+}
+
+/// Apply client-edited controller setpoints to the target plane's live controller.
+///
+/// Deliberately does **not** downcast by kind here — that lives in each
+/// controller's `FlightController::apply_targets` impl (a stale command whose
+/// variant no longer matches the current controller, e.g. right after a kind
+/// switch, is a no-op there by contract), which keeps this handler free of any
+/// `inference`-gated match arms. `sync_controller_targets` (`plane::systems`)
+/// re-publishes the result on the next fixed tick.
+fn on_set_controller_targets(
+    on: On<FromClient<SetControllerTargetsCommand>>,
+    planes: Query<(Entity, &PlaneId)>,
+    mut controllers: Query<(&mut ActiveController, &FlightState)>,
+) {
+    let cmd = &on.message;
+    let Some(entity) = entity_for_plane(&planes, cmd.plane) else {
+        return;
+    };
+    let Ok((mut controller, state)) = controllers.get_mut(entity) else {
+        return;
+    };
+    controller.0.apply_targets(&cmd.targets, state);
 }
 
 /// Create the renet [`RenetServer`] + netcode transport bound to [`ServerPort`] and

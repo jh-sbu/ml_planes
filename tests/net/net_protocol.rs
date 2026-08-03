@@ -13,8 +13,8 @@ use bevy_replicon::prelude::RepliconPlugins;
 
 use ml_planes::controllers::ControllerKind;
 use ml_planes::net::{
-    ManualInputCommand, NetProtocolPlugin, RemovePlaneNetCommand, SetSimSpeedCommand,
-    SetTuningProfileCommand, SpawnPlaneNetCommand, SwitchControllerCommand,
+    ManualInputCommand, NetProtocolPlugin, RemovePlaneNetCommand, SetControllerTargetsCommand,
+    SetSimSpeedCommand, SetTuningProfileCommand, SpawnPlaneNetCommand, SwitchControllerCommand,
 };
 use ml_planes::plane::{ControlInputs, PlaneId};
 use ml_planes::sim_speed::SimSpeed;
@@ -98,6 +98,31 @@ fn remove_plane_net_command_roundtrips() {
 fn selected_tuning_profile_roundtrips() {
     use ml_planes::controllers::SelectedTuningProfile;
     assert_ron_roundtrip(&SelectedTuningProfile("aggressive".to_string()));
+}
+
+/// The replicated setpoint component must be serde under `net` — the same
+/// requirement `selected_tuning_profile_roundtrips` pins for its neighbor.
+#[test]
+fn controller_targets_component_roundtrips() {
+    use ml_planes::controllers::ControllerTargets;
+    assert_ron_roundtrip(&ControllerTargets::LevelHold {
+        altitude: 1200.0,
+        airspeed: 90.0,
+    });
+}
+
+/// The client→server command that edits a plane's controller setpoints — the write
+/// half of the `ControllerTargets` read path above.
+#[test]
+fn set_controller_targets_command_roundtrips() {
+    use ml_planes::controllers::ControllerTargets;
+    assert_ron_roundtrip(&SetControllerTargetsCommand {
+        plane: PlaneId(6),
+        targets: ControllerTargets::LevelHold {
+            altitude: 1600.0,
+            airspeed: 110.0,
+        },
+    });
 }
 
 /// Phase 6: the tuning-asset path is replicated so the client can rebuild a

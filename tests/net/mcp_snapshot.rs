@@ -14,7 +14,10 @@ use bevy::state::app::StatesPlugin;
 use bevy_replicon::prelude::RepliconPlugins;
 
 use crate::common::build_headless_app_with;
-use ml_planes::controllers::{ControllerKind, ControllerTelemetry, SelectedTuningProfile};
+use ml_planes::controllers::{
+    ControllerKind, ControllerTargets, ControllerTelemetry, OrbitDirection, OrbitParams,
+    SelectedTuningProfile,
+};
 use ml_planes::mcp::{control_channel, McpBridgePlugin, SnapshotHandle};
 use ml_planes::net::{ConnectTarget, NetProtocolPlugin, PROTOCOL_ID};
 use ml_planes::plane::{ControlInputs, FlightState, PlaneId, PlaneIndex};
@@ -56,6 +59,14 @@ fn snapshot_mirrors_a_spawned_plane() {
         ControllerKind::Orbit,
         SelectedTuningProfile("default".to_string()),
         ControllerTelemetry::Orbit { radial_error: 8.0 },
+        ControllerTargets::Orbit(OrbitParams {
+            center_x: 10.0,
+            center_z: -20.0,
+            target_radius: 3000.0,
+            target_altitude: 1500.0,
+            target_airspeed: 120.0,
+            direction: OrbitDirection::CounterClockwise,
+        }),
     ));
 
     // Two updates so the Update-schedule `collect_snapshot` runs against the spawned entity.
@@ -82,6 +93,18 @@ fn snapshot_mirrors_a_spawned_plane() {
     assert_eq!(
         plane.telemetry,
         ControllerTelemetry::Orbit { radial_error: 8.0 }
+    );
+    assert_eq!(
+        plane.targets,
+        ControllerTargets::Orbit(OrbitParams {
+            center_x: 10.0,
+            center_z: -20.0,
+            target_radius: 3000.0,
+            target_altitude: 1500.0,
+            target_airspeed: 120.0,
+            direction: OrbitDirection::CounterClockwise,
+        }),
+        "controller targets should mirror the replicated component"
     );
 }
 

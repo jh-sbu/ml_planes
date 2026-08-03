@@ -5,6 +5,7 @@
 #[path = "../common/mod.rs"]
 mod common;
 
+mod controller_targets;
 mod controller_telemetry;
 mod lifecycle;
 mod orbit_tune_sync;

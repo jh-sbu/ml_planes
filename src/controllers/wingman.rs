@@ -232,6 +232,22 @@ impl FlightController for WingmanController {
         crate::controllers::telemetry::ControllerTelemetry::Wingman(self.diagnostics.clone())
     }
 
+    fn targets(&self) -> crate::controllers::targets::ControllerTargets {
+        crate::controllers::targets::ControllerTargets::Wingman {
+            leader: self.leader_id,
+        }
+    }
+
+    fn apply_targets(
+        &mut self,
+        targets: &crate::controllers::targets::ControllerTargets,
+        _state: &FlightState,
+    ) {
+        if let crate::controllers::targets::ControllerTargets::Wingman { leader } = targets {
+            self.leader_id = *leader;
+        }
+    }
+
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
