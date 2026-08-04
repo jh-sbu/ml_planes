@@ -1,0 +1,18 @@
+// PPO hyperparameters for the low-LR fine-tune stage that closed the gap to
+// mean_tail_abs_altitude_m <= 0.05 m / mean_tail_abs_speed_mps <= 0.05 m/s
+// on level_hold (see level_hold_ultra_tight_tracking.reward.ron for the
+// paired reward config and the full story). Identical to the level_hold
+// default (level_hold.ppo.ron) except lr: 3e-4 -> 1e-4 — used for a
+// continuation pass from a checkpoint already partially converged under the
+// same reward config, not for training from scratch.
+(
+    gamma: 0.99,
+    gae_lambda: 0.95,
+    clip_epsilon: 0.1,
+    value_coef: 0.5,
+    entropy_coef: 0.0,
+    lr: 0.0001,
+    rollout_steps: 2048,
+    n_epochs: 4,
+    minibatch: 64,
+)

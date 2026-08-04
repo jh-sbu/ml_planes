@@ -1,0 +1,42 @@
+// Sharpened altitude/speed reward scales for ultra-tight steady-state
+// tracking (goal: mean_tail_abs_altitude_m <= 0.05 m, mean_tail_abs_speed_mps
+// <= 0.05 m/s, i.e. error over the settled final 20% of each episode — see
+// evaluate_policy's --task level_hold output).
+//
+// Produced by target/skill-runs/level_hold-goal-20260804-tight005 (a 2-batch,
+// 8-parallel train_ppo search starting from the
+// skill_level_hold_tight_tracking incumbent, see
+// level_hold_tight_tracking.reward.ron). Winning checkpoint:
+// models/level_hold/skill_level_hold_tight005b2_from40s3_samereward_lowlr_2M.mpk
+// — reached mean_tail_abs_altitude_m=0.033 m, mean_tail_abs_speed_mps=0.014 m/s,
+// success_rate=1.0 over 1000 eval episodes.
+//
+// Key finding: this reward config alone did not do it — a first-stage
+// continuation under these scales (alt=40, speed=3, default lr=3e-4) only
+// reached tail_alt=0.099/tail_speed=0.075. A *second* continuation from that
+// checkpoint, same reward config, but with a 3x lower learning rate
+// (see level_hold_ultra_tight_tracking.ppo.ron, lr=1e-4 vs default 3e-4) for
+// another 2M steps is what closed the gap to <=0.05/<=0.05 — a low-LR
+// fine-tune pass at a reward config the policy has already partially
+// converged under, rather than a further-tightened reward. Tightening the
+// reward scale further (down to alt=30/speed=1.5) at the default LR was
+// consistently *worse* (regressed to tail_alt 0.1-0.8 range) — this reward
+// landscape is noisy near convergence and aggressive scale changes can
+// destabilize a nearly-converged policy. Not the default level_hold reward
+// config; pass explicitly via
+// --reward-config assets/training/level_hold_ultra_tight_tracking.reward.ron
+// --ppo-config assets/training/level_hold_ultra_tight_tracking.ppo.ron.
+(
+    alt_error_scale:    40.0,
+    alt_error_weight:   1.0,
+    speed_error_scale:  3.0,
+    speed_error_weight: 0.5,
+    roll_scale:         0.5,
+    roll_weight:        0.3,
+    beta_scale:         0.5,
+    beta_weight:        0.1,
+    alive_bonus:        0.01,
+    min_altitude:       10.0,
+    max_altitude_error: 500.0,
+    max_episode_steps:  3000,
+)
