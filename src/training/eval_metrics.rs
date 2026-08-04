@@ -102,6 +102,69 @@ impl MetricFamily {
         }
     }
 
+    /// Tail-window (mean-over-final-steps-of-each-episode) metrics, in stable
+    /// output order. Same obs indices/scales as `step_specs`, but the caller
+    /// only feeds steps from the final portion of each episode — this is the
+    /// "has it settled into a stable hold" signal, distinct from the
+    /// whole-episode mean (dominated by the spawn-offset transient) and the
+    /// single-frame `final_specs` snapshot (noisy at one instant).
+    fn tail_specs(self) -> &'static [MetricSpec] {
+        match self {
+            MetricFamily::Orbit => &[
+                MetricSpec {
+                    key: "mean_tail_abs_radial_m",
+                    obs_index: 0,
+                    scale: 500.0,
+                    decimals: DECIMALS_LINEAR,
+                },
+                MetricSpec {
+                    key: "mean_tail_abs_heading_rad",
+                    obs_index: 1,
+                    scale: 0.5,
+                    decimals: DECIMALS_RADIAN,
+                },
+                MetricSpec {
+                    key: "mean_tail_abs_altitude_m",
+                    obs_index: 3,
+                    scale: 200.0,
+                    decimals: DECIMALS_LINEAR,
+                },
+                MetricSpec {
+                    key: "mean_tail_abs_speed_mps",
+                    obs_index: 4,
+                    scale: 50.0,
+                    decimals: DECIMALS_LINEAR,
+                },
+            ],
+            MetricFamily::LevelHold => &[
+                MetricSpec {
+                    key: "mean_tail_abs_altitude_m",
+                    obs_index: 0,
+                    scale: 200.0,
+                    decimals: DECIMALS_LINEAR,
+                },
+                MetricSpec {
+                    key: "mean_tail_abs_speed_mps",
+                    obs_index: 1,
+                    scale: 50.0,
+                    decimals: DECIMALS_LINEAR,
+                },
+                MetricSpec {
+                    key: "mean_tail_abs_roll_rad",
+                    obs_index: 4,
+                    scale: 0.5,
+                    decimals: DECIMALS_RADIAN,
+                },
+                MetricSpec {
+                    key: "mean_tail_abs_beta_rad",
+                    obs_index: 6,
+                    scale: 0.5,
+                    decimals: DECIMALS_RADIAN,
+                },
+            ],
+        }
+    }
+
     /// Final-state (mean-over-episodes) metrics, in stable output order.
     fn final_specs(self) -> &'static [MetricSpec] {
         match self {
@@ -148,6 +211,8 @@ pub struct TaskMetrics {
     family: MetricFamily,
     step_sums: Vec<f32>,
     samples: u64,
+    tail_sums: Vec<f32>,
+    tail_samples: u64,
     final_sums: Vec<f32>,
     episodes: u64,
 }
@@ -158,17 +223,28 @@ impl TaskMetrics {
             family,
             step_sums: vec![0.0; family.step_specs().len()],
             samples: 0,
+            tail_sums: vec![0.0; family.tail_specs().len()],
+            tail_samples: 0,
             final_sums: vec![0.0; family.final_specs().len()],
             episodes: 0,
         }
     }
 
     /// Accumulate per-step tracking errors from a post-step observation.
-    pub fn step(&mut self, obs: &[f32]) {
+    /// `in_tail` marks steps the caller considers part of the settled,
+    /// steady-state window at the end of the episode (e.g. its final 20%);
+    /// those also feed the `tail_specs` accumulators.
+    pub fn step(&mut self, obs: &[f32], in_tail: bool) {
         for (sum, spec) in self.step_sums.iter_mut().zip(self.family.step_specs()) {
             *sum += obs[spec.obs_index].abs() * spec.scale;
         }
         self.samples += 1;
+        if in_tail {
+            for (sum, spec) in self.tail_sums.iter_mut().zip(self.family.tail_specs()) {
+                *sum += obs[spec.obs_index].abs() * spec.scale;
+            }
+            self.tail_samples += 1;
+        }
     }
 
     /// Accumulate final-state tracking errors from the terminal observation.
@@ -179,16 +255,26 @@ impl TaskMetrics {
         self.episodes += 1;
     }
 
-    /// Produce the metric rows in stable output order: all per-step means
-    /// first, then all final-state means. Each row carries its print precision.
+    /// Produce the metric rows in stable output order: all per-step means,
+    /// then all tail-window means, then all final-state means. Each row
+    /// carries its print precision.
     pub fn into_rows(self) -> Vec<MetricRow> {
         let samples = self.samples.max(1) as f32;
+        let tail_samples = self.tail_samples.max(1) as f32;
         let episodes = self.episodes.max(1) as f32;
-        let mut rows = Vec::with_capacity(self.step_sums.len() + self.final_sums.len());
+        let mut rows =
+            Vec::with_capacity(self.step_sums.len() + self.tail_sums.len() + self.final_sums.len());
         for (sum, spec) in self.step_sums.iter().zip(self.family.step_specs()) {
             rows.push(MetricRow {
                 key: spec.key,
                 value: sum / samples,
+                decimals: spec.decimals,
+            });
+        }
+        for (sum, spec) in self.tail_sums.iter().zip(self.family.tail_specs()) {
+            rows.push(MetricRow {
+                key: spec.key,
+                value: sum / tail_samples,
                 decimals: spec.decimals,
             });
         }
@@ -212,12 +298,18 @@ mod tests {
         let mut m = TaskMetrics::new(MetricFamily::Orbit);
         // Two steps; second is the terminal obs used for final metrics too.
         // obs[0]=radial/500, obs[1]=heading/0.5, obs[3]=alt/200, obs[4]=speed/50.
-        m.step(&[
-            0.2, -0.4, 0.0, 0.5, -0.6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        ]);
-        m.step(&[
-            0.4, 0.2, 0.0, -0.25, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        ]);
+        m.step(
+            &[
+                0.2, -0.4, 0.0, 0.5, -0.6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            ],
+            false,
+        );
+        m.step(
+            &[
+                0.4, 0.2, 0.0, -0.25, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            ],
+            true,
+        );
         m.finish_episode(&[
             0.4, 0.2, 0.0, -0.25, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
         ]);
@@ -231,6 +323,10 @@ mod tests {
                 "mean_abs_heading_rad",
                 "mean_abs_altitude_m",
                 "mean_abs_speed_mps",
+                "mean_tail_abs_radial_m",
+                "mean_tail_abs_heading_rad",
+                "mean_tail_abs_altitude_m",
+                "mean_tail_abs_speed_mps",
                 "mean_final_abs_radial_m",
                 "mean_final_abs_altitude_m",
             ]
@@ -245,7 +341,12 @@ mod tests {
         assert!((get("mean_abs_altitude_m") - 75.0).abs() < 1e-3);
         // speed: (0.6*50 + 0.2*50)/2 = (30 + 10)/2 = 20
         assert!((get("mean_abs_speed_mps") - 20.0).abs() < 1e-3);
-        // final radial over 1 episode: 0.4*500 = 200
+        // tail: only the second step (in_tail=true) contributes.
+        assert!((get("mean_tail_abs_radial_m") - 200.0).abs() < 1e-3); // 0.4*500
+        assert!((get("mean_tail_abs_heading_rad") - 0.1).abs() < 1e-6); // 0.2*0.5
+        assert!((get("mean_tail_abs_altitude_m") - 50.0).abs() < 1e-3); // 0.25*200
+        assert!((get("mean_tail_abs_speed_mps") - 10.0).abs() < 1e-3); // 0.2*50
+                                                                       // final radial over 1 episode: 0.4*500 = 200
         assert!((get("mean_final_abs_radial_m") - 200.0).abs() < 1e-3);
         // final altitude over 1 episode: 0.25*200 = 50
         assert!((get("mean_final_abs_altitude_m") - 50.0).abs() < 1e-3);
@@ -255,6 +356,10 @@ mod tests {
         assert_eq!(row("mean_abs_radial_m").decimals, 3);
         assert_eq!(row("mean_abs_altitude_m").decimals, 3);
         assert_eq!(row("mean_abs_speed_mps").decimals, 3);
+        assert_eq!(row("mean_tail_abs_heading_rad").decimals, 6);
+        assert_eq!(row("mean_tail_abs_radial_m").decimals, 3);
+        assert_eq!(row("mean_tail_abs_altitude_m").decimals, 3);
+        assert_eq!(row("mean_tail_abs_speed_mps").decimals, 3);
         assert_eq!(row("mean_final_abs_radial_m").decimals, 3);
         assert_eq!(row("mean_final_abs_altitude_m").decimals, 3);
     }
@@ -263,7 +368,7 @@ mod tests {
     fn level_hold_rows_have_altitude_speed_attitude_no_radial_heading() {
         let mut m = TaskMetrics::new(MetricFamily::LevelHold);
         // obs[0]=alt/200, obs[1]=speed/50, obs[4]=roll/0.5, obs[6]=beta/0.5.
-        m.step(&[0.5, -0.4, 0.0, 0.0, 0.2, 0.0, -0.6, 0.0, 0.0, 0.0]);
+        m.step(&[0.5, -0.4, 0.0, 0.0, 0.2, 0.0, -0.6, 0.0, 0.0, 0.0], true);
         m.finish_episode(&[0.5, -0.4, 0.0, 0.0, 0.2, 0.0, -0.6, 0.0, 0.0, 0.0]);
 
         let rows = m.into_rows();
@@ -275,6 +380,10 @@ mod tests {
                 "mean_abs_speed_mps",
                 "mean_abs_roll_rad",
                 "mean_abs_beta_rad",
+                "mean_tail_abs_altitude_m",
+                "mean_tail_abs_speed_mps",
+                "mean_tail_abs_roll_rad",
+                "mean_tail_abs_beta_rad",
                 "mean_final_abs_altitude_m",
             ]
         );
@@ -286,19 +395,47 @@ mod tests {
         assert!((get("mean_abs_speed_mps") - 20.0).abs() < 1e-3); // 0.4*50
         assert!((get("mean_abs_roll_rad") - 0.1).abs() < 1e-6); // 0.2*0.5
         assert!((get("mean_abs_beta_rad") - 0.3).abs() < 1e-6); // 0.6*0.5
+                                                                // Single step, in_tail=true, so tail == step here.
+        assert!((get("mean_tail_abs_altitude_m") - 100.0).abs() < 1e-3);
+        assert!((get("mean_tail_abs_speed_mps") - 20.0).abs() < 1e-3);
+        assert!((get("mean_tail_abs_roll_rad") - 0.1).abs() < 1e-6);
+        assert!((get("mean_tail_abs_beta_rad") - 0.3).abs() < 1e-6);
         assert!((get("mean_final_abs_altitude_m") - 100.0).abs() < 1e-3);
         // Radian-valued attitude metrics keep 6 decimals; linear metres at 3.
         assert_eq!(row("mean_abs_roll_rad").decimals, 6);
         assert_eq!(row("mean_abs_beta_rad").decimals, 6);
         assert_eq!(row("mean_abs_altitude_m").decimals, 3);
         assert_eq!(row("mean_abs_speed_mps").decimals, 3);
+        assert_eq!(row("mean_tail_abs_roll_rad").decimals, 6);
+        assert_eq!(row("mean_tail_abs_beta_rad").decimals, 6);
+        assert_eq!(row("mean_tail_abs_altitude_m").decimals, 3);
+        assert_eq!(row("mean_tail_abs_speed_mps").decimals, 3);
         assert_eq!(row("mean_final_abs_altitude_m").decimals, 3);
+    }
+
+    #[test]
+    fn tail_metrics_ignore_steps_outside_the_tail_window() {
+        let mut m = TaskMetrics::new(MetricFamily::LevelHold);
+        // Large transient error, outside the tail window.
+        m.step(&[1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], false);
+        // Small settled error, inside the tail window.
+        m.step(&[0.1, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], true);
+        m.step(&[0.1, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], true);
+        m.finish_episode(&[0.1, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+
+        let rows = m.into_rows();
+        let get = |k: &str| rows.iter().find(|r| r.key == k).unwrap().value;
+        // Whole-episode mean is dragged up by the transient step.
+        assert!((get("mean_abs_altitude_m") - (200.0 + 20.0 + 20.0) / 3.0).abs() < 1e-3);
+        // Tail mean only sees the two settled steps: 0.1*200 = 20.
+        assert!((get("mean_tail_abs_altitude_m") - 20.0).abs() < 1e-3);
+        assert!((get("mean_tail_abs_speed_mps") - 5.0).abs() < 1e-3); // 0.1*50
     }
 
     #[test]
     fn empty_run_yields_zero_rows_without_dividing_by_zero() {
         let rows = TaskMetrics::new(MetricFamily::Orbit).into_rows();
-        assert_eq!(rows.len(), 6);
+        assert_eq!(rows.len(), 10);
         assert!(rows.iter().all(|r| r.value == 0.0));
     }
 }

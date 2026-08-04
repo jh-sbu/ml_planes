@@ -303,6 +303,11 @@ struct CoreMetrics {
     mean_length_steps: f32,
 }
 
+/// Fraction of an episode's step budget treated as the settled "tail window"
+/// for `mean_tail_abs_*` metrics (see `ml_planes::training::eval_metrics`).
+#[cfg(feature = "inference")]
+const TAIL_FRACTION: f32 = 0.2;
+
 #[cfg(feature = "inference")]
 struct EvalResult {
     core: CoreMetrics,
@@ -340,6 +345,11 @@ where
     let mut total_len = 0_u64;
     let mut success = 0_usize;
 
+    // Tail window: the final 20% of the episode's step budget, used to judge
+    // whether the policy has settled into a stable hold rather than still
+    // converging from the spawn-offset transient.
+    let tail_start = max_steps - (max_steps as f32 * TAIL_FRACTION) as u32;
+
     for _ in 0..episodes {
         let (mut obs, _) = env.reset();
         policy.reset();
@@ -355,7 +365,7 @@ where
             ep_len += 1;
             done = next_done;
 
-            task_metrics.step(&obs);
+            task_metrics.step(&obs, ep_len > tail_start);
         }
 
         if ep_len >= max_steps {

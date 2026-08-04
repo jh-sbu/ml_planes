@@ -1,0 +1,37 @@
+// Sharpened altitude/speed reward scales for tight steady-state tracking
+// (goal: mean_tail_abs_altitude_m <= 0.2 m, mean_tail_abs_speed_mps <= 0.2 m/s,
+// i.e. error over the settled final 20% of each episode — see
+// evaluate_policy's --task level_hold output).
+//
+// Produced by target/skill-runs/level_hold-goal-20260804-110004 (a 3-batch,
+// up-to-6-parallel train_ppo search over reward/PPO variants starting from
+// the promoted skill_level_hold_clip_entropy_combo_b3 incumbent). Winning
+// checkpoint: models/level_hold/skill_level_hold_goal_cont_scratchlong_a60s6_b3.mpk
+// — reached mean_tail_abs_altitude_m=0.113 m, mean_tail_abs_speed_mps=0.193 m/s,
+// success_rate=1.0 over 300 eval episodes.
+//
+// Key finding: warm-starting from the (looser-reward) incumbent under this
+// tighter reward performed worse than training from scratch under it, and
+// best results came from a 3-stage curriculum — scratch under a loose-tight
+// reward (alt_scale=80, speed_scale=15) for 2M steps, continue under a
+// medium-tight reward (alt_scale=80, speed_scale=8) for 3M steps, continue
+// again under this config (alt_scale=60, speed_scale=6) for 1.5M steps —
+// rather than jumping straight to tight scales from scratch or from the
+// original incumbent. Not the default level_hold reward config — this
+// profile trades a much larger (more negative) mean_return magnitude for
+// tighter physical tracking error; pass explicitly via
+// --reward-config assets/training/level_hold_tight_tracking.reward.ron.
+(
+    alt_error_scale:    60.0,
+    alt_error_weight:   1.0,
+    speed_error_scale:  6.0,
+    speed_error_weight: 0.5,
+    roll_scale:         0.5,
+    roll_weight:        0.3,
+    beta_scale:         0.5,
+    beta_weight:        0.1,
+    alive_bonus:        0.01,
+    min_altitude:       10.0,
+    max_altitude_error: 500.0,
+    max_episode_steps:  3000,
+)
