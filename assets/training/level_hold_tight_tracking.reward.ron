@@ -21,6 +21,12 @@
 // profile trades a much larger (more negative) mean_return magnitude for
 // tighter physical tracking error; pass explicitly via
 // --reward-config assets/training/level_hold_tight_tracking.reward.ron.
+//
+// NOTE: the checkpoint and eval numbers above were all measured at a single fixed
+// 1000 m / 100 m/s target, before target altitude/airspeed were randomized per-episode
+// (LevelHoldEnv::with_target_ranges, default 500-5000 m / 90-140 m/s). A randomized-target
+// run is a harder task and is not expected to reach the same tail-error numbers without
+// its own retune.
 (
     alt_error_scale:    60.0,
     alt_error_weight:   1.0,

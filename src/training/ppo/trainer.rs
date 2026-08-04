@@ -557,6 +557,7 @@ fn lcg_shuffle(indices: &mut Vec<usize>, seed: &mut u64) {
 mod tests {
     use super::*;
     use crate::plane::config::PlaneConfig;
+    use crate::training::level_hold_env::LEVEL_HOLD_OBS_DIM;
     use crate::training::LevelHoldEnv;
     use bevy::math::Vec3;
     use burn::backend::{Autodiff, NdArray};
@@ -749,7 +750,7 @@ mod tests {
         // All model params must be finite after one update.
         let inner = trainer.model.valid();
         let test_obs = Tensor::<<B as AutodiffBackend>::InnerBackend, 2>::zeros(
-            [1, 10],
+            [1, LEVEL_HOLD_OBS_DIM],
             &inner.log_std.val().device(),
         );
         let (action, lp) = inner.sample_action(test_obs);
@@ -774,8 +775,8 @@ mod tests {
         let mut data = BcDataset::default();
         let mut seed = 7u64;
         for _ in 0..128 {
-            let mut obs = Vec::with_capacity(10);
-            for _ in 0..10 {
+            let mut obs = Vec::with_capacity(LEVEL_HOLD_OBS_DIM);
+            for _ in 0..LEVEL_HOLD_OBS_DIM {
                 seed = seed
                     .wrapping_mul(6_364_136_223_846_793_005)
                     .wrapping_add(1_442_695_040_888_963_407);
@@ -812,7 +813,7 @@ mod tests {
 
         let inner = trainer.model.valid();
         let test_obs = Tensor::<<B as AutodiffBackend>::InnerBackend, 2>::zeros(
-            [1, 10],
+            [1, LEVEL_HOLD_OBS_DIM],
             &inner.log_std.val().device(),
         );
         let (action, lp) = inner.sample_action(test_obs);

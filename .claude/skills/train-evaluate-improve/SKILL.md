@@ -80,6 +80,9 @@ mkdir -p target/skill-runs/<type>-<timestamp>
 
 Pick defaults unless the user supplied them: `--steps 2000000`,
 `--episodes 64`, the default task reward config, and compiled PPO defaults.
+For `level_hold`, also default to the standard target envelope (`--target-alt-range
+500:5000 --target-speed-range 90:140`) unless the user's hypothesis is specifically
+about narrowing/widening it.
 Choose output stems that will not overwrite existing checkpoints, such as
 `skill_<type>_baseline_<timestamp>` and `skill_<type>_improved_<timestamp>`.
 Models land at `models/<model_dir>/<stem>.mpk`.
@@ -95,12 +98,16 @@ cargo run --release --no-default-features --features training --bin train_ppo --
   --plain \
   --steps <steps> \
   --output <baseline_stem> \
+  [--target-alt-range <MIN:MAX>] [--target-speed-range <MIN:MAX>] \
   --log-file target/skill-runs/<run>/baseline_train.csv
 ```
 
+`--target-alt-range`/`--target-speed-range` apply to `level_hold` only.
+
 ## Step 4 — Evaluate baseline
 
-Evaluate with the existing evaluator and the same task:
+Evaluate with the existing evaluator and the same task (and, for `level_hold`, the
+same target-envelope flags used to train it):
 
 ```bash
 cargo run --release --no-default-features --features inference --bin evaluate_policy -- \
@@ -108,6 +115,7 @@ cargo run --release --no-default-features --features inference --bin evaluate_po
   --backend ndarray \
   --model models/<model_dir>/<baseline_stem> \
   --episodes <episodes> \
+  [--target-alt-range <MIN:MAX>] [--target-speed-range <MIN:MAX>] \
   > target/skill-runs/<run>/baseline_eval.txt
 ```
 
@@ -119,10 +127,14 @@ always present; the extras depend on the family:
   `mean_length_steps`.
 - **Orbit family** (`orbit`, `residual_orbit`, `lstm_orbit`):
   `mean_abs_radial_m`, `mean_abs_heading_rad`, `mean_abs_altitude_m`,
-  `mean_abs_speed_mps`, `mean_final_abs_radial_m`, `mean_final_abs_altitude_m`.
+  `mean_abs_speed_mps`, plus the same four as `mean_tail_abs_*` (settled
+  final-20%-of-episode window), `mean_final_abs_radial_m`, `mean_final_abs_altitude_m`.
 - **LevelHold family** (`level_hold`): `mean_abs_altitude_m`,
-  `mean_abs_speed_mps`, `mean_abs_roll_rad`, `mean_abs_beta_rad`,
-  `mean_final_abs_altitude_m` (no radial/heading metrics).
+  `mean_abs_speed_mps`, `mean_abs_roll_rad`, `mean_abs_beta_rad`, plus the same
+  four as `mean_tail_abs_*` (settled final-20%-of-episode window — usually the
+  more relevant number for a steady-state-tracking goal), and
+  `mean_final_abs_altitude_m` (no radial/heading metrics). Also echoes
+  `target_alt_range`/`target_speed_range` — confirm it matches what was trained.
 
 ## Step 5 — Choose exactly one improvement
 
@@ -184,13 +196,18 @@ cargo run --release --no-default-features --features training --bin train_ppo --
   [--init-from models/<model_dir>/<baseline_stem>] \
   [--reward-config target/skill-runs/<run>/improved.reward.ron] \
   [--ppo-config target/skill-runs/<run>/improved.ppo.ron] \
+  [--target-alt-range <MIN:MAX>] [--target-speed-range <MIN:MAX>] \
   --log-file target/skill-runs/<run>/improved_train.csv
 ```
 
+Use the **same** target-envelope flags (if any) as the baseline, unless the
+hypothesis under test is specifically about the envelope itself.
+
 ## Step 7 — Evaluate improved model
 
-Use the **same** `--episodes`, `--max-steps` (if supplied), and reward-config
-policy as the baseline evaluation, so the two are comparable:
+Use the **same** `--episodes`, `--max-steps` (if supplied), reward-config
+policy, and (`level_hold`) target-envelope flags as the baseline evaluation, so
+the two are comparable:
 
 ```bash
 cargo run --release --no-default-features --features inference --bin evaluate_policy -- \
@@ -198,6 +215,7 @@ cargo run --release --no-default-features --features inference --bin evaluate_po
   --backend ndarray \
   --model models/<model_dir>/<improved_stem> \
   --episodes <episodes> \
+  [--target-alt-range <MIN:MAX>] [--target-speed-range <MIN:MAX>] \
   > target/skill-runs/<run>/improved_eval.txt
 ```
 

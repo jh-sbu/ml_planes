@@ -27,6 +27,10 @@
 //!                               a long run's final checkpoint may not be byte-for-byte identical
 //!                               — see `train_ppo`'s `--seed` doc for detail. `wgpu` is
 //!                               best-effort only.
+//!   --target-alt-range <MIN:MAX|VALUE>    level_hold only: target altitude [m] the PID expert
+//!                               tracks is resampled from this range every demo episode
+//!                               (default: 500:5000). A bare VALUE pins a fixed target.
+//!   --target-speed-range <MIN:MAX|VALUE>  level_hold only: target airspeed [m/s] (default: 90:140).
 
 #[cfg(not(feature = "training"))]
 fn main() {
@@ -103,6 +107,31 @@ fn main() {
         })
     });
 
+    // level_hold only: the per-episode target-altitude/airspeed envelope the
+    // PID expert demonstrates. See `LevelHoldEnv::with_target_ranges`.
+    let target_alt_range = find("--target-alt-range")
+        .map(|v| {
+            ml_planes::training::parse_f32_range(&v).unwrap_or_else(|e| {
+                eprintln!("--target-alt-range: {e}");
+                std::process::exit(2);
+            })
+        })
+        .unwrap_or(
+            ml_planes::training::level_hold_env::DEFAULT_TARGET_ALT_MIN
+                ..=ml_planes::training::level_hold_env::DEFAULT_TARGET_ALT_MAX,
+        );
+    let target_speed_range = find("--target-speed-range")
+        .map(|v| {
+            ml_planes::training::parse_f32_range(&v).unwrap_or_else(|e| {
+                eprintln!("--target-speed-range: {e}");
+                std::process::exit(2);
+            })
+        })
+        .unwrap_or(
+            ml_planes::training::level_hold_env::DEFAULT_TARGET_AIRSPEED_MIN
+                ..=ml_planes::training::level_hold_env::DEFAULT_TARGET_AIRSPEED_MAX,
+        );
+
     match backend {
         Backend::NdArray => run::<Autodiff<NdArray>>(
             task,
@@ -112,6 +141,8 @@ fn main() {
             save_path,
             reward_config,
             seed,
+            target_alt_range,
+            target_speed_range,
         ),
         #[cfg(feature = "wgpu")]
         Backend::Wgpu => run::<Autodiff<Wgpu>>(
@@ -122,6 +153,8 @@ fn main() {
             save_path,
             reward_config,
             seed,
+            target_alt_range,
+            target_speed_range,
         ),
     }
 }
@@ -195,6 +228,8 @@ fn run<B>(
     save_path: String,
     reward_config: Option<String>,
     seed: Option<u64>,
+    target_alt_range: std::ops::RangeInclusive<f32>,
+    target_speed_range: std::ops::RangeInclusive<f32>,
 ) where
     B: burn::tensor::backend::AutodiffBackend,
     B::Device: Default,
@@ -262,7 +297,12 @@ fn run<B>(
     match task {
         Task::LevelHold => {
             let reward_cfg: LevelHoldRewardConfig = load_or_default(path);
-            let env = LevelHoldEnv::with_reward_config(1000.0, 100.0, cfg, reward_cfg);
+            let env = LevelHoldEnv::with_target_ranges(
+                target_alt_range,
+                target_speed_range,
+                cfg,
+                reward_cfg,
+            );
             pretrain::<B, _>(env, steps, bc_epochs, minibatch, &save_path, seed);
         }
         Task::Orbit => {

@@ -143,19 +143,22 @@ targets for a generic jet (adjust proportionally based on Step 1 estimates):
 
 | # | Altitude (m) | Airspeed (m/s) | Rationale |
 |---|---|---|---|
-| A | 200 | 80 | Low / slow |
-| B | 500 | 100 | Mid / cruise |
-| C | 1000 | 130 | High / fast |
-| D | 2000 | 110 | High alt / cruise |
-| E | 300 | 70 | Low / near-stall |
+| A | 500 | 90 | Low alt / near envelope floor (min speed) |
+| B | 1000 | 100 | Mid / cruise |
+| C | 2500 | 120 | Mid-high alt / fast |
+| D | 5000 | 140 | High alt / envelope ceiling (max speed) |
+| E | 600 | 95 | Low / near-stall |
 
 Reject any pair where the required lift-to-weight ratio at that airspeed would
 demand `CL > cl_max * 0.85` (too close to stall) or where `thrust_max` is clearly
 insufficient to sustain level flight at that speed.
 
-For the RL branch, additionally reject any scenario well outside the typical PPO
-training envelope (roughly 500–1000 m, 80–130 m/s for the shipped policies) — the
-model will not have learned controls for it. State explicitly if you skip one.
+For the RL branch, additionally reject any scenario well outside the PPO
+training envelope the model was trained across (default: 500–5000 m,
+90–140 m/s — see `LevelHoldEnv::with_target_ranges` / `train_ppo`'s
+`--target-alt-range`/`--target-speed-range`; a model trained with non-default
+ranges should be checked against those instead) — the model will not have
+learned controls for it. State explicitly if you skip one.
 
 ---
 

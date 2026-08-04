@@ -139,7 +139,7 @@ mod tests {
         let mut vec = VecEnv::new(envs);
         vec.reset_all();
         let obs_after_reset = vec.reset_at(0);
-        assert_eq!(obs_after_reset.len(), 11);
+        assert_eq!(obs_after_reset.len(), 13);
         assert!(obs_after_reset.iter().all(|v| v.is_finite()));
     }
 }

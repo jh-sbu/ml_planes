@@ -11,6 +11,7 @@ use ml_planes::controllers::{
     RlOrbitController,
 };
 use ml_planes::plane::{ControllerContext, FlightState, PlaneId};
+use ml_planes::training::level_hold_env::{level_hold_observation, LEVEL_HOLD_OBS_DIM};
 use ml_planes::training::ppo::model::ActorCritic;
 
 type InfB = NdArray;
@@ -117,21 +118,53 @@ fn loading_stale_dim_orbit_model_errors() {
     let _ = std::fs::remove_file(path.with_extension("mpk"));
 }
 
-/// Same guard for the level-hold controller (10-dim stale checkpoint).
+/// Same guard for the level-hold controller (pre-envelope-randomization
+/// 11-dim stale checkpoint, from before `density_ratio`/airspeed were
+/// appended to the observation).
 #[test]
 fn loading_stale_dim_level_hold_model_errors() {
-    let path = save_stale_model(10, "level_hold");
+    let path = save_stale_model(LEVEL_HOLD_OBS_DIM - 2, "level_hold");
     let result = RlLevelHoldController::load(path.to_str().unwrap(), 1000.0, 100.0);
     assert!(
         matches!(
             result,
             Err(ModelLoadError::DimensionMismatch { expected, found })
-                if expected == 11 && found == 10
+                if expected == LEVEL_HOLD_OBS_DIM && found == LEVEL_HOLD_OBS_DIM - 2
         ),
         "expected DimensionMismatch, got {:?}",
         result.as_ref().map(|_| "Ok"),
     );
     let _ = std::fs::remove_file(path.with_extension("mpk"));
+}
+
+/// The `level_hold_observation` builder `RlLevelHoldController::update` calls
+/// must stay in lockstep with `LEVEL_HOLD_OBS_DIM` and the density-ratio /
+/// airspeed elements the envelope-randomization rework appended — a cheap
+/// regression guard on the single shared builder (env and controller no
+/// longer keep independent copies of this vector).
+#[test]
+fn level_hold_controller_obs_matches_env_obs() {
+    let mut state = FlightState {
+        position: Vec3::new(0.0, 2500.0, 0.0),
+        velocity: Vec3::new(110.0, 1.0, 0.0),
+        attitude: Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
+        angular_velocity: Vec3::new(0.01, 0.02, 0.03),
+        ..Default::default()
+    };
+    state.update_air_data();
+
+    let obs = level_hold_observation(&state, 1000.0, 100.0);
+    assert_eq!(obs.len(), LEVEL_HOLD_OBS_DIM);
+    assert_eq!(
+        obs[11],
+        ml_planes::aerodynamics::density_ratio(state.altitude),
+        "obs[11] must be the raw density ratio"
+    );
+    assert_eq!(
+        obs[12],
+        state.airspeed / 100.0,
+        "obs[12] must be raw airspeed / AIRSPEED_OBS_SCALE"
+    );
 }
 
 /// `RlOrbitController` must report its setpoints through the shared `Orbit` variant of

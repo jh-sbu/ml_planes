@@ -8,6 +8,7 @@ use bevy::math::Vec3;
 use burn::backend::{Autodiff, NdArray};
 
 use ml_planes::plane::config::PlaneConfig;
+use ml_planes::training::level_hold_env::LEVEL_HOLD_OBS_DIM;
 use ml_planes::training::ppo::PpoTrainer;
 use ml_planes::training::{LevelHoldEnv, OrbitEnv};
 
@@ -67,7 +68,14 @@ fn ppo_50_iterations_no_nan() {
     use burn::tensor::Tensor;
 
     let device: <B as burn::tensor::backend::Backend>::Device = Default::default();
-    let env = LevelHoldEnv::new(1000.0, 80.0, jet_cfg());
+    // Randomized-target env, exercising the same path `train_ppo` uses in
+    // production (see `LevelHoldEnv::with_target_ranges`).
+    let env = LevelHoldEnv::with_target_ranges(
+        500.0..=5000.0,
+        90.0..=140.0,
+        jet_cfg(),
+        ml_planes::training::LevelHoldRewardConfig::default(),
+    );
     let mut trainer = PpoTrainer::<B>::new(env, device);
     trainer.rollout_steps = 128;
     trainer.minibatch = 32;
@@ -82,7 +90,7 @@ fn ppo_50_iterations_no_nan() {
     let inner = trainer.model.valid();
     let inner_device = inner.log_std.val().device();
     let test_obs = Tensor::<<B as burn::tensor::backend::AutodiffBackend>::InnerBackend, 2>::zeros(
-        [1, 11],
+        [1, LEVEL_HOLD_OBS_DIM],
         &inner_device,
     );
     let (action, lp) = inner.sample_action(test_obs);

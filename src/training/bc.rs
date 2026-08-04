@@ -126,6 +126,30 @@ mod tests {
     }
 
     #[test]
+    fn expert_targets_track_resampled_episode_targets() {
+        use crate::controllers::targets::ControllerTargets;
+        use crate::training::LevelHoldRewardConfig;
+
+        let mut env = LevelHoldEnv::with_target_ranges(
+            500.0..=5000.0,
+            90.0..=140.0,
+            jet_cfg(),
+            LevelHoldRewardConfig::default(),
+        );
+        for _ in 0..10 {
+            env.reset();
+            let expert = env.make_expert();
+            match expert.targets() {
+                ControllerTargets::LevelHold { altitude, airspeed } => {
+                    assert!((altitude - env.target_altitude).abs() < 1e-6);
+                    assert!((airspeed - env.target_airspeed).abs() < 1e-6);
+                }
+                other => panic!("expected LevelHold targets, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
     fn level_hold_env_exposes_demonstration_hooks() {
         let mut env = LevelHoldEnv::new(1000.0, 100.0, jet_cfg());
         env.reset();
@@ -161,10 +185,10 @@ mod tests {
                     "action out of range: {v}"
                 );
             }
-            assert_eq!(env.observation_dim(), 11);
+            assert_eq!(env.observation_dim(), 13);
         }
         for o in &data.obs {
-            assert_eq!(o.len(), 11);
+            assert_eq!(o.len(), 13);
         }
     }
 
@@ -173,7 +197,7 @@ mod tests {
         // Spawn a fixed 100 m above target; the PID expert should drive the
         // (normalized) altitude error toward zero over a single episode.
         let mut env = LevelHoldEnv::new(1000.0, 100.0, jet_cfg());
-        env.alt_spawn_range = 1100.0..=1100.0;
+        env.alt_spawn_offset_range = 100.0..=100.0;
         let data = collect_demonstrations(&mut env, 1200);
 
         // obs[0] is alt_err / 200.

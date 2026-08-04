@@ -41,6 +41,11 @@
 //!                             closely, but a long run's final checkpoint may not be byte-for-byte
 //!                             identical. `wgpu` is best-effort only (GPU reduction order isn't
 //!                             guaranteed stable either).
+//!   --target-alt-range <MIN:MAX|VALUE>    level_hold only: target altitude [m] is resampled
+//!                             from this range every episode (default: 500:5000). A bare VALUE
+//!                             pins a single fixed target instead (old behavior).
+//!   --target-speed-range <MIN:MAX|VALUE>  level_hold only: target airspeed [m/s], same
+//!                             MIN:MAX|VALUE form (default: 90:140).
 
 #[cfg(not(feature = "training"))]
 fn main() {
@@ -161,6 +166,36 @@ fn main() {
         })
     });
 
+    // level_hold only: the per-episode target-altitude/airspeed envelope. See
+    // `LevelHoldEnv::with_target_ranges`. Defaults are the jointly
+    // stall-feasible envelope for the generic jet at full fuel.
+    let target_alt_range = args
+        .windows(2)
+        .find(|w| w[0] == "--target-alt-range")
+        .map(|w| {
+            ml_planes::training::parse_f32_range(&w[1]).unwrap_or_else(|e| {
+                eprintln!("--target-alt-range: {e}");
+                std::process::exit(2);
+            })
+        })
+        .unwrap_or(
+            ml_planes::training::level_hold_env::DEFAULT_TARGET_ALT_MIN
+                ..=ml_planes::training::level_hold_env::DEFAULT_TARGET_ALT_MAX,
+        );
+    let target_speed_range = args
+        .windows(2)
+        .find(|w| w[0] == "--target-speed-range")
+        .map(|w| {
+            ml_planes::training::parse_f32_range(&w[1]).unwrap_or_else(|e| {
+                eprintln!("--target-speed-range: {e}");
+                std::process::exit(2);
+            })
+        })
+        .unwrap_or(
+            ml_planes::training::level_hold_env::DEFAULT_TARGET_AIRSPEED_MIN
+                ..=ml_planes::training::level_hold_env::DEFAULT_TARGET_AIRSPEED_MAX,
+        );
+
     let save_path = save_path_for(task, output_stem);
 
     match backend {
@@ -176,6 +211,8 @@ fn main() {
             cli_seed,
             bc_steps,
             bc_epochs,
+            target_alt_range,
+            target_speed_range,
         ),
         #[cfg(feature = "wgpu")]
         Backend::Wgpu => run::<Autodiff<Wgpu>>(
@@ -190,6 +227,8 @@ fn main() {
             cli_seed,
             bc_steps,
             bc_epochs,
+            target_alt_range,
+            target_speed_range,
         ),
     }
 }
@@ -287,6 +326,8 @@ fn run<B>(
     cli_seed: Option<u64>,
     bc_steps: usize,
     bc_epochs: usize,
+    target_alt_range: std::ops::RangeInclusive<f32>,
+    target_speed_range: std::ops::RangeInclusive<f32>,
 ) where
     B: burn::tensor::backend::AutodiffBackend,
     B::Device: Default,
@@ -402,13 +443,30 @@ fn run<B>(
             };
             let mut log_fields = reward_cfg.log_fields();
             log_fields.extend(hp.log_fields());
+            log_fields.push((
+                "target_alt_range",
+                format!("{}:{}", target_alt_range.start(), target_alt_range.end()),
+            ));
+            log_fields.push((
+                "target_speed_range",
+                format!(
+                    "{}:{}",
+                    target_speed_range.start(),
+                    target_speed_range.end()
+                ),
+            ));
             let log = open_log(&log_file, "level_hold", path, log_fields);
             run_training_loop_bc::<B, _>(
                 plain,
                 save_path,
                 total_timesteps,
                 init_from,
-                LevelHoldEnv::with_reward_config(1000.0, 100.0, cfg, reward_cfg),
+                LevelHoldEnv::with_target_ranges(
+                    target_alt_range,
+                    target_speed_range,
+                    cfg,
+                    reward_cfg,
+                ),
                 log,
                 &hp,
                 bc_steps,

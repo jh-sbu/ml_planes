@@ -91,6 +91,10 @@ Also unless supplied:
 - Default task PPO config (the task's tuned `assets/training/<task>.ppo.ron` if
   one exists — currently only `level_hold` — else compiled defaults; i.e. no
   `--ppo-config` flag).
+- `level_hold` only: default target envelope (`--target-alt-range 500:5000
+  --target-speed-range 90:140`) — i.e. no `--target-alt-range`/`--target-speed-range`
+  flags unless the user's hypothesis is specifically about narrowing/widening the
+  trained envelope.
 
 Reject `0`, negative, or non-numeric values for `total_runs` or
 `runs_per_batch`. Clamp `runs_per_batch` down to `total_runs` if it's larger
@@ -154,8 +158,15 @@ cargo run --release --no-default-features --features training --bin train_ppo --
   [--init-from models/<model_dir>/<incumbent_stem>] \
   [--reward-config target/skill-runs/<run>/<experiment>.reward.ron] \
   [--ppo-config target/skill-runs/<run>/<experiment>.ppo.ron] \
+  [--target-alt-range <MIN:MAX>] [--target-speed-range <MIN:MAX>] \
   --log-file target/skill-runs/<run>/<experiment>_train.csv
 ```
+
+`--target-alt-range`/`--target-speed-range` apply to `level_hold` only (ignored by other
+tasks): the per-episode target-altitude/airspeed envelope the policy is trained across
+(default `500:5000` / `90:140`). Leave unset unless the experiment is deliberately
+narrowing/widening the envelope — every run in a batch being compared should use the same
+envelope.
 
 **Launching a batch concurrently:** build the `train_ppo` and
 `evaluate_policy` binaries once up front (`cargo build --release ...`) so the
@@ -182,6 +193,7 @@ cargo run --release --no-default-features --features inference --bin evaluate_po
   --backend ndarray \
   --model models/<model_dir>/<stem> \
   --episodes <episodes> \
+  [--target-alt-range <MIN:MAX>] [--target-speed-range <MIN:MAX>] \
   > target/skill-runs/<run>/<experiment>_eval.txt
 ```
 
@@ -189,7 +201,10 @@ cargo run --release --no-default-features --features inference --bin evaluate_po
 used a modified `--reward-config`, pass that **same** config file to its
 evaluation too (its raw `mean_return` won't be comparable in magnitude to runs
 under the default reward — compare its absolute tracking-error metrics
-instead, and say so in the report).
+instead, and say so in the report). Likewise for `level_hold`: if training used
+non-default `--target-alt-range`/`--target-speed-range`, evaluate with the **same**
+ranges — the eval output echoes back `target_alt_range`/`target_speed_range` so this is
+easy to check post hoc.
 
 Read each eval output and inspect the metrics for the resolved metric family.
 The common core is always present; the extras depend on the family:
@@ -198,10 +213,16 @@ The common core is always present; the extras depend on the family:
   `mean_length_steps`.
 - **Orbit family** (`orbit`, `residual_orbit`, `lstm_orbit`):
   `mean_abs_radial_m`, `mean_abs_heading_rad`, `mean_abs_altitude_m`,
-  `mean_abs_speed_mps`, `mean_final_abs_radial_m`, `mean_final_abs_altitude_m`.
+  `mean_abs_speed_mps`, plus the same four `mean_tail_abs_*` (settled final-20%-of-episode
+  window) and `mean_final_abs_radial_m`, `mean_final_abs_altitude_m`.
 - **LevelHold family** (`level_hold`): `mean_abs_altitude_m`,
-  `mean_abs_speed_mps`, `mean_abs_roll_rad`, `mean_abs_beta_rad`,
-  `mean_final_abs_altitude_m` (no radial/heading metrics).
+  `mean_abs_speed_mps`, `mean_abs_roll_rad`, `mean_abs_beta_rad`, the same four as
+  `mean_tail_abs_altitude_m`/`mean_tail_abs_speed_mps`/`mean_tail_abs_roll_rad`/
+  `mean_tail_abs_beta_rad` (settled final-20%-of-episode window — usually the more
+  relevant number for a steady-state-tracking goal, since the whole-episode average
+  includes the spawn-offset transient), and `mean_final_abs_altitude_m` (no
+  radial/heading metrics). `level_hold` additionally echoes `target_alt_range` /
+  `target_speed_range` so a report can confirm which envelope was evaluated.
 
 ## Step 4 — Analyze the batch and design the next one
 

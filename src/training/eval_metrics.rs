@@ -13,15 +13,18 @@
 //! - **Orbit family** (`orbit`, `residual_orbit`, `lstm_orbit`; 13-dim
 //!   `build_orbit_observation`): `[radial/500, heading/0.5, bank_ff, alt/200,
 //!   speed/50, ...]`.
-//! - **Level-hold family** (10-dim): `[alt_err/200, speed_err/50, alpha/0.5,
-//!   pitch_rate, roll/0.5, roll_rate, beta/0.5, ...]`.
+//! - **Level-hold family** (13-dim `level_hold_observation`): `[alt_err/200,
+//!   speed_err/50, alpha/0.5, pitch_rate, roll/0.5, roll_rate, beta/0.5, ...,
+//!   fuel_fraction, density_ratio, airspeed/100]`. Only indices 0/1/4/6 are read
+//!   here, so the trailing fuel/density/airspeed elements (added across two
+//!   later reworks) don't affect this mapping.
 
 /// Which observation layout a checkpoint's task uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MetricFamily {
     /// 13-dim orbit observation (orbit / residual_orbit / lstm_orbit).
     Orbit,
-    /// 10-dim level-hold observation.
+    /// 13-dim level-hold observation.
     LevelHold,
 }
 

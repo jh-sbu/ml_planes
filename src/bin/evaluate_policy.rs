@@ -25,6 +25,11 @@
 //!   --curriculum-stage <s>  lstm_orbit only: coarse | heading_fine | full
 //!                           (default full). Selects the WuOrbit reward stage the
 //!                           policy is scored under; reported as curriculum_stage.
+//!   --target-alt-range <MIN:MAX|VALUE>    level_hold only: per-episode target altitude [m]
+//!                           range to evaluate across (default: 500:5000). Use the same
+//!                           range the policy was trained with for a comparable report.
+//!   --target-speed-range <MIN:MAX|VALUE>  level_hold only: target airspeed [m/s] range
+//!                           (default: 90:140).
 
 #[cfg(not(feature = "inference"))]
 fn main() {
@@ -71,13 +76,34 @@ fn main() {
     // so the loop bound and the env's Timeout coincide (success is correct for
     // any `--max-steps`).
     let mut reported_stage: Option<&'static str> = None;
+    let mut reported_target_alt_range: Option<std::ops::RangeInclusive<f32>> = None;
+    let mut reported_target_speed_range: Option<std::ops::RangeInclusive<f32>> = None;
     let metrics = match task.as_str() {
         "level_hold" => {
             let reward_cfg: LevelHoldRewardConfig =
                 load_task_reward(&args, "assets/training/level_hold.reward.ron");
             let max_steps = parse_u32(&args, "--max-steps", reward_cfg.max_episode_steps);
-            let mut env = LevelHoldEnv::with_reward_config(1000.0, 100.0, cfg, reward_cfg);
+            let alt_range = parse_target_range(
+                &args,
+                "--target-alt-range",
+                ml_planes::training::level_hold_env::DEFAULT_TARGET_ALT_MIN,
+                ml_planes::training::level_hold_env::DEFAULT_TARGET_ALT_MAX,
+            );
+            let speed_range = parse_target_range(
+                &args,
+                "--target-speed-range",
+                ml_planes::training::level_hold_env::DEFAULT_TARGET_AIRSPEED_MIN,
+                ml_planes::training::level_hold_env::DEFAULT_TARGET_AIRSPEED_MAX,
+            );
+            let mut env = LevelHoldEnv::with_target_ranges(
+                alt_range.clone(),
+                speed_range.clone(),
+                cfg,
+                reward_cfg,
+            );
             env.max_episode_steps = max_steps;
+            reported_target_alt_range = Some(alt_range);
+            reported_target_speed_range = Some(speed_range);
             let mut policy = load_ff_policy::<B>(&path, env_obs_dim(&env));
             run_eval(
                 env,
@@ -130,6 +156,12 @@ fn main() {
     println!("model,{path}.mpk");
     if let Some(stage) = reported_stage {
         println!("curriculum_stage,{stage}");
+    }
+    if let Some(r) = &reported_target_alt_range {
+        println!("target_alt_range,{}:{}", r.start(), r.end());
+    }
+    if let Some(r) = &reported_target_speed_range {
+        println!("target_speed_range,{}:{}", r.start(), r.end());
     }
     println!("episodes,{}", metrics.core.episodes);
     println!("success_rate,{:.6}", metrics.core.success_rate);
@@ -406,6 +438,24 @@ fn parse_usize(args: &[String], key: &str, default: usize) -> usize {
             })
         })
         .unwrap_or(default)
+}
+
+/// Resolve a `MIN:MAX|VALUE` range argument, defaulting to `(default_min, default_max)`.
+#[cfg(feature = "inference")]
+fn parse_target_range(
+    args: &[String],
+    key: &str,
+    default_min: f32,
+    default_max: f32,
+) -> std::ops::RangeInclusive<f32> {
+    find_arg(args, key)
+        .map(|v| {
+            ml_planes::training::parse_f32_range(&v).unwrap_or_else(|e| {
+                eprintln!("{key}: {e}");
+                std::process::exit(2);
+            })
+        })
+        .unwrap_or(default_min..=default_max)
 }
 
 #[cfg(feature = "inference")]

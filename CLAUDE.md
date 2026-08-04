@@ -101,7 +101,7 @@ src/
 | `ManualController` | struct | Passthrough — applies raw keyboard/stick inputs, no autopilot |
 | `OrbitController` | struct | 3-level cascade PID orbit around a fixed world-frame point |
 | `HeadingHoldController` | struct | Holds a configurable heading via an inner level-hold cascade |
-| `RlLevelHoldController` | struct | Burn `ActorCritic` policy for level hold (obs dim=11); `inference`/`training`-gated |
+| `RlLevelHoldController` | struct | Burn `ActorCritic` policy for level hold (obs dim=13); `inference`/`training`-gated. Target altitude/airspeed are randomized per-episode in training (`LevelHoldEnv::with_target_ranges`, default 500–5000 m / 90–140 m/s) so one policy generalizes across the envelope; obs appends `density_ratio(altitude)` and raw airspeed so the network can actually distinguish operating points |
 | `RlOrbitController` | struct | Burn `ActorCritic` policy for orbit (obs dim=14); `inference`/`training`-gated |
 | `RlOrbitResidualController` | struct | Burn `ActorCritic` policy emitting residual deltas added to the PID orbit baseline (obs dim=14); paired with `ResidualOrbitEnv` |
 | `RlLstmOrbitController` | struct | Recurrent `LstmActorCritic` orbit policy (Wu et al. FC-LSTM-FC); carries `LstmHiddenState` across steps; paired with `WuOrbitEnv` |
@@ -210,7 +210,12 @@ checkpoints live at `models/<task>/fuel_smoke_<task>.mpk` (the orbit one is also
 dimensionally stale — retrain before use. **The 2026-07 flight-model audit fixes (lateral
 derivative sign flips `cl_beta`/`cl_r` + body-fixed thrust) changed the physics again: all
 checkpoints still *load* (obs dims unchanged) but are behaviorally stale — retrain before
-production use.** To restore production quality, retrain each task and
+production use.** **A subsequent change grew the level-hold observation again, 11→13**
+(`density_ratio(altitude)` + raw airspeed, appended so a policy trained over the now-randomized
+500–5000 m / 90–140 m/s target envelope — see roadmap item 1 — can actually distinguish
+operating points instead of only seeing normalized error terms); `models/level_hold/` is
+already empty (no checkpoint survives from before), so there is nothing to retrain away from for
+that task specifically. To restore production quality for the other tasks, retrain each task and
 re-tune the (now heavier, 7000 kg loaded) jet:
 
 ```
@@ -502,6 +507,13 @@ Training environments (`LevelHoldEnv`, `OrbitEnv`, `ResidualOrbitEnv`, `WuOrbitE
 - Integration step is **60 Hz** (`dt = 1/60 s`) by design — this is the self-contained Euler
   integrator and is intentionally distinct from the 64 Hz Rapier fixed schedule used by the
   live sim (`main.rs`), the `observe_state` example, and the Bevy/Rapier tests.
+- **Level-hold observation contract:** `LevelHoldEnv` and `RlLevelHoldController` must agree
+  bit-for-bit on the 13-dim observation vector; rather than keep two copies in sync by hand,
+  both call the single free function `training::level_hold_env::level_hold_observation()`. Any
+  change to the vector's length or element order must be made there once — `LEVEL_HOLD_OBS_DIM`
+  (also in that module) and the tests pinning it (`rl_inference::level_hold_controller_obs_matches_env_obs`,
+  the `loading_stale_dim_level_hold_model_errors` dimension guard) exist specifically to catch a
+  future drift between training and inference.
 
 ### RL Inference Pattern
 
@@ -609,7 +621,7 @@ lost *before* calling `kind.build()`, then re-wrap the freshly built fallback co
 
 ## 4. Maneuver Roadmap
 
-1. **Level flight hold** — COMPLETE. Cascade PID: altitude outer → pitch inner, airspeed, roll, yaw. RL policy trained (`RlLevelHoldController`, obs dim=11).
+1. **Level flight hold** — COMPLETE. Cascade PID: altitude outer → pitch inner, airspeed, roll, yaw. RL policy trained (`RlLevelHoldController`, obs dim=13) over a randomized 500–5000 m / 90–140 m/s target envelope, configurable via `--target-alt-range`/`--target-speed-range` on `train_ppo`/`train_bc`/`evaluate_policy`.
 2. **Ascent** — COMPLETE. Climbs to target altitude then hands off to level hold.
 3. **Formation flight (wingman)** — COMPLETE. Follows leader at fixed body-frame offset (`WingmanController`).
 4. **Circular orbit** — COMPLETE. 3-level cascade PID around world-frame point. Three RL variants: `RlOrbitController` (direct, obs dim=14), `RlOrbitResidualController` (residual over PID), and `RlLstmOrbitController` (recurrent, Wu-curriculum). Policies also reachable via behavior-cloning warm start.
@@ -677,7 +689,13 @@ path = "src/bin/mcp.rs"
 > `level_hold`, `orbit`, `residual_orbit`, `lstm_orbit`. Both `train_ppo` and `train_bc` accept
 > `--seed <u64>` to fix weight init, minibatch shuffling, and (per-env) episode resets for a
 > reproducible run's starting point — see the "Known nondeterminism" note in §6 for what it does
-> and does not guarantee.
+> and does not guarantee. For `level_hold`, `train_ppo`, `train_bc`, and `evaluate_policy` all
+> accept `--target-alt-range <MIN:MAX|VALUE>` / `--target-speed-range <MIN:MAX|VALUE>` to set the
+> per-episode target-altitude/airspeed envelope the policy is trained/evaluated across (default
+> `500:5000` / `90:140`, jointly stall-feasible for the generic jet at full fuel); a bare `VALUE`
+> pins a single fixed target, reproducing the pre-randomization behavior. Parsed by the shared
+> `training::parse_f32_range`; pass the same ranges to `evaluate_policy` that a checkpoint was
+> trained with for a comparable report.
 
 > **Bevy feature flag note:** `default-features = false` disables all optional
 > subsystems. `bevy_asset` **is** an optional feature of the `bevy` meta-crate

@@ -1,6 +1,11 @@
 // Reward and termination config for LevelHoldEnv.
 // Edit here to retune training without recompiling.
 // Loaded at startup by train_ppo; falls back to compiled defaults if missing.
+//
+// NOTE: the promotion numbers in this file's history (mean_return / mean_abs_altitude_m)
+// were measured at a single fixed 1000 m / 100 m/s target, before target altitude/airspeed
+// were randomized per-episode (see LevelHoldEnv::with_target_ranges, default 500-5000 m /
+// 90-140 m/s). They are not directly comparable to a randomized-target run's eval output.
 (
     // Altitude error term: -(|alt - target| / alt_error_scale) * alt_error_weight
     alt_error_scale:    200.0,
