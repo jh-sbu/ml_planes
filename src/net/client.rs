@@ -62,6 +62,53 @@ impl Drop for ServerProcess {
     }
 }
 
+/// Resolve the `ml_planes_server` binary expected to sit next to this executable —
+/// the `target/<profile>` (or installed) layout, so a client-launched local server
+/// (Start New Server) uses the sibling built by the same `cargo build`/`install`.
+pub fn local_server_path() -> std::io::Result<std::path::PathBuf> {
+    Ok(std::env::current_exe()?
+        .with_file_name(format!("ml_planes_server{}", std::env::consts::EXE_SUFFIX)))
+}
+
+/// Warn when the local `ml_planes_server` binary predates the running client — the
+/// client and server are separate `cargo` targets with disjoint feature sets
+/// (`client`+`training` vs `server`+`inference`), built by separate commands, so
+/// nothing enforces that a `cargo build`/`run` of one also rebuilds the other. A
+/// stale server silently runs old physics/observation code; the sharpest symptom
+/// seen in practice is an RL controller's `check_obs_dim` rejecting an
+/// otherwise-current checkpoint because the *server's* model-consuming code is
+/// stale, not the checkpoint (see `ModelLoadError::DimensionMismatch`).
+///
+/// Deliberately conservative: a client-only rebuild also trips this (there is no
+/// way to tell from mtimes alone whether the server actually needs rebuilding too).
+/// That false-positive is the right trade — the banner costs 5s of screen space,
+/// silently running stale server code costs a confusing debugging session.
+pub fn stale_server_warning(client_mtime: SystemTime, server_mtime: SystemTime) -> Option<String> {
+    if server_mtime < client_mtime {
+        Some(
+            "local ml_planes_server binary is older than this client — it may be running \
+             stale code; rebuild both with `just play`"
+                .to_string(),
+        )
+    } else {
+        None
+    }
+}
+
+/// IO wrapper around [`stale_server_warning`]: stats the running client executable
+/// and [`local_server_path`], tolerating missing metadata by returning `None` —
+/// this check must never block launching a server.
+pub fn check_local_server_staleness() -> Option<String> {
+    let client_mtime = std::env::current_exe()
+        .ok()?
+        .metadata()
+        .ok()?
+        .modified()
+        .ok()?;
+    let server_mtime = local_server_path().ok()?.metadata().ok()?.modified().ok()?;
+    stale_server_warning(client_mtime, server_mtime)
+}
+
 /// Server replication tick rate. Snapshots are stamped with `tick / SERVER_TICK_HZ`
 /// to reconstruct a uniform server-time timeline, independent of the client's frame
 /// rate. Must match the server's `Time<Fixed>` rate (bevy_replicon increments its tick
@@ -388,6 +435,27 @@ impl Plugin for ClientNetPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn stale_server_warning_fires_when_server_older_than_client() {
+        let client = SystemTime::now();
+        let server = client - Duration::from_secs(60);
+        let msg = stale_server_warning(client, server).expect("older server must warn");
+        assert!(
+            msg.to_lowercase().contains("rebuild"),
+            "warning should point at the fix: {msg}"
+        );
+    }
+
+    #[test]
+    fn stale_server_warning_silent_when_server_newer_or_equal() {
+        let client = SystemTime::now();
+        let newer = client + Duration::from_secs(60);
+        assert!(stale_server_warning(client, newer).is_none());
+        // Built in the same invocation — equal mtimes are not stale.
+        assert!(stale_server_warning(client, client).is_none());
+    }
 
     fn snap(t: f64, pos: Vec3) -> Snapshot {
         Snapshot {

@@ -213,10 +213,11 @@ checkpoints still *load* (obs dims unchanged) but are behaviorally stale — ret
 production use.** **A subsequent change grew the level-hold observation again, 11→13**
 (`density_ratio(altitude)` + raw airspeed, appended so a policy trained over the now-randomized
 500–5000 m / 90–140 m/s target envelope — see roadmap item 1 — can actually distinguish
-operating points instead of only seeing normalized error terms); `models/level_hold/` is
-already empty (no checkpoint survives from before), so there is nothing to retrain away from for
-that task specifically. To restore production quality for the other tasks, retrain each task and
-re-tune the (now heavier, 7000 kg loaded) jet:
+operating points instead of only seeing normalized error terms); `models/level_hold/` was
+retrained under the new 13-dim observation post-fuel-model (`ppo_level_hold.mpk` /
+`ppo_level_hold_1.mpk` — checked as of 2026-08-04, both dimensionally current). To restore
+production quality for the other tasks, retrain each task and re-tune the (now heavier, 7000 kg
+loaded) jet:
 
 ```
 # per task ∈ {level_hold, orbit, residual_orbit, lstm_orbit}: use the train-evaluate-optimize skill,
@@ -431,6 +432,14 @@ v3 added `ControllerTargets` + `SetControllerTargetsCommand`) gates version-mism
   are added by the binaries, **not** the plugins, so tests (`ServerSimPlugin` is transport-free)
   never bind a socket. `ServerProcess` wraps a client-launched local server child and kills+reaps
   it on drop (covers window-close / Quit paths that skip `OnExit(InGame)`).
+- **Client and server are separate `cargo` targets with disjoint feature sets** (`client`+
+  `training` for `ml_planes` vs `server`+`inference` for `ml_planes_server`), so a plain `cargo run
+  --bin ml_planes` (the `planes` alias) never rebuilds the sibling `ml_planes_server` binary that
+  "Start New Server" spawns (`launch_local_server`/`local_server_path`, `src/net/client.rs`) — the
+  two silently drift apart under separate builds. `check_local_server_staleness` compares mtimes
+  and pushes a `Notifications` banner when the local server binary predates the client executable.
+  `just play`/`just play-debug` build both before running so the pair can't drift; `cargo planes`
+  alone is still fine for iterating on the client, the banner just covers the gap.
 
 ### Visual App Flow (Main Menu + Scenarios)
 

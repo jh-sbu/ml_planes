@@ -9,8 +9,9 @@ pub use protocol::*;
 pub mod client;
 
 pub use client::{
-    connect_to_server, push_snapshot, sample, start_renet_client, ClientNetPlugin, ConnectTarget,
-    NetInterpolation, NetRenderClock, ServerProcess, Snapshot,
+    check_local_server_staleness, connect_to_server, local_server_path, push_snapshot, sample,
+    start_renet_client, ClientNetPlugin, ConnectTarget, NetInterpolation, NetRenderClock,
+    ServerProcess, Snapshot,
 };
 
 #[cfg(feature = "server")]

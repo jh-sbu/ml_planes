@@ -45,7 +45,10 @@ use bevy_replicon_renet::netcode::NetcodeClientTransport;
 use bevy_replicon_renet::RenetClient;
 
 #[cfg(feature = "net")]
-use crate::net::{start_renet_client, ConnectTarget, ServerProcess, DEFAULT_PORT};
+use crate::net::{
+    check_local_server_staleness, local_server_path, start_renet_client, ConnectTarget,
+    ServerProcess, DEFAULT_PORT,
+};
 
 /// Top-level screen the app is currently showing.
 #[derive(States, Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -310,6 +313,9 @@ fn draw_scenario_select(
     });
 
     let Some(path) = chosen else { return };
+    if let Some(warning) = check_local_server_staleness() {
+        notes.push(warning);
+    }
     match launch_local_server(&path, DEFAULT_PORT) {
         Ok(child) => {
             local_server.0 = Some(child);
@@ -325,13 +331,13 @@ fn draw_scenario_select(
 }
 
 /// Spawn an `ml_planes_server` child process hosting `scenario_path` on `port`.
-/// Resolves the server binary next to the current executable so the installed/
-/// `target/<profile>` layout is used (the child inherits this process's CWD, so the
-/// `assets/...` scenario path resolves the same way the client sees it).
+/// Resolves the server binary next to the current executable ([`local_server_path`])
+/// so the installed/`target/<profile>` layout is used (the child inherits this
+/// process's CWD, so the `assets/...` scenario path resolves the same way the
+/// client sees it).
 #[cfg(feature = "net")]
 fn launch_local_server(scenario_path: &str, port: u16) -> std::io::Result<ServerProcess> {
-    let exe = std::env::current_exe()?
-        .with_file_name(format!("ml_planes_server{}", std::env::consts::EXE_SUFFIX));
+    let exe = local_server_path()?;
     std::process::Command::new(exe)
         .arg("--scenario")
         .arg(scenario_path)

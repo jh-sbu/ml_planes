@@ -26,6 +26,12 @@ cargo run
 cargo run --features server --bin ml_planes_server -- \
   --scenario assets/scenarios/default.scenario.ron --port 5555
 
+# The client (ml_planes) and server (ml_planes_server) are separate cargo targets with
+# disjoint feature sets — `cargo run --bin ml_planes` alone never rebuilds the server
+# binary a client-launched "Start New Server" spawns as a sibling process, so the two
+# can silently drift apart. `just play` builds and runs both together:
+just play        # release; just play-debug for a debug build
+
 # All tests (always headless; core sim suite only needs --no-default-features)
 cargo test --no-default-features
 
