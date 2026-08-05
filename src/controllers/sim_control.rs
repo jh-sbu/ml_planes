@@ -642,6 +642,59 @@ fn restore_wingman(ctrl: &mut ActiveController, params: WingmanParams) {
     ctrl.0 = Box::new(wingman);
 }
 
+/// Kinds whose `build()` re-seeds every setpoint from the *current* `FlightState`
+/// (`LevelHoldController::with_tuning`/`from_state` capture `state.altitude`/
+/// `state.airspeed`; `HeadingHoldController::from_state` captures
+/// `ground_track_heading(state)`; `AscentController::new` re-targets
+/// `state.altitude + 1000.0`). A tuning-asset load or profile switch would
+/// otherwise silently cancel a scenario- or pilot-commanded setpoint the moment
+/// the plane's tuning finishes loading — exactly the bug class `ControllerTargets`
+/// exists to prevent on the HUD side, just hitting it from the rebuild side instead.
+///
+/// `Orbit`/`RlOrbit*` and `Wingman` are deliberately excluded: they already have
+/// their own extract/restore pairs above (`extract_orbit_params`,
+/// `extract_wingman_params`), and their `apply_targets` impls have side effects
+/// (PID resets, auto-centering) a blind snapshot/replay must not trigger.
+fn rebuild_preserves_targets(kind: ControllerKind) -> bool {
+    matches!(
+        kind,
+        ControllerKind::LevelHold
+            | ControllerKind::RlLevelHold
+            | ControllerKind::HeadingHold
+            | ControllerKind::RlHeadingHold
+            | ControllerKind::Ascent
+    )
+}
+
+/// Snapshot `controller`'s editable setpoints if its kind is one
+/// `rebuild_preserves_targets` covers, so they can be replayed via
+/// `restore_targets` after `kind.build()` re-seeds them from live state.
+/// `None` both when the kind is out of scope and when the controller reports
+/// `ControllerTargets::None` (nothing to preserve either way).
+fn extract_targets(
+    ctrl: &mut ActiveController,
+    kind: ControllerKind,
+) -> Option<crate::controllers::targets::ControllerTargets> {
+    if !rebuild_preserves_targets(kind) {
+        return None;
+    }
+    match ctrl.0.targets() {
+        crate::controllers::targets::ControllerTargets::None => None,
+        targets => Some(targets),
+    }
+}
+
+/// Replay a snapshot taken by `extract_targets` onto the freshly rebuilt
+/// controller. `FlightController::apply_targets` already no-ops on a mismatched
+/// variant, so this is safe even if `kind.build()`'s fallback ever changes.
+fn restore_targets(
+    ctrl: &mut ActiveController,
+    targets: crate::controllers::targets::ControllerTargets,
+    state: &FlightState,
+) {
+    ctrl.0.apply_targets(&targets, state);
+}
+
 /// Apply the named tuning profile to a controller that was spawned before the PlaneTuning asset
 /// finished loading. Runs once per entity (guarded by `Without<TuningApplied>`) and fires before
 /// `apply_controller_switch` so any explicit profile switch in the same frame takes precedence.
@@ -706,6 +759,10 @@ fn apply_initial_tuning(
         } else {
             None
         };
+        // Preserve LevelHold/HeadingHold/Ascent setpoints the same way: `build()`
+        // re-seeds them from `state`, which would silently cancel a scenario- or
+        // pilot-commanded target the moment tuning finishes loading.
+        let saved_targets = extract_targets(&mut controller, *kind);
 
         // Preserve a live RL policy the same way: `kind.build()` has no model path and
         // would fall back to a PID controller for any RL kind.
@@ -727,6 +784,9 @@ fn apply_initial_tuning(
         }
         if let Some(params) = wingman_params {
             restore_wingman(&mut controller, params);
+        }
+        if let Some(targets) = saved_targets {
+            restore_targets(&mut controller, targets, state);
         }
 
         commands.entity(entity).insert(TuningApplied);
@@ -802,6 +862,9 @@ fn apply_controller_switch(
         } else {
             None
         };
+        // Preserve LevelHold/HeadingHold/Ascent setpoints across a profile switch the
+        // same way (see `apply_initial_tuning` above for why).
+        let saved_targets = extract_targets(&mut controller, *kind);
 
         // Preserve a live RL policy the same way: `kind.build()` has no model path and
         // would fall back to a PID controller for any RL kind.
@@ -826,6 +889,9 @@ fn apply_controller_switch(
         }
         if let Some(params) = wingman_params {
             restore_wingman(&mut controller, params);
+        }
+        if let Some(targets) = saved_targets {
+            restore_targets(&mut controller, targets, state);
         }
     }
 }

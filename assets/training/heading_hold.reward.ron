@@ -43,8 +43,16 @@
 
     // Applied once on episode Failure (crash / speed collapse), never on Timeout — every
     // other term above is negative, so without this an early failure is rewarded relative
-    // to riding out the episode.
-    terminal_failure_penalty: -50.0,
+    // to riding out the episode. Sized to the worst-case *discounted* cost of that
+    // alternative, not just its per-step magnitude: at gamma=0.99 (heading_hold.ppo.ron)
+    // the discount horizon is 1/(1-gamma) = 100 steps, and the worst-case per-step heading
+    // term (180 deg error) is -(pi/heading_error_scale)*heading_error_weight ~= -3.77, so
+    // sitting at max error forever discounts to ~= -377. The penalty must exceed that or a
+    // policy that deliberately stalls out (min_airspeed floor is a couple seconds away)
+    // beats one that completes a hard turn — a code review caught the previous -50.0 value
+    // failing this by roughly 7x. See reward_config.rs's
+    // heading_hold_failure_penalty_covers_discounted_horizon test.
+    terminal_failure_penalty: -500.0,
 
     // Termination conditions
     min_altitude:       10.0,   // [m] crash if below

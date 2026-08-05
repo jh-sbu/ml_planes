@@ -231,7 +231,12 @@ loaded) jet:
 history above — its 16-dim observation was current from the start). Only checkpoint shipped is
 `models/heading_hold/smoke_heading_hold.mpk`, a **pipeline smoke test** (100k steps, `--bc-steps
 20000 --bc-epochs 5 --target-heading-range -30:30`), not a flight-quality policy — run
-`train-evaluate-optimize` for one, then re-tune PID gains the same way as the other tasks.
+`train-evaluate-optimize` for one, then re-tune PID gains the same way as the other tasks. It was
+also trained under the pre-2026-08 `terminal_failure_penalty: -50.0` (now `-500.0` — a code
+review found -50 didn't cover the discounted cost of surviving at max heading error, so early
+failure could beat completing a hard turn; see `heading_hold.reward.ron`'s comment); its returns
+aren't comparable to a policy trained after the change, though the checkpoint still loads fine
+(the observation is unchanged).
 
 ### Action Spaces
 
@@ -679,6 +684,21 @@ controllers, `RlOrbitResidualController::retune` for the one RL kind that owns r
 gains). Unlike the other two, `preserve_rl_controller` doesn't need a restore step — it runs
 *instead of* `kind.build()` (returning `true`) rather than wrapping its output, since there's
 nothing for the generic factory to contribute once a policy is loaded.
+
+**A kind whose `build()` *can* reconstruct the controller but re-seeds its setpoints from the
+live `FlightState`** (`LevelHold`, `HeadingHold`, `Ascent` — `LevelHoldController::with_tuning`
+captures `state.altitude`/`state.airspeed`, `HeadingHoldController::from_state` captures
+`ground_track_heading(state)`, `AscentController::new` re-targets `state.altitude + 1000.0`): a
+tuning rebuild would silently cancel a scenario- or pilot-commanded target the moment the asset
+loads, even though the controller *type* survives. This doesn't need a bespoke extract/restore
+pair like the ones above — reuse the setpoints the controller already publishes through
+`FlightController::targets()`/`apply_targets()` instead: snapshot `targets()` before
+`kind.build()`, replay it via `apply_targets()` after (`rebuild_preserves_targets`,
+`extract_targets`, `restore_targets` in `sim_control.rs`). Keep `Orbit`/`Wingman` out of this
+list — they already have their own pairs above, and their `apply_targets` has side effects
+(PID resets, auto-centering) a blind replay must not trigger. Add the new kind to
+`rebuild_preserves_targets` and a case to both `tests/core/sim_control.rs` and (for a scenario
+that ships a non-default target) `tests/core/scenario.rs`.
 
 ---
 

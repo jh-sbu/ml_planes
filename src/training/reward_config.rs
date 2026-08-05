@@ -144,7 +144,11 @@ impl Default for HeadingHoldRewardConfig {
             bank_excess_scale: 0.35,
             bank_excess_weight: 1.0,
             alive_bonus: 0.01,
-            terminal_failure_penalty: -50.0,
+            // Sized to cover the worst-case discounted cost of surviving at maximum
+            // heading error rather than failing early — see the matching comment in
+            // assets/training/heading_hold.reward.ron and
+            // heading_hold_failure_penalty_covers_discounted_horizon below.
+            terminal_failure_penalty: -500.0,
             min_altitude: 10.0,
             max_altitude_error: 500.0,
             min_airspeed: 60.0,
@@ -394,6 +398,29 @@ mod tests {
         // clamp (±FRAC_PI_3) so the BC expert never incurs the bank-excess penalty.
         let cfg = HeadingHoldRewardConfig::default();
         assert!((cfg.bank_soft_limit - std::f32::consts::FRAC_PI_3).abs() < 1e-6);
+    }
+
+    /// The failure penalty exists (per its own doc comment / RON comment) so an early
+    /// failure is never *rewarded* relative to riding out the episode. At gamma = 0.99
+    /// (`assets/training/heading_hold.ppo.ron`) the discount horizon is 1/(1-gamma) = 100
+    /// steps, so the worst-case discounted cost of sitting at maximum (180 deg) heading
+    /// error forever is `worst_step / (1 - gamma)`. The penalty must be at least that
+    /// large, or a policy that deliberately stalls out beats one that completes a hard
+    /// turn — this is exactly the gap a code review found in the shipped `-50.0` value
+    /// (worst_step ~= -3.77, so the discounted worst case is ~= -377).
+    #[test]
+    fn heading_hold_failure_penalty_covers_discounted_horizon() {
+        const GAMMA: f32 = 0.99; // mirrors assets/training/heading_hold.ppo.ron's `gamma`
+        let c = HeadingHoldRewardConfig::default();
+        let worst_step_cost =
+            (std::f32::consts::PI / c.heading_error_scale) * c.heading_error_weight;
+        let worst_case_discounted = worst_step_cost / (1.0 - GAMMA);
+        assert!(
+            c.terminal_failure_penalty.abs() >= worst_case_discounted,
+            "terminal_failure_penalty ({}) must cover the worst-case discounted heading-error \
+             cost ({worst_case_discounted}), or terminating early beats completing the turn",
+            c.terminal_failure_penalty
+        );
     }
 
     #[test]

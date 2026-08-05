@@ -3,8 +3,8 @@
 use crate::common::{build_headless_app, build_headless_app_with};
 use bevy::prelude::*;
 use ml_planes::controllers::{
-    ActiveController, ControllerKind, FormationOffset, LevelHoldTuning, OrbitDirection,
-    PlaneTuning, SimControlPlugin, WingmanController,
+    ActiveController, ControllerKind, FormationOffset, HeadingHoldController, LevelHoldTuning,
+    OrbitDirection, PlaneTuning, SimControlPlugin, TuningApplied, WingmanController,
 };
 use ml_planes::environment::spawn_resolved_scenario;
 use ml_planes::plane::{NextPlaneId, PlaneId, PlaneTuningHandle};
@@ -233,6 +233,81 @@ fn scenario_wingman_survives_tuning_rebuild() {
     assert_eq!(
         wc.leader_id, leader_runtime_id,
         "leader_id must reference the leader's actual runtime PlaneId"
+    );
+}
+
+const HEADING_HOLD_TURN: &str = r#"(
+    steps: 10,
+    interval: 10,
+    planes: [
+        (
+            name: "p",
+            position: (0.0, 1000.0, 0.0),
+            controller: HeadingHold(heading_deg: 90.0, altitude: 1000.0, airspeed: 120.0),
+        ),
+    ],
+)"#;
+
+/// End-to-end regression for the P1 fix: `assets/scenarios/heading_hold.scenario.ron`
+/// spawns a plane on ground track 0 at `DEFAULT_SPEED` (100 m/s) commanding a 90°/
+/// 120 m/s target. Before the `ControllerTargets`-snapshot fix, `apply_initial_tuning`
+/// rebuilt the controller from the live (heading-0/100 m/s) state the moment
+/// `generic_jet.tuning.ron`'s `heading_hold` pool loaded, silently cancelling the turn.
+///
+/// This drives the real spawn path (`spawn_resolved_scenario` + `SimControlPlugin`) with
+/// the *actual* `generic_jet.tuning.ron` asset (loaded via the real `AssetServer`, same
+/// as production) rather than a synthetic one — the real file tends to already be loaded
+/// and consumed (`TuningApplied` inserted) by the first `app.update()` in a headless test,
+/// so asserting against a synthetic tuning inserted afterward would race the real load and
+/// prove nothing. Asserting straight after the first update instead exercises the exact
+/// production sequence.
+#[test]
+fn scenario_heading_hold_survives_tuning_rebuild() {
+    let resolved = Scenario::from_ron_str(HEADING_HOLD_TURN)
+        .expect("parse fixture")
+        .resolve()
+        .expect("resolve fixture");
+
+    let mut app = build_headless_app_with(|app| {
+        app.add_plugins(SimControlPlugin);
+    });
+    app.insert_resource(ScenarioRes(resolved));
+    app.add_systems(Startup, spawn_scenario_system);
+    app.update();
+    app.update();
+
+    let world = app.world_mut();
+    let mut q = world.query::<(Entity, &ControllerKind)>();
+    let entity = q
+        .iter(world)
+        .find(|(_, kind)| **kind == ControllerKind::HeadingHold)
+        .map(|(e, _)| e)
+        .expect("heading-hold plane must be spawned");
+    assert!(
+        world.get::<TuningApplied>(entity).is_some(),
+        "the tuning rebuild must have fired by now, or this test isn't exercising it"
+    );
+    let mut ctrl = world.get_mut::<ActiveController>(entity).unwrap();
+    let hh = ctrl
+        .0
+        .as_any_mut()
+        .downcast_mut::<HeadingHoldController>()
+        .expect("controller must still be a HeadingHoldController after the tuning rebuild");
+    assert!(
+        (hh.target_heading - 90.0_f32.to_radians()).abs() < 1e-4,
+        "the scenario's 90 deg target must survive the rebuild, got {} rad",
+        hh.target_heading
+    );
+    assert!(
+        (hh.inner.target_altitude - 1000.0).abs() < 1e-4,
+        "target_altitude must survive the rebuild, got {}",
+        hh.inner.target_altitude
+    );
+    assert!(
+        (hh.inner.target_airspeed - 120.0).abs() < 1e-4,
+        "the scenario's 120 m/s target must survive the rebuild instead of snapping to \
+         DEFAULT_SPEED, got {}",
+        hh.inner.target_airspeed
     );
 }
 
