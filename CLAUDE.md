@@ -603,13 +603,19 @@ families). Supports `--task {level_hold|orbit|residual_orbit|lstm_orbit}` and, f
 12. `main.rs` — `apply_model_switch` match arm: same `::load()` call for HUD model cycling
 
 **A kind whose `build()` can't reconstruct its full state** (like `Wingman`, which needs a
-leader reference the generic factory doesn't have): the tuning-rebuild systems
-(`apply_initial_tuning`, `apply_controller_switch` in `controllers/sim_control.rs`) will
-silently replace a live instance with the fallback the next time the plane's tuning asset
-loads or its profile switches. Add an extract/restore pair — snapshot the state that would be
-lost *before* calling `kind.build()`, then re-wrap the freshly built fallback controller
-*after* — in **both** systems, mirroring `extract_orbit_params`/`OrbitController::apply_params`
-(orbit geometry) or `extract_wingman_params`/`restore_wingman` (wingman formation state).
+leader reference the generic factory doesn't have, or any RL kind, which needs a loaded model
+the generic factory has no path for): the tuning-rebuild systems (`apply_initial_tuning`,
+`apply_controller_switch` in `controllers/sim_control.rs`) will silently replace a live
+instance with the fallback the next time the plane's tuning asset loads or its profile
+switches. Add an extract/restore pair — snapshot the state that would be lost *before* calling
+`kind.build()`, then re-wrap the freshly built fallback controller *after* — in **both**
+systems, mirroring `extract_orbit_params`/`OrbitController::apply_params` (orbit geometry),
+`extract_wingman_params`/`restore_wingman` (wingman formation state), or
+`preserve_rl_controller` (all four RL kinds: a downcast check for the three pure-policy
+controllers, `RlOrbitResidualController::retune` for the one RL kind that owns real PID
+gains). Unlike the other two, `preserve_rl_controller` doesn't need a restore step — it runs
+*instead of* `kind.build()` (returning `true`) rather than wrapping its output, since there's
+nothing for the generic factory to contribute once a policy is loaded.
 
 ---
 

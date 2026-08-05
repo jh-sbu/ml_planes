@@ -20,7 +20,7 @@ use burn::{
 
 use crate::controllers::model_load::ModelLoadError;
 use crate::controllers::orbit::{
-    build_orbit_observation, OrbitController, OrbitDirection, ORBIT_OBS_DIM,
+    build_orbit_observation, OrbitController, OrbitDirection, OrbitParams, ORBIT_OBS_DIM,
 };
 use crate::controllers::tuning::OrbitTuning;
 use crate::controllers::FlightController;
@@ -79,7 +79,10 @@ impl RlOrbitResidualConfig {
 /// `ActorCritic<NdArray>` is not `Sync` (burn's `Param` uses `OnceCell`),
 /// so the model is wrapped in `Mutex` to satisfy `FlightController: Sync`.
 pub struct RlOrbitResidualController {
-    pid: OrbitController,
+    /// Inner PID baseline. `center_x`/`target_radius`/etc. are re-synced from this
+    /// controller's own public fields every tick (see `update`); its gains are the part a
+    /// tuning-rebuild can legitimately change — see `retune`.
+    pub pid: OrbitController,
     model: std::sync::Mutex<ActorCritic<InfB>>,
     device: <InfB as Backend>::Device,
     pub center_x: f32,
@@ -165,6 +168,36 @@ impl RlOrbitResidualController {
             direction: self.direction,
             residual_scale: self.residual_scale,
         }
+    }
+
+    /// Rebuild the inner PID baseline from a freshly loaded tuning profile, leaving the
+    /// trained policy untouched.
+    ///
+    /// Used by the `SimControlPlugin` tuning-rebuild systems (`apply_initial_tuning` /
+    /// `apply_controller_switch` in `sim_control.rs`) to apply a `.tuning.ron` load or
+    /// profile switch to this controller's PID baseline without falling back to
+    /// `ControllerKind::build()`, which would replace the whole controller with a plain
+    /// `OrbitController` and drop the policy — the same clobber the wingman
+    /// extract/restore pair (`extract_wingman_params`/`restore_wingman`) guards against.
+    ///
+    /// Mirrors `load`/`load_bytes`'s PID construction; `with_tuning`/`from_state` auto-center
+    /// on `state`'s current position, so the controller's own retained geometry is re-applied
+    /// afterward via `apply_params` (also recomputing the bank feedforward for the current
+    /// airspeed) rather than letting the orbit silently re-center.
+    pub fn retune(&mut self, tuning: Option<&OrbitTuning>, state: &FlightState) {
+        self.pid = match tuning {
+            Some(t) => OrbitController::with_tuning(state, t, &ControlInputs::default()),
+            None => OrbitController::from_state(state, &ControlInputs::default()),
+        };
+        let params = OrbitParams {
+            center_x: self.center_x,
+            center_z: self.center_z,
+            target_radius: self.target_radius,
+            target_altitude: self.target_altitude,
+            target_airspeed: self.target_airspeed,
+            direction: self.direction,
+        };
+        self.pid.apply_params(&params, state.airspeed);
     }
 }
 

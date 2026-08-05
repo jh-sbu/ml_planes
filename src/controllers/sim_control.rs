@@ -188,7 +188,12 @@ fn report_skipped_model(notes: &mut Notifications, path: &str, err: &ModelLoadEr
 /// `SelectedModel` is wired yet: runtime (panel/hotkey) spawns arrive on the PID
 /// fallback with no model and need loading, whereas startup-spawned RL planes
 /// already carry both the loaded controller and a `SelectedModel`, so they're
-/// skipped to avoid a redundant reload.
+/// skipped to avoid a redundant reload. That skip is only safe because
+/// `preserve_rl_controller` stops `apply_initial_tuning`/`apply_controller_switch` from
+/// later clobbering the already-loaded controller with the PID fallback once the plane's
+/// tuning asset loads — before that guard existed, a startup-spawned RL plane's policy was
+/// silently replaced by PID the moment its `.tuning.ron` resolved, with nothing here to
+/// notice and reload it (`Changed<ControllerKind>` doesn't fire on a tuning-asset load).
 #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
 fn rl_kind_needs_load_on_change(
     kind: ControllerKind,
@@ -260,7 +265,10 @@ fn apply_rl_controller_switch(
                 let (tgt_alt, tgt_spd) = level_hold_targets_from_controller(&mut controller, state);
                 match RlLevelHoldController::load(&path, tgt_alt, tgt_spd) {
                     Ok(rl) => controller.0 = Box::new(rl),
-                    Err(e) => report_skipped_model(&mut notes, &path, &e),
+                    Err(e) => {
+                        report_skipped_model(&mut notes, &path, &e);
+                        kind.set_if_neq(ControllerKind::LevelHold);
+                    }
                 }
             }
             ControllerKind::RlOrbit => {
@@ -459,6 +467,66 @@ fn extract_orbit_params(ctrl: &mut ActiveController) -> Option<OrbitParams> {
     None
 }
 
+/// Whether the active controller is already running its RL policy and the tuning-rebuild
+/// systems should leave it alone (or, for `RlOrbitResidual`, just re-tune its inner PID
+/// baseline) instead of calling `kind.build()`.
+///
+/// `ControllerKind::build()` falls back to a PID controller for every RL kind — it has no
+/// model path to load one from (`kind.rs`, "RlLevelHold requires a model path — fall back to
+/// LevelHold like Wingman"). Without this check, `apply_initial_tuning`/`apply_controller_switch`
+/// would silently replace a live RL policy with that PID fallback the moment a `.tuning.ron`
+/// asset loads or a profile switches, exactly as they once did for `Wingman` before
+/// `extract_wingman_params`/`restore_wingman` closed that gap — see the "Adding a New
+/// `ControllerKind`" checklist in `CLAUDE.md`.
+///
+/// Returns `true` when handled here (the caller must skip `kind.build()`); `false` when the
+/// active controller isn't actually running the RL policy yet (e.g. the kind just changed *to*
+/// an RL kind this frame and the PID fallback is still in place) — the caller falls through to
+/// the normal rebuild, and `apply_rl_controller_switch` loads the model afterward as usual.
+///
+/// `RlLevelHold`/`RlOrbit`/`RlLstmOrbit` carry no PID gains at all, so "preserve" is a no-op
+/// beyond the downcast check. `RlOrbitResidual` is the one RL kind with a real inner PID
+/// baseline (see `RlOrbitResidualController::retune`), so it alone needs the tuning applied.
+#[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
+fn preserve_rl_controller(
+    ctrl: &mut ActiveController,
+    kind: ControllerKind,
+    state: &FlightState,
+    orbit_tuning: Option<&OrbitTuning>,
+) -> bool {
+    match kind {
+        ControllerKind::RlLevelHold => ctrl
+            .0
+            .as_any_mut()
+            .downcast_mut::<RlLevelHoldController>()
+            .is_some(),
+        ControllerKind::RlOrbit => ctrl
+            .0
+            .as_any_mut()
+            .downcast_mut::<RlOrbitController>()
+            .is_some(),
+        ControllerKind::RlLstmOrbit => ctrl
+            .0
+            .as_any_mut()
+            .downcast_mut::<RlLstmOrbitController>()
+            .is_some(),
+        ControllerKind::RlOrbitResidual => {
+            match ctrl
+                .0
+                .as_any_mut()
+                .downcast_mut::<RlOrbitResidualController>()
+            {
+                Some(rl) => {
+                    rl.retune(orbit_tuning, state);
+                    true
+                }
+                None => false,
+            }
+        }
+        _ => false,
+    }
+}
+
 /// Formation state a tuning rebuild would otherwise destroy.
 ///
 /// `ControllerKind::Wingman.build()` returns a plain `LevelHoldController` (the
@@ -566,6 +634,17 @@ fn apply_initial_tuning(
             None
         };
 
+        // Preserve a live RL policy the same way: `kind.build()` has no model path and
+        // would fall back to a PID controller for any RL kind.
+        #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
+        {
+            let orbit_tuning = pt.get_orbit(profile_name);
+            if preserve_rl_controller(&mut controller, *kind, state, orbit_tuning) {
+                commands.entity(entity).insert(TuningApplied);
+                continue;
+            }
+        }
+
         controller.0 = kind.build(state, tuning, prev_inputs);
 
         if let Some(params) = orbit_params {
@@ -650,6 +729,18 @@ fn apply_controller_switch(
         } else {
             None
         };
+
+        // Preserve a live RL policy the same way: `kind.build()` has no model path and
+        // would fall back to a PID controller for any RL kind.
+        #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
+        {
+            let orbit_tuning = tuning_handle
+                .and_then(|h| tuning_assets.get(&h.0))
+                .and_then(|pt| pt.get_orbit(profile_name));
+            if preserve_rl_controller(&mut controller, *kind, state, orbit_tuning) {
+                continue;
+            }
+        }
 
         controller.0 = kind.build(state, tuning, prev_inputs);
 
