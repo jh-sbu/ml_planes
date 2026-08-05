@@ -5,6 +5,7 @@
 //! [`LevelHoldController`](crate::controllers::level_hold::LevelHoldController):
 //! positive roll is a left bank. All horizontal geometry is world-frame XZ.
 
+use core::f32;
 use std::f32::consts::{FRAC_PI_3, PI};
 
 use bevy::math::Vec2;
@@ -142,7 +143,7 @@ pub fn l1_straight_bank(
     let ltrack_vel = vg.dot(path);
 
     let eta2 = xtrack_vel.atan2(ltrack_vel);
-    let sin_eta1 = (xtrack / l1).clamp(-0.7071, 0.7071);
+    let sin_eta1 = (xtrack / l1).clamp(-f32::consts::FRAC_1_SQRT_2, f32::consts::FRAC_1_SQRT_2);
     let eta1 = sin_eta1.asin();
     let eta = eta1 + eta2;
 
