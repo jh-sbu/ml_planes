@@ -264,7 +264,7 @@ struct GetPlaneStateArgs {
 ///
 /// `controller_kind` is a serde variant name of a *spawnable* `ControllerKind` (`"Manual"`,
 /// `"LevelHold"`, `"HeadingHold"`, `"Ascent"`, `"Orbit"`, and — on inference builds —
-/// `"RlLevelHold"`/`"RlOrbit"`/`"RlOrbitResidual"`/`"RlLstmOrbit"`). Spatial fields are optional;
+/// `"RlLevelHold"`/`"RlHeadingHold"`/`"RlOrbit"`/`"RlOrbitResidual"`/`"RlLstmOrbit"`). Spatial fields are optional;
 /// omitting one uses the server's spawn default.
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct SpawnPlaneArgs {
@@ -327,13 +327,13 @@ struct SetSimSpeedArgs {
 struct SetControllerTargetsArgs {
     /// The `PlaneId(u32)` of the plane to edit.
     plane_id: u32,
-    /// Target altitude \[m\]. Applies to LevelHold/RlLevelHold, Ascent, HeadingHold, and
+    /// Target altitude \[m\]. Applies to LevelHold/RlLevelHold, Ascent, HeadingHold/RlHeadingHold, and
     /// Orbit/RlOrbit/RlOrbitResidual/RlLstmOrbit.
     altitude: Option<f32>,
-    /// Target airspeed \[m/s\]. Applies to LevelHold/RlLevelHold, HeadingHold, and the orbit
+    /// Target airspeed \[m/s\]. Applies to LevelHold/RlLevelHold, HeadingHold/RlHeadingHold, and the orbit
     /// family.
     airspeed: Option<f32>,
-    /// Target heading in **degrees**. Applies to HeadingHold only.
+    /// Target heading in **degrees**. Applies to HeadingHold/RlHeadingHold only.
     heading_deg: Option<f32>,
     /// Orbit center world-frame X \[m\]. Applies to the orbit family only.
     center_x: Option<f32>,
@@ -494,7 +494,8 @@ impl PlanesService {
                        `config_path` is an asset-relative `.plane.ron` (e.g. \
                        \"planes/generic_jet.plane.ron\"); `controller_kind` is a serde variant \
                        name — one of Manual, LevelHold, HeadingHold, Ascent, Orbit (and, on \
-                       inference builds, RlLevelHold, RlOrbit, RlOrbitResidual, RlLstmOrbit). \
+                       inference builds, RlLevelHold, RlHeadingHold, RlOrbit, RlOrbitResidual, \
+                       RlLstmOrbit). \
                        Wingman and FlightPlan are rejected. position/velocity/angular_velocity \
                        are [x,y,z]; attitude is a quaternion [x,y,z,w]; omitted fields use spawn \
                        defaults. Asynchronous: polls up to ~1s and returns { status: \
@@ -526,7 +527,7 @@ impl PlanesService {
         description = "Switch a plane's active controller: { plane_id, controller_kind }. \
                        `controller_kind` is a serde variant name — one of Manual, LevelHold, \
                        HeadingHold, Ascent, Orbit (and, on inference builds, RlLevelHold, \
-                       RlOrbit, RlOrbitResidual, RlLstmOrbit); RL kinds only take effect against \
+                       RlHeadingHold, RlOrbit, RlOrbitResidual, RlLstmOrbit); RL kinds only take effect against \
                        an inference-capable server (PID fallback otherwise). Wingman and \
                        FlightPlan are rejected (the generic builder would substitute a different \
                        controller). Errors if not connected or if no plane carries that id. \
@@ -586,7 +587,7 @@ impl PlanesService {
                        Only the fields that apply to the plane's *current* controller kind take \
                        effect — unset fields, and fields that don't apply, keep their current \
                        value: LevelHold/RlLevelHold use altitude+airspeed; Ascent uses altitude; \
-                       HeadingHold uses heading_deg (degrees)+altitude+airspeed; \
+                       HeadingHold/RlHeadingHold use heading_deg (degrees)+altitude+airspeed; \
                        Orbit/RlOrbit/RlOrbitResidual/RlLstmOrbit use \
                        center_x+center_z+radius+altitude+airspeed+direction (\"CW\"/\"CCW\"); \
                        Wingman uses leader_id (the new leader's PlaneId). Errors if not \

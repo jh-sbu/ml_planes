@@ -10,7 +10,7 @@
 //!   cargo run ... --bin train_ppo -- --task <task> --init-from models/<task>/<stem>
 //!
 //! Flags:
-//!   --task <level_hold|orbit>   Task / expert to clone (default: level_hold).
+//!   --task <level_hold|heading_hold|orbit>   Task / expert to clone (default: level_hold).
 //!   --steps <n>                 Demonstration steps to collect (default: 200_000).
 //!   --bc-epochs <n>             Supervised epochs over the dataset (default: 10).
 //!   --minibatch <n>             Minibatch size (default: 256).
@@ -27,10 +27,13 @@
 //!                               a long run's final checkpoint may not be byte-for-byte identical
 //!                               — see `train_ppo`'s `--seed` doc for detail. `wgpu` is
 //!                               best-effort only.
-//!   --target-alt-range <MIN:MAX|VALUE>    level_hold only: target altitude [m] the PID expert
-//!                               tracks is resampled from this range every demo episode
+//!   --target-alt-range <MIN:MAX|VALUE>    level_hold/heading_hold only: target altitude [m] the
+//!                               PID expert tracks is resampled from this range every demo episode
 //!                               (default: 500:5000). A bare VALUE pins a fixed target.
-//!   --target-speed-range <MIN:MAX|VALUE>  level_hold only: target airspeed [m/s] (default: 90:140).
+//!   --target-speed-range <MIN:MAX|VALUE>  level_hold/heading_hold only: target airspeed [m/s]
+//!                               (default: 90:140 for level_hold, 110:140 for heading_hold).
+//!   --target-heading-range <MIN:MAX|VALUE>  heading_hold only: target heading change [degrees]
+//!                               the PID expert tracks (default: -180:180).
 
 #[cfg(not(feature = "training"))]
 fn main() {
@@ -127,10 +130,30 @@ fn main() {
                 std::process::exit(2);
             })
         })
+        .unwrap_or_else(|| match task {
+            Task::HeadingHold => {
+                ml_planes::training::heading_hold_env::DEFAULT_TARGET_AIRSPEED_MIN
+                    ..=ml_planes::training::heading_hold_env::DEFAULT_TARGET_AIRSPEED_MAX
+            }
+            _ => {
+                ml_planes::training::level_hold_env::DEFAULT_TARGET_AIRSPEED_MIN
+                    ..=ml_planes::training::level_hold_env::DEFAULT_TARGET_AIRSPEED_MAX
+            }
+        });
+
+    let target_heading_range = find("--target-heading-range")
+        .map(|v| {
+            ml_planes::training::parse_f32_range(&v).unwrap_or_else(|e| {
+                eprintln!("--target-heading-range: {e}");
+                std::process::exit(2);
+            })
+        })
         .unwrap_or(
-            ml_planes::training::level_hold_env::DEFAULT_TARGET_AIRSPEED_MIN
-                ..=ml_planes::training::level_hold_env::DEFAULT_TARGET_AIRSPEED_MAX,
+            ml_planes::training::heading_hold_env::DEFAULT_TARGET_HEADING_DEG_MIN
+                ..=ml_planes::training::heading_hold_env::DEFAULT_TARGET_HEADING_DEG_MAX,
         );
+    let target_heading_range =
+        target_heading_range.start().to_radians()..=target_heading_range.end().to_radians();
 
     match backend {
         Backend::NdArray => run::<Autodiff<NdArray>>(
@@ -143,6 +166,7 @@ fn main() {
             seed,
             target_alt_range,
             target_speed_range,
+            target_heading_range,
         ),
         #[cfg(feature = "wgpu")]
         Backend::Wgpu => run::<Autodiff<Wgpu>>(
@@ -155,6 +179,7 @@ fn main() {
             seed,
             target_alt_range,
             target_speed_range,
+            target_heading_range,
         ),
     }
 }
@@ -163,6 +188,7 @@ fn main() {
 #[derive(Clone, Copy)]
 enum Task {
     LevelHold,
+    HeadingHold,
     Orbit,
 }
 
@@ -171,9 +197,10 @@ impl Task {
     fn parse(value: &str) -> Result<Self, String> {
         match value {
             "level_hold" => Ok(Self::LevelHold),
+            "heading_hold" => Ok(Self::HeadingHold),
             "orbit" => Ok(Self::Orbit),
             other => Err(format!(
-                "Unsupported --task '{other}'. Behavior cloning supports 'level_hold' or 'orbit'."
+                "Unsupported --task '{other}'. Behavior cloning supports 'level_hold', 'heading_hold', or 'orbit'."
             )),
         }
     }
@@ -181,6 +208,7 @@ impl Task {
     fn reward_config_path(self) -> &'static str {
         match self {
             Self::LevelHold => "assets/training/level_hold.reward.ron",
+            Self::HeadingHold => "assets/training/heading_hold.reward.ron",
             Self::Orbit => "assets/training/orbit.reward.ron",
         }
     }
@@ -188,6 +216,7 @@ impl Task {
     fn model_dir(self) -> &'static str {
         match self {
             Self::LevelHold => "level_hold",
+            Self::HeadingHold => "heading_hold",
             Self::Orbit => "orbit",
         }
     }
@@ -195,6 +224,7 @@ impl Task {
     fn default_stem(self) -> &'static str {
         match self {
             Self::LevelHold => "bc_level_hold",
+            Self::HeadingHold => "bc_heading_hold",
             Self::Orbit => "bc_orbit",
         }
     }
@@ -230,6 +260,7 @@ fn run<B>(
     seed: Option<u64>,
     target_alt_range: std::ops::RangeInclusive<f32>,
     target_speed_range: std::ops::RangeInclusive<f32>,
+    target_heading_range: std::ops::RangeInclusive<f32>,
 ) where
     B: burn::tensor::backend::AutodiffBackend,
     B::Device: Default,
@@ -240,9 +271,11 @@ fn run<B>(
     use ml_planes::plane::config::PlaneConfig;
     use ml_planes::training::ppo::PpoTrainer;
     use ml_planes::training::reward_config::{
-        load_reward_config, LevelHoldRewardConfig, OrbitRewardConfig,
+        load_reward_config, HeadingHoldRewardConfig, LevelHoldRewardConfig, OrbitRewardConfig,
     };
-    use ml_planes::training::{collect_demonstrations, DemonstrationEnv, LevelHoldEnv, OrbitEnv};
+    use ml_planes::training::{
+        collect_demonstrations, DemonstrationEnv, HeadingHoldEnv, LevelHoldEnv, OrbitEnv,
+    };
 
     // Generic jet values matching assets/planes/generic_jet.plane.ron
     let cfg = PlaneConfig {
@@ -298,6 +331,17 @@ fn run<B>(
         Task::LevelHold => {
             let reward_cfg: LevelHoldRewardConfig = load_or_default(path);
             let env = LevelHoldEnv::with_target_ranges(
+                target_alt_range,
+                target_speed_range,
+                cfg,
+                reward_cfg,
+            );
+            pretrain::<B, _>(env, steps, bc_epochs, minibatch, &save_path, seed);
+        }
+        Task::HeadingHold => {
+            let reward_cfg: HeadingHoldRewardConfig = load_or_default(path);
+            let env = HeadingHoldEnv::with_target_ranges(
+                target_heading_range,
                 target_alt_range,
                 target_speed_range,
                 cfg,

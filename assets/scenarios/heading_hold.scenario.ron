@@ -1,0 +1,23 @@
+// Single-plane heading-hold envelope check.
+//
+// Run: cargo run --example observe_state --no-default-features -- \
+//        --scenario assets/scenarios/heading_hold.scenario.ron --steps 3840 --interval 64
+//
+// Optional fields (omit for defaults): config (embedded generic_jet),
+// velocity (DEFAULT_SPEED along heading), heading_deg (0 = +X),
+// angular_velocity (zero), and HeadingHold `tuning` (default gains).
+(
+    steps: 3840,
+    interval: 64,
+    planes: [
+        (
+            name: "p",
+            position: (0.0, 1000.0, 0.0),
+            controller: HeadingHold(
+                heading_deg: 90.0,
+                altitude: 1000.0,
+                airspeed: 120.0,
+            ),
+        ),
+    ],
+)

@@ -151,6 +151,7 @@ pub fn spawnable_kind_names() -> &'static [&'static str] {
             "Ascent",
             "Orbit",
             "RlLevelHold",
+            "RlHeadingHold",
             "RlOrbit",
             "RlOrbitResidual",
             "RlLstmOrbit",
@@ -172,6 +173,8 @@ pub fn parse_spawnable_controller_kind(name: &str) -> Result<ControllerKind, Str
         "Orbit" => Ok(ControllerKind::Orbit),
         #[cfg(feature = "inference")]
         "RlLevelHold" => Ok(ControllerKind::RlLevelHold),
+        #[cfg(feature = "inference")]
+        "RlHeadingHold" => Ok(ControllerKind::RlHeadingHold),
         #[cfg(feature = "inference")]
         "RlOrbit" => Ok(ControllerKind::RlOrbit),
         #[cfg(feature = "inference")]

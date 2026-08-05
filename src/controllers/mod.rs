@@ -13,6 +13,8 @@ pub mod orbit;
 pub mod orbit_marker;
 pub mod pid;
 #[cfg(feature = "inference")]
+pub mod rl_heading_hold;
+#[cfg(feature = "inference")]
 pub mod rl_level_hold;
 #[cfg(feature = "inference")]
 pub mod rl_lstm_orbit;
@@ -44,6 +46,8 @@ pub use orbit::{
 };
 pub use orbit_marker::{active_orbit_center, OrbitMarker};
 pub use pid::PidController;
+#[cfg(feature = "inference")]
+pub use rl_heading_hold::{RlHeadingHoldConfig, RlHeadingHoldController};
 #[cfg(feature = "inference")]
 pub use rl_level_hold::RlLevelHoldController;
 #[cfg(feature = "inference")]

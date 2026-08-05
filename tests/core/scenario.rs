@@ -68,6 +68,16 @@ fn controller_spec_kind_maps_each_variant() {
         ControllerKind::FlightPlan
     );
     assert_eq!(ControllerSpec::Manual.kind(), ControllerKind::Manual);
+    assert_eq!(
+        ControllerSpec::RlHeadingHold {
+            model: "m".into(),
+            heading_deg: 90.0,
+            altitude: 500.0,
+            airspeed: 100.0,
+        }
+        .kind(),
+        ControllerKind::RlHeadingHold
+    );
 }
 
 const LEADER_WINGMAN: &str = r#"(
@@ -487,6 +497,7 @@ fn scenario_ids_are_contiguous_after_a_skip() {
 fn shipped_scenarios_parse_and_resolve() {
     for name in [
         "level_hold",
+        "heading_hold",
         "orbit",
         "wingman_formation",
         "mixed_powerplant",
@@ -590,6 +601,37 @@ fn stress_100_scenario_resolves_to_100_planes() {
                 .unwrap_or_else(|e| panic!("build stress_100 plane {idx} ({}): {e}", plane.name));
         }
     }
+}
+
+/// `RlHeadingHold` specs always parse (per the `ControllerSpec` enum's doc), regardless
+/// of whether `inference` is compiled in — mirrors the other RL variants.
+#[test]
+fn rl_heading_hold_spec_parses_and_resolves_to_rl_heading_hold_kind() {
+    let src = r#"(
+        steps: 10,
+        interval: 10,
+        planes: [
+            (
+                name: "rl_hh",
+                position: (0.0, 1000.0, 0.0),
+                velocity: (120.0, 0.0, 0.0),
+                controller: RlHeadingHold(
+                    model: "models/heading_hold/m",
+                    heading_deg: 45.0,
+                    altitude: 1000.0,
+                    airspeed: 120.0,
+                ),
+            ),
+        ],
+    )"#;
+    let resolved = Scenario::from_ron_str(src)
+        .expect("parse")
+        .resolve()
+        .expect("resolve");
+    assert_eq!(
+        resolved.planes[0].spec.kind(),
+        ControllerKind::RlHeadingHold
+    );
 }
 
 #[test]

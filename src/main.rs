@@ -162,7 +162,9 @@ fn tuning_profile_names(kind: ControllerKind, pt: &PlaneTuning) -> Option<Vec<St
             pt.level_hold.keys().cloned().collect()
         }
         ControllerKind::Orbit | ControllerKind::RlOrbit => pt.orbit.keys().cloned().collect(),
-        ControllerKind::HeadingHold => pt.heading_hold.keys().cloned().collect(),
+        ControllerKind::HeadingHold | ControllerKind::RlHeadingHold => {
+            pt.heading_hold.keys().cloned().collect()
+        }
         _ => return None,
     };
     names.sort();

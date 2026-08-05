@@ -9,9 +9,9 @@
 use crate::common::build_headless_app_with;
 use bevy::prelude::*;
 use ml_planes::controllers::{
-    ActiveController, ControllerKind, FormationOffset, LevelHoldController, LevelHoldTuning,
-    ManualController, PlaneTuning, SelectedTuningProfile, SimControlPlugin, TuningApplied,
-    WingmanController,
+    ActiveController, ControllerKind, FormationOffset, HeadingHoldController, HeadingHoldTuning,
+    LevelHoldController, LevelHoldTuning, ManualController, PlaneTuning, SelectedTuningProfile,
+    SimControlPlugin, TuningApplied, WingmanController,
 };
 use ml_planes::plane::{ControlInputs, FlightState, PlaneId, PlaneTuningHandle};
 
@@ -71,6 +71,70 @@ fn switching_controller_kind_rebuilds_active_controller() {
             .downcast_mut::<LevelHoldController>()
             .is_some(),
         "rebuild system swapped in a LevelHoldController after the kind change"
+    );
+}
+
+/// Regression guard for a bug fixed alongside `RlHeadingHold`: `apply_initial_tuning`'s
+/// tuning-family match had no `HeadingHold` arm at all, so on the tuning-asset-load frame
+/// a heading-hold plane got `level_hold` gains instead of `heading_hold` gains — while
+/// `apply_controller_switch` (a later profile switch) correctly used the `heading_hold`
+/// pool. This pins that the *initial* rebuild now reaches the same `heading_hold` profile.
+#[test]
+fn initial_tuning_applies_heading_hold_pool_to_heading_hold_controller() {
+    let mut app = build_headless_app_with(|app| {
+        app.add_plugins(SimControlPlugin);
+    });
+
+    let state = level_state(1000.0, 100.0);
+    let heading_hold = HeadingHoldController::from_state(&state, &ControlInputs::default());
+
+    let mut tuning = PlaneTuning::default();
+    // A distinctive level_hold gain that must NOT reach the controller — if the bug
+    // regresses, apply_initial_tuning falls through to this pool instead.
+    tuning.level_hold.insert(
+        "normal".to_string(),
+        LevelHoldTuning {
+            alt_kp: 9.87,
+            ..LevelHoldTuning::default()
+        },
+    );
+    tuning.heading_hold.insert(
+        "normal".to_string(),
+        HeadingHoldTuning {
+            heading_kp: 4.56,
+            ..HeadingHoldTuning::default()
+        },
+    );
+    let handle = app
+        .world_mut()
+        .resource_mut::<Assets<PlaneTuning>>()
+        .add(tuning);
+
+    let entity = app
+        .world_mut()
+        .spawn((
+            state,
+            ControlInputs::default(),
+            ActiveController(Box::new(heading_hold)),
+            ControllerKind::HeadingHold,
+            PlaneTuningHandle(handle),
+            SelectedTuningProfile("normal".to_string()),
+        ))
+        .id();
+
+    app.update();
+
+    let world = app.world_mut();
+    let mut ctrl = world.get_mut::<ActiveController>(entity).unwrap();
+    let hh = ctrl
+        .0
+        .as_any_mut()
+        .downcast_mut::<HeadingHoldController>()
+        .expect("controller must still be a HeadingHoldController after the tuning rebuild");
+    assert!(
+        (hh.heading_pid.kp - 4.56).abs() < 1e-6,
+        "apply_initial_tuning must apply the heading_hold pool, not level_hold; got kp={}",
+        hh.heading_pid.kp
     );
 }
 

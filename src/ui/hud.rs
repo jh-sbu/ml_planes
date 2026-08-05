@@ -601,7 +601,9 @@ fn net_tuning_names(kind: ControllerKind, pt: &PlaneTuning) -> Option<Vec<String
             pt.level_hold.keys().cloned().collect()
         }
         ControllerKind::Orbit | ControllerKind::RlOrbit => pt.orbit.keys().cloned().collect(),
-        ControllerKind::HeadingHold => pt.heading_hold.keys().cloned().collect(),
+        ControllerKind::HeadingHold | ControllerKind::RlHeadingHold => {
+            pt.heading_hold.keys().cloned().collect()
+        }
         _ => return None,
     };
     names.sort();
@@ -766,7 +768,7 @@ fn draw_alt_spd(ui: &mut egui::Ui, altitude: &mut f32, airspeed: &mut f32) -> bo
         let resp = ui.add(
             egui::DragValue::new(airspeed)
                 .speed(1.0)
-                .range(30.0..=200.0)
+                .range(30.0..=f32::MAX)
                 .suffix(" m/s"),
         );
         ui.label(format!("({:.0} kts)", tgt_kts));
@@ -1169,6 +1171,52 @@ mod tests {
             assert_eq!(
                 targets, original,
                 "empty input must not mutate targets for {original:?}"
+            );
+        }
+    }
+
+    /// The airspeed range has no upper bound (only a 30 m/s stall floor) — a target set
+    /// above the old 200 m/s ceiling (e.g. via MCP or a scenario) must survive an
+    /// unattended render pass unchanged, both in value and in reported `changed`. Before
+    /// the fix, `DragValue::range` silently clamped an out-of-range value on every frame
+    /// and reported it as a user edit, which on a networked client would spam a
+    /// `SetControllerTargetsCommand` that overwrote the real target back down to 200.
+    #[test]
+    fn target_airspeed_above_200_survives_a_render_pass() {
+        let state = FlightState::default();
+        let current_entity = entity(1);
+        let pairs = vec![(current_entity, PlaneId(1), 1u32)];
+
+        let variants = [
+            ControllerTargets::LevelHold {
+                altitude: 5000.0,
+                airspeed: 250.0,
+            },
+            ControllerTargets::HeadingHold {
+                heading: 0.3,
+                altitude: 5000.0,
+                airspeed: 250.0,
+            },
+            ControllerTargets::Orbit(OrbitParams {
+                center_x: 0.0,
+                center_z: 0.0,
+                target_radius: 1000.0,
+                target_altitude: 5000.0,
+                target_airspeed: 250.0,
+                direction: OrbitDirection::CounterClockwise,
+            }),
+        ];
+
+        for original in variants {
+            let mut targets = original;
+            let changed = run_draw_controller_targets(&mut targets, &state, &pairs, current_entity);
+            assert!(
+                !changed,
+                "an above-200 airspeed should not be reported as changed for {original:?}"
+            );
+            assert_eq!(
+                targets, original,
+                "an above-200 airspeed should survive a render pass unchanged for {original:?}"
             );
         }
     }

@@ -5,7 +5,7 @@
 //! metrics whose names depend on the observation layout (see
 //! `ml_planes::training::eval_metrics`).
 //!
-//! Supported tasks: `level_hold`, `orbit`, `residual_orbit`, `lstm_orbit`.
+//! Supported tasks: `level_hold`, `heading_hold`, `orbit`, `residual_orbit`, `lstm_orbit`.
 //! `lstm_orbit` loads a recurrent `LstmActorCritic` and carries hidden state
 //! across each episode (reset at every `env.reset()`); the others use the
 //! feed-forward `ActorCritic`.
@@ -15,7 +15,7 @@
 //!     --task orbit --model models/orbit/ppo_orbit_1 --episodes 64 --backend ndarray
 //!
 //! Flags:
-//!   --task <task>           level_hold | orbit | residual_orbit | lstm_orbit
+//!   --task <task>           level_hold | heading_hold | orbit | residual_orbit | lstm_orbit
 //!   --model <path>          Checkpoint path (with or without .mpk)
 //!   --episodes <n>          Episodes to roll out (default 64)
 //!   --max-steps <n>         Override the per-episode step cap (default: task config)
@@ -25,11 +25,13 @@
 //!   --curriculum-stage <s>  lstm_orbit only: coarse | heading_fine | full
 //!                           (default full). Selects the WuOrbit reward stage the
 //!                           policy is scored under; reported as curriculum_stage.
-//!   --target-alt-range <MIN:MAX|VALUE>    level_hold only: per-episode target altitude [m]
-//!                           range to evaluate across (default: 500:5000). Use the same
-//!                           range the policy was trained with for a comparable report.
-//!   --target-speed-range <MIN:MAX|VALUE>  level_hold only: target airspeed [m/s] range
-//!                           (default: 90:140).
+//!   --target-alt-range <MIN:MAX|VALUE>    level_hold/heading_hold only: per-episode target
+//!                           altitude [m] range to evaluate across (default: 500:5000). Use the
+//!                           same range the policy was trained with for a comparable report.
+//!   --target-speed-range <MIN:MAX|VALUE>  level_hold/heading_hold only: target airspeed [m/s]
+//!                           range (default: 90:140 for level_hold, 110:140 for heading_hold).
+//!   --target-heading-range <MIN:MAX|VALUE>  heading_hold only: target heading change [degrees]
+//!                           range to evaluate across (default: -180:180).
 
 #[cfg(not(feature = "inference"))]
 fn main() {
@@ -40,9 +42,13 @@ fn main() {
 fn main() {
     use burn::backend::NdArray;
     use ml_planes::training::eval_metrics::MetricFamily;
-    use ml_planes::training::reward_config::{LevelHoldRewardConfig, OrbitRewardConfig};
+    use ml_planes::training::reward_config::{
+        HeadingHoldRewardConfig, LevelHoldRewardConfig, OrbitRewardConfig,
+    };
     use ml_planes::training::wu_orbit_reward::WuOrbitRewardConfig;
-    use ml_planes::training::{LevelHoldEnv, OrbitEnv, ResidualOrbitEnv, WuOrbitEnv};
+    use ml_planes::training::{
+        HeadingHoldEnv, LevelHoldEnv, OrbitEnv, ResidualOrbitEnv, WuOrbitEnv,
+    };
 
     type B = NdArray;
 
@@ -78,6 +84,7 @@ fn main() {
     let mut reported_stage: Option<&'static str> = None;
     let mut reported_target_alt_range: Option<std::ops::RangeInclusive<f32>> = None;
     let mut reported_target_speed_range: Option<std::ops::RangeInclusive<f32>> = None;
+    let mut reported_target_heading_range_deg: Option<std::ops::RangeInclusive<f32>> = None;
     let metrics = match task.as_str() {
         "level_hold" => {
             let reward_cfg: LevelHoldRewardConfig =
@@ -113,6 +120,50 @@ fn main() {
                 MetricFamily::LevelHold,
             )
         }
+        "heading_hold" => {
+            let reward_cfg: HeadingHoldRewardConfig =
+                load_task_reward(&args, "assets/training/heading_hold.reward.ron");
+            let max_steps = parse_u32(&args, "--max-steps", reward_cfg.max_episode_steps);
+            let alt_range = parse_target_range(
+                &args,
+                "--target-alt-range",
+                ml_planes::training::level_hold_env::DEFAULT_TARGET_ALT_MIN,
+                ml_planes::training::level_hold_env::DEFAULT_TARGET_ALT_MAX,
+            );
+            let speed_range = parse_target_range(
+                &args,
+                "--target-speed-range",
+                ml_planes::training::heading_hold_env::DEFAULT_TARGET_AIRSPEED_MIN,
+                ml_planes::training::heading_hold_env::DEFAULT_TARGET_AIRSPEED_MAX,
+            );
+            let heading_range_deg = parse_target_range(
+                &args,
+                "--target-heading-range",
+                ml_planes::training::heading_hold_env::DEFAULT_TARGET_HEADING_DEG_MIN,
+                ml_planes::training::heading_hold_env::DEFAULT_TARGET_HEADING_DEG_MAX,
+            );
+            let heading_range =
+                heading_range_deg.start().to_radians()..=heading_range_deg.end().to_radians();
+            let mut env = HeadingHoldEnv::with_target_ranges(
+                heading_range,
+                alt_range.clone(),
+                speed_range.clone(),
+                cfg,
+                reward_cfg,
+            );
+            env.max_episode_steps = max_steps;
+            reported_target_alt_range = Some(alt_range);
+            reported_target_speed_range = Some(speed_range);
+            reported_target_heading_range_deg = Some(heading_range_deg);
+            let mut policy = load_ff_policy::<B>(&path, env_obs_dim(&env));
+            run_eval(
+                env,
+                episodes,
+                max_steps,
+                &mut policy,
+                MetricFamily::HeadingHold,
+            )
+        }
         "orbit" => {
             let reward_cfg: OrbitRewardConfig =
                 load_task_reward(&args, "assets/training/orbit.reward.ron");
@@ -145,7 +196,7 @@ fn main() {
         }
         other => {
             eprintln!(
-                "Unsupported --task '{other}'. Use 'level_hold', 'orbit', 'residual_orbit', or 'lstm_orbit'."
+                "Unsupported --task '{other}'. Use 'level_hold', 'heading_hold', 'orbit', 'residual_orbit', or 'lstm_orbit'."
             );
             std::process::exit(2);
         }
@@ -162,6 +213,9 @@ fn main() {
     }
     if let Some(r) = &reported_target_speed_range {
         println!("target_speed_range,{}:{}", r.start(), r.end());
+    }
+    if let Some(r) = &reported_target_heading_range_deg {
+        println!("target_heading_range_deg,{}:{}", r.start(), r.end());
     }
     println!("episodes,{}", metrics.core.episodes);
     println!("success_rate,{:.6}", metrics.core.success_rate);

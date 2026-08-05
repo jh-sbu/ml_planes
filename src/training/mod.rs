@@ -6,6 +6,7 @@ pub mod env;
 pub mod eval;
 pub mod eval_metrics;
 mod flight_env;
+pub mod heading_hold_env;
 pub mod level_hold_env;
 pub mod orbit_env;
 pub mod orbit_residual_env;
@@ -45,6 +46,7 @@ pub trait CurriculumEnv: TrainingEnv {
     /// Returns `f32::INFINITY` when already at the final stage.
     fn next_stage_threshold(&self) -> f32;
 }
+pub use heading_hold_env::HeadingHoldEnv;
 pub use level_hold_env::LevelHoldEnv;
 pub use orbit_env::OrbitEnv;
 pub use orbit_residual_env::ResidualOrbitEnv;
@@ -56,7 +58,7 @@ pub use ppo::{
     LstmPpoTrainer, LstmRolloutBuffer, LstmRolloutStep, LstmSequence, PpoTrainer, RolloutBuffer,
 };
 pub use ppo_config::PpoHyperparams;
-pub use reward_config::{LevelHoldRewardConfig, OrbitRewardConfig};
+pub use reward_config::{HeadingHoldRewardConfig, LevelHoldRewardConfig, OrbitRewardConfig};
 pub use vec_env::VecEnv;
 pub use wu_orbit_env::WuOrbitEnv;
 pub use wu_orbit_reward::{CurriculumStage, WuOrbitRewardConfig};

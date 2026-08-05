@@ -24,12 +24,14 @@ use burn::tensor::backend::Backend;
 
 use ml_planes::controllers::orbit::OrbitDirection;
 use ml_planes::controllers::{
-    ActiveController, ControllerKind, LevelHoldController, LevelHoldTuning, ModelLibrary,
-    OrbitTuning, PlaneTuning, RlLevelHoldController, RlOrbitConfig, RlOrbitController,
-    RlOrbitResidualConfig, RlOrbitResidualController, SelectedModel, SelectedTuningProfile,
-    SimControlPlugin, TuningApplied,
+    ActiveController, ControllerKind, HeadingHoldController, LevelHoldController, LevelHoldTuning,
+    ModelLibrary, OrbitTuning, PlaneTuning, RlHeadingHoldConfig, RlHeadingHoldController,
+    RlLevelHoldController, RlOrbitConfig, RlOrbitController, RlOrbitResidualConfig,
+    RlOrbitResidualController, SelectedModel, SelectedTuningProfile, SimControlPlugin,
+    TuningApplied,
 };
 use ml_planes::plane::{ControlInputs, FlightState, PlaneTuningHandle};
+use ml_planes::training::heading_hold_env::HEADING_HOLD_OBS_DIM;
 use ml_planes::training::level_hold_env::LEVEL_HOLD_OBS_DIM;
 use ml_planes::training::ppo::model::ActorCritic;
 
@@ -83,6 +85,14 @@ fn orbit_config() -> RlOrbitConfig {
         target_altitude: 800.0,
         target_airspeed: 100.0,
         direction: OrbitDirection::CounterClockwise,
+    }
+}
+
+fn heading_hold_config() -> RlHeadingHoldConfig {
+    RlHeadingHoldConfig {
+        target_heading: 0.5,
+        target_altitude: 1000.0,
+        target_airspeed: 120.0,
     }
 }
 
@@ -229,6 +239,168 @@ fn profile_switch_preserves_rl_level_hold_controller() {
             .is_some(),
         "controller must still be an RlLevelHoldController after the profile switch"
     );
+}
+
+/// Same clobber, heading-hold family: `apply_initial_tuning`'s tuning-family match routes
+/// `RlHeadingHold` through the (now-fixed) `heading_hold` tuning pool lookup, but
+/// `preserve_rl_controller` must still intercept before `kind.build()` runs, since
+/// `RlHeadingHoldController` has no PID gains for a tuning profile to apply to.
+///
+/// No checkpoint is shipped under `models/heading_hold/` yet (this feature's smoke
+/// checkpoint lands separately), so this saves a freshly-initialized (untrained but
+/// correctly-dimensioned) model to a temp path rather than embedding one via
+/// `include_bytes!`, mirroring `save_stale_model` but at the *current* obs dim.
+#[test]
+fn initial_tuning_preserves_rl_heading_hold_controller() {
+    let mut app = build_headless_app_with(|app| {
+        app.add_plugins(SimControlPlugin);
+    });
+
+    let state = level_state(1000.0, 120.0);
+    let model_path = save_stale_model(HEADING_HOLD_OBS_DIM, "heading_hold_valid");
+    let controller =
+        RlHeadingHoldController::load(model_path.to_str().unwrap(), heading_hold_config())
+            .expect("load model");
+
+    let handle = app
+        .world_mut()
+        .resource_mut::<Assets<PlaneTuning>>()
+        .add(tuning_asset());
+
+    let entity = app
+        .world_mut()
+        .spawn((
+            state,
+            ControlInputs::default(),
+            ActiveController(Box::new(controller)),
+            ControllerKind::RlHeadingHold,
+            SelectedModel(model_path.to_str().unwrap().to_string()),
+            PlaneTuningHandle(handle),
+            SelectedTuningProfile("normal".to_string()),
+        ))
+        .id();
+
+    app.update();
+
+    let world = app.world_mut();
+    let mut ctrl = world.get_mut::<ActiveController>(entity).unwrap();
+    assert!(
+        ctrl.0
+            .as_any_mut()
+            .downcast_mut::<RlHeadingHoldController>()
+            .is_some(),
+        "controller must still be an RlHeadingHoldController after the tuning rebuild"
+    );
+    assert!(
+        world.get::<TuningApplied>(entity).is_some(),
+        "TuningApplied must be inserted so the rebuild doesn't repeat every frame"
+    );
+
+    let _ = std::fs::remove_file(model_path.with_extension("mpk"));
+}
+
+/// A later profile switch (`apply_controller_switch`) has the identical clobber risk.
+#[test]
+fn profile_switch_preserves_rl_heading_hold_controller() {
+    let mut app = build_headless_app_with(|app| {
+        app.add_plugins(SimControlPlugin);
+    });
+
+    let state = level_state(1000.0, 120.0);
+    let model_path = save_stale_model(HEADING_HOLD_OBS_DIM, "heading_hold_valid_switch");
+    let controller =
+        RlHeadingHoldController::load(model_path.to_str().unwrap(), heading_hold_config())
+            .expect("load model");
+
+    let mut tuning = tuning_asset();
+    tuning.heading_hold.insert(
+        "aggressive".to_string(),
+        ml_planes::controllers::HeadingHoldTuning::default(),
+    );
+    let handle = app
+        .world_mut()
+        .resource_mut::<Assets<PlaneTuning>>()
+        .add(tuning);
+
+    let entity = app
+        .world_mut()
+        .spawn((
+            state,
+            ControlInputs::default(),
+            ActiveController(Box::new(controller)),
+            ControllerKind::RlHeadingHold,
+            SelectedModel(model_path.to_str().unwrap().to_string()),
+            PlaneTuningHandle(handle),
+            SelectedTuningProfile("normal".to_string()),
+        ))
+        .id();
+
+    app.update();
+
+    app.world_mut()
+        .get_mut::<SelectedTuningProfile>(entity)
+        .unwrap()
+        .set_if_neq(SelectedTuningProfile("aggressive".to_string()));
+    app.update();
+
+    let world = app.world_mut();
+    let mut ctrl = world.get_mut::<ActiveController>(entity).unwrap();
+    assert!(
+        ctrl.0
+            .as_any_mut()
+            .downcast_mut::<RlHeadingHoldController>()
+            .is_some(),
+        "controller must still be an RlHeadingHoldController after the profile switch"
+    );
+
+    let _ = std::fs::remove_file(model_path.with_extension("mpk"));
+}
+
+/// Mirrors `rl_level_hold_load_failure_demotes_kind`: a failed heading-hold model load
+/// must demote the kind label to `HeadingHold`, not leave it claiming `RlHeadingHold`
+/// while actually flying PID.
+#[test]
+fn rl_heading_hold_load_failure_demotes_kind() {
+    let mut app = build_headless_app_with(|app| {
+        app.add_plugins(SimControlPlugin);
+    });
+
+    app.update();
+
+    let stale_path = save_stale_model(HEADING_HOLD_OBS_DIM - 2, "heading_hold");
+
+    app.world_mut().insert_resource(ModelLibrary(
+        [(
+            "heading_hold".to_string(),
+            vec![stale_path.to_str().unwrap().to_string()],
+        )]
+        .into_iter()
+        .collect(),
+    ));
+
+    let state = level_state(1000.0, 120.0);
+    let placeholder = HeadingHoldController::from_state(&state, &ControlInputs::default());
+
+    let entity = app
+        .world_mut()
+        .spawn((
+            state,
+            ControlInputs::default(),
+            ActiveController(Box::new(placeholder)),
+            ControllerKind::RlHeadingHold,
+        ))
+        .id();
+
+    app.update();
+
+    let kind = app.world_mut().get::<ControllerKind>(entity).unwrap();
+    assert_eq!(
+        *kind,
+        ControllerKind::HeadingHold,
+        "a failed RL heading-hold model load must demote the kind label to HeadingHold"
+    );
+
+    let _ = std::fs::remove_file(stale_path.with_extension("mpk"));
 }
 
 /// Same clobber, orbit family: `apply_initial_tuning`'s orbit branch also routes RL orbit

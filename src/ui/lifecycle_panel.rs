@@ -80,6 +80,7 @@ const SPAWNABLE_KINDS: &[ControllerKind] = &[
     ControllerKind::HeadingHold,
     ControllerKind::Orbit,
     ControllerKind::RlLevelHold,
+    ControllerKind::RlHeadingHold,
     ControllerKind::RlOrbit,
     ControllerKind::RlOrbitResidual,
     ControllerKind::RlLstmOrbit,
@@ -501,6 +502,7 @@ mod tests {
     fn spawnable_kinds_include_rl_when_ml_enabled() {
         for k in [
             ControllerKind::RlLevelHold,
+            ControllerKind::RlHeadingHold,
             ControllerKind::RlOrbit,
             ControllerKind::RlOrbitResidual,
             ControllerKind::RlLstmOrbit,

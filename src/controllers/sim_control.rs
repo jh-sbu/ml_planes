@@ -23,9 +23,11 @@ use crate::controllers::{
 use crate::plane::{ControlInputs, FlightPlanHandle, FlightState, PlaneId, PlaneTuningHandle};
 
 #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
+use crate::controllers::heading_hold::ground_track_heading;
+#[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
 use crate::controllers::{
-    ModelLoadError, RlLevelHoldController, RlLstmOrbitController, RlOrbitController,
-    RlOrbitResidualController, SelectedModel,
+    HeadingHoldController, ModelLoadError, RlHeadingHoldController, RlLevelHoldController,
+    RlLstmOrbitController, RlOrbitController, RlOrbitResidualController, SelectedModel,
 };
 #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
 use crate::controllers::{OrbitTuning, RlLstmOrbitConfig, RlOrbitConfig, RlOrbitResidualConfig};
@@ -162,6 +164,19 @@ fn apply_model_switch(
                     Err(e) => report_skipped_model(&mut notes, &sel.0, &e),
                 }
             }
+            ControllerKind::RlHeadingHold => {
+                let (heading, altitude, airspeed) =
+                    heading_hold_targets_from_controller(&mut ctrl, state);
+                let config = crate::controllers::RlHeadingHoldConfig {
+                    target_heading: heading,
+                    target_altitude: altitude,
+                    target_airspeed: airspeed,
+                };
+                match RlHeadingHoldController::load(&sel.0, config) {
+                    Ok(new_ctrl) => ctrl.0 = Box::new(new_ctrl),
+                    Err(e) => report_skipped_model(&mut notes, &sel.0, &e),
+                }
+            }
             _ => {}
         }
     }
@@ -206,6 +221,7 @@ fn rl_kind_needs_load_on_change(
             | ControllerKind::RlOrbit
             | ControllerKind::RlOrbitResidual
             | ControllerKind::RlLstmOrbit
+            | ControllerKind::RlHeadingHold
     );
     is_rl && (!kind_added || !has_selected_model)
 }
@@ -250,6 +266,9 @@ fn apply_rl_controller_switch(
                 }
                 ControllerKind::RlLevelHold => {
                     kind.set_if_neq(ControllerKind::LevelHold);
+                }
+                ControllerKind::RlHeadingHold => {
+                    kind.set_if_neq(ControllerKind::HeadingHold);
                 }
                 _ => {}
             }
@@ -305,6 +324,22 @@ fn apply_rl_controller_switch(
                     }
                 }
             }
+            ControllerKind::RlHeadingHold => {
+                let (heading, altitude, airspeed) =
+                    heading_hold_targets_from_controller(&mut controller, state);
+                let config = crate::controllers::RlHeadingHoldConfig {
+                    target_heading: heading,
+                    target_altitude: altitude,
+                    target_airspeed: airspeed,
+                };
+                match RlHeadingHoldController::load(&path, config) {
+                    Ok(rl) => controller.0 = Box::new(rl),
+                    Err(e) => {
+                        report_skipped_model(&mut notes, &path, &e);
+                        kind.set_if_neq(ControllerKind::HeadingHold);
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -353,6 +388,32 @@ fn level_hold_targets_from_controller(
         return (lh.target_altitude, lh.target_airspeed);
     }
     (state.altitude, state.airspeed)
+}
+
+#[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
+fn heading_hold_targets_from_controller(
+    controller: &mut ActiveController,
+    state: &FlightState,
+) -> (f32, f32, f32) {
+    if let Some(rl) = controller
+        .0
+        .as_any_mut()
+        .downcast_mut::<RlHeadingHoldController>()
+    {
+        return (rl.target_heading, rl.target_altitude, rl.target_airspeed);
+    }
+    if let Some(hh) = controller
+        .0
+        .as_any_mut()
+        .downcast_mut::<HeadingHoldController>()
+    {
+        return (
+            hh.target_heading,
+            hh.inner.target_altitude,
+            hh.inner.target_airspeed,
+        );
+    }
+    (ground_track_heading(state), state.altitude, state.airspeed)
 }
 
 #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
@@ -510,6 +571,11 @@ fn preserve_rl_controller(
             .as_any_mut()
             .downcast_mut::<RlLstmOrbitController>()
             .is_some(),
+        ControllerKind::RlHeadingHold => ctrl
+            .0
+            .as_any_mut()
+            .downcast_mut::<RlHeadingHoldController>()
+            .is_some(),
         ControllerKind::RlOrbitResidual => {
             match ctrl
                 .0
@@ -609,6 +675,13 @@ fn apply_initial_tuning(
             | ControllerKind::RlLstmOrbit => pt
                 .get_orbit(profile_name)
                 .map(|t| t as &dyn ControllerTuning),
+            // Bug fix: this arm was missing entirely, so a heading-hold plane got
+            // `level_hold` gains here on the tuning-asset-load frame while
+            // `apply_controller_switch` (below) correctly used `heading_hold` gains —
+            // divergent tuning depending on which system fired first.
+            ControllerKind::HeadingHold | ControllerKind::RlHeadingHold => pt
+                .get_heading_hold(profile_name)
+                .map(|t| t as &dyn ControllerTuning),
             _ => pt
                 .get_level_hold(profile_name)
                 .map(|t| t as &dyn ControllerTuning),
@@ -698,7 +771,7 @@ fn apply_controller_switch(
                 | ControllerKind::RlLstmOrbit => pt
                     .get_orbit(profile_name)
                     .map(|t| t as &dyn ControllerTuning),
-                ControllerKind::HeadingHold => pt
+                ControllerKind::HeadingHold | ControllerKind::RlHeadingHold => pt
                     .get_heading_hold(profile_name)
                     .map(|t| t as &dyn ControllerTuning),
                 _ => pt
@@ -810,11 +883,49 @@ mod tests {
         // Interactive cycle to an RL kind: not added → load.
         assert!(rl_kind_needs_load_on_change(RlOrbit, false, false));
         // Every RL kind is covered.
-        for k in [RlLevelHold, RlOrbit, RlOrbitResidual, RlLstmOrbit] {
+        for k in [
+            RlLevelHold,
+            RlOrbit,
+            RlOrbitResidual,
+            RlLstmOrbit,
+            RlHeadingHold,
+        ] {
             assert!(rl_kind_needs_load_on_change(k, true, false));
         }
         // Non-RL kinds are never handled here.
         assert!(!rl_kind_needs_load_on_change(Orbit, true, false));
         assert!(!rl_kind_needs_load_on_change(LevelHold, false, false));
+    }
+
+    #[test]
+    fn heading_hold_targets_from_controller_reads_heading_hold_controller() {
+        let state = FlightState {
+            altitude: 1000.0,
+            airspeed: 100.0,
+            velocity: bevy::math::Vec3::new(100.0, 0.0, 0.0),
+            attitude: bevy::math::Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
+            ..Default::default()
+        };
+        let mut ctrl = ActiveController(Box::new(HeadingHoldController::new(&state, 0.7)));
+        let (heading, alt, spd) = heading_hold_targets_from_controller(&mut ctrl, &state);
+        assert!((heading - 0.7).abs() < 1e-5);
+        assert_eq!(alt, state.altitude);
+        assert_eq!(spd, state.airspeed);
+    }
+
+    #[test]
+    fn heading_hold_targets_from_controller_falls_back_to_state() {
+        let state = FlightState {
+            altitude: 2000.0,
+            airspeed: 90.0,
+            velocity: bevy::math::Vec3::new(90.0, 0.0, 0.0),
+            attitude: bevy::math::Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
+            ..Default::default()
+        };
+        let mut ctrl = ActiveController(Box::new(crate::controllers::ManualController::new()));
+        let (heading, alt, spd) = heading_hold_targets_from_controller(&mut ctrl, &state);
+        assert!((heading - ground_track_heading(&state)).abs() < 1e-5);
+        assert_eq!(alt, state.altitude);
+        assert_eq!(spd, state.airspeed);
     }
 }

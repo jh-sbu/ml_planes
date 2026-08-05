@@ -1,0 +1,54 @@
+// Reward and termination config for HeadingHoldEnv.
+// Edit here to retune training without recompiling.
+// Loaded at startup by train_ppo; falls back to compiled defaults if missing.
+//
+// Deliberately has NO |roll| penalty term (unlike level_hold's roll_scale/roll_weight):
+// bank is the control authority for turning here, so penalizing roll magnitude would fight
+// the task. Roll is governed instead by roll_rate (chatter guard) and bank_excess (an envelope
+// guard past the PID heading loop's own +-60 deg clamp, so the BC expert never incurs it).
+//
+// Suggested staged curriculum (see heading_hold_env module doc for the full recipe):
+//   train_ppo --task heading_hold --target-heading-range -30:30   --bc-steps 200000 --steps 1000000 --output hh_s1
+//   train_ppo --task heading_hold --target-heading-range -90:90   --init-from models/heading_hold/hh_s1 --steps 1000000 --output hh_s2
+//   train_ppo --task heading_hold --target-heading-range -180:180 --init-from models/heading_hold/hh_s2 --steps 2000000 --output hh_s3
+(
+    // Heading error term [rad]: -(|heading_error| / heading_error_scale) * heading_error_weight
+    heading_error_scale:  0.5,
+    heading_error_weight: 0.6,
+
+    // Altitude error term
+    alt_error_scale:      200.0,
+    alt_error_weight:     1.0,
+
+    // Airspeed error term
+    speed_error_scale:    50.0,
+    speed_error_weight:   0.5,
+
+    // Sideslip angle term [rad]
+    beta_scale:           0.5,
+    beta_weight:          0.15,
+
+    // Roll-RATE term [rad/s] — discourages aileron chatter without penalizing a held bank
+    roll_rate_scale:      1.0,
+    roll_rate_weight:     0.10,
+
+    // Bank-excess envelope guard: penalizes bank beyond bank_soft_limit (matches the PID
+    // heading loop's own +-FRAC_PI_3 clamp, so the BC expert never incurs this term)
+    bank_soft_limit:      1.0471975512,  // FRAC_PI_3 = 60 deg
+    bank_excess_scale:    0.35,
+    bank_excess_weight:   1.0,
+
+    // Constant per-step bonus while alive
+    alive_bonus:          0.01,
+
+    // Applied once on episode Failure (crash / speed collapse), never on Timeout — every
+    // other term above is negative, so without this an early failure is rewarded relative
+    // to riding out the episode.
+    terminal_failure_penalty: -50.0,
+
+    // Termination conditions
+    min_altitude:       10.0,   // [m] crash if below
+    max_altitude_error:  500.0, // [m] diverged if |alt - target| exceeds this
+    min_airspeed:        60.0,  // [m/s] stall/speed-collapse floor
+    max_episode_steps:  3600,   // 60s @ 60Hz — worst-case 180deg turn at the 110 m/s floor is ~30s
+)

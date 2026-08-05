@@ -32,7 +32,9 @@ pub const DEFAULT_PORT: u16 = 5555;
 /// v2: added `ControllerTelemetry` to the replicated set (controller status display).
 /// v3: added `ControllerTargets` to the replicated set + `SetControllerTargetsCommand`
 /// (editable controller setpoints from the client).
-pub const PROTOCOL_ID: u64 = 3;
+/// v4: added `ControllerKind::RlHeadingHold` (new enum discriminant — a stale peer
+/// would misread any kind serialized after it).
+pub const PROTOCOL_ID: u64 = 4;
 
 /// Switch the target plane's active controller (server rebuilds it).
 #[derive(Event, Serialize, Deserialize, Clone, Debug)]

@@ -27,8 +27,9 @@ src/
                   #   context.rs — ControllerContext (shared leader state for Wingman)
   controllers/    # FlightController trait + ControllerKind factory. Controllers:
                   #   manual.rs, level_hold.rs, heading_hold.rs, ascent.rs, orbit.rs,
-                  #   wingman.rs, l1.rs (L1 flight-plan), + 4 RL variants
-                  #   (rl_level_hold, rl_orbit, rl_orbit_residual, rl_lstm_orbit)
+                  #   wingman.rs, l1.rs (L1 flight-plan), + 5 RL variants
+                  #   (rl_level_hold, rl_heading_hold, rl_orbit, rl_orbit_residual,
+                  #   rl_lstm_orbit)
                   #   pid.rs — PidController<T> utility struct (NOT a FlightController)
                   #   guidance.rs — shared L1 + orbit bank-command primitives
                   #   flight_plan.rs — FlightPlan asset; tuning.rs — per-plane gain pools
@@ -63,7 +64,7 @@ src/
   training/
     env.rs          # TrainingEnv + CurriculumEnv traits, Observation/SpawnSpec/StepInfo
     flight_env.rs   # shared 6-DOF Euler integrator (integrate_state); pub(crate)-private
-    level_hold_env.rs, orbit_env.rs, orbit_residual_env.rs, wu_orbit_env.rs
+    level_hold_env.rs, heading_hold_env.rs, orbit_env.rs, orbit_residual_env.rs, wu_orbit_env.rs
     vec_env.rs      # VecEnv<E> — N parallel episodes
     reward_config.rs, wu_orbit_reward.rs, ppo_config.rs   # RON-backed configs
     bc.rs           # behavior cloning (DemonstrationEnv, collect_demonstrations, BcDataset)
@@ -102,10 +103,11 @@ src/
 | `OrbitController` | struct | 3-level cascade PID orbit around a fixed world-frame point |
 | `HeadingHoldController` | struct | Holds a configurable heading via an inner level-hold cascade |
 | `RlLevelHoldController` | struct | Burn `ActorCritic` policy for level hold (obs dim=13); `inference`/`training`-gated. Target altitude/airspeed are randomized per-episode in training (`LevelHoldEnv::with_target_ranges`, default 500–5000 m / 90–140 m/s) so one policy generalizes across the envelope; obs appends `density_ratio(altitude)` and raw airspeed so the network can actually distinguish operating points |
+| `RlHeadingHoldController` | struct | Burn `ActorCritic` policy for heading hold (obs dim=16); `inference`/`training`-gated. Obs = the 13-dim `level_hold_observation` prefix + `[sin(heading_err)/0.5, cos(heading_err), world-vertical turn_rate/0.2]` (`heading_hold_observation`); target heading/altitude/airspeed randomized per-episode via `HeadingHoldEnv::with_target_ranges` (default heading ±180°, airspeed 110–140 m/s — tighter than level-hold's 90 m/s floor, since the worst envelope corner can't sustain the bank a 180° turn needs). Takes an `RlHeadingHoldConfig { target_heading, target_altitude, target_airspeed }` (mirrors `RlOrbitConfig`); reports through the shared `ControllerTargets::HeadingHold` variant, same as the PID controller |
 | `RlOrbitController` | struct | Burn `ActorCritic` policy for orbit (obs dim=14); `inference`/`training`-gated |
 | `RlOrbitResidualController` | struct | Burn `ActorCritic` policy emitting residual deltas added to the PID orbit baseline (obs dim=14); paired with `ResidualOrbitEnv` |
 | `RlLstmOrbitController` | struct | Recurrent `LstmActorCritic` orbit policy (Wu et al. FC-LSTM-FC); carries `LstmHiddenState` across steps; paired with `WuOrbitEnv` |
-| `LevelHoldRewardConfig` / `OrbitRewardConfig` | plain structs | Reward weights, scales, alive bonus, failure penalty, and termination thresholds; loaded from `assets/training/*.reward.ron` at training startup |
+| `LevelHoldRewardConfig` / `HeadingHoldRewardConfig` / `OrbitRewardConfig` | plain structs | Reward weights, scales, alive bonus, failure penalty, and termination thresholds; loaded from `assets/training/*.reward.ron` at training startup. `HeadingHoldRewardConfig` has no `\|roll\|` penalty (bank is the control authority for turning) — instead a roll-*rate* term (chatter guard) plus a bank-*excess* term past ±60° (matching the PID heading loop's own clamp) |
 | `WuOrbitRewardConfig` / `CurriculumStage` | plain structs/enum | Wu et al. multiplicative-Gaussian orbit reward (`R^TT × R^PS × R^RS`) + 3-stage curriculum; from `wu_orbit.reward.ron` |
 | `PpoHyperparams` | plain struct | PPO training-loop config (gamma, gae_lambda, clip, lr, …); from `assets/training/*.ppo.ron` |
 | `WingmanController` | struct | Formation flight; holds a fixed offset in the leader's body frame via a heading-damped lateral cascade (cross-track → heading → bank) |
@@ -224,6 +226,12 @@ loaded) jet:
 # or directly:  cargo run --release --features training --bin train_ppo -- --task <t> --plain
 # then re-tune PID gains for the heavier jet via the `tune` skill (writes generic_jet.tuning.ron).
 ```
+
+**`heading_hold` task** (added after the fuel-model rework, so it was never affected by the
+history above — its 16-dim observation was current from the start). Only checkpoint shipped is
+`models/heading_hold/smoke_heading_hold.mpk`, a **pipeline smoke test** (100k steps, `--bc-steps
+20000 --bc-epochs 5 --target-heading-range -30:30`), not a flight-quality policy — run
+`train-evaluate-optimize` for one, then re-tune PID gains the same way as the other tasks.
 
 ### Action Spaces
 
@@ -523,10 +531,25 @@ Training environments (`LevelHoldEnv`, `OrbitEnv`, `ResidualOrbitEnv`, `WuOrbitE
   (also in that module) and the tests pinning it (`rl_inference::level_hold_controller_obs_matches_env_obs`,
   the `loading_stale_dim_level_hold_model_errors` dimension guard) exist specifically to catch a
   future drift between training and inference.
+- **Heading-hold observation contract:** same pattern, one layer up — `HeadingHoldEnv` and
+  `RlHeadingHoldController` both call `training::heading_hold_env::heading_hold_observation()`,
+  which itself calls `level_hold_observation()` for its first 13 elements and appends
+  `[sin(heading_error)/0.5, cos(heading_error), turn_rate/0.2]`. The heading error is shared
+  too — both the free function and the PID `HeadingHoldController::update` call
+  `controllers::heading_hold::heading_error()`, so RL and PID can never disagree on its sign
+  or its low-speed (`speed_xz > 1.0`) fallback. `HEADING_HOLD_OBS_DIM` (= `LEVEL_HOLD_OBS_DIM +
+  3`) and `rl_inference::{heading_hold_controller_obs_matches_env_obs,
+  loading_stale_dim_heading_hold_model_errors}` guard drift the same way. The heading term is
+  sin/cos-encoded rather than a raw `error/π` scalar specifically because episodes are sampled
+  across the full ±180° circle and a raw signed term would jump ±2.0 across the ±π boundary —
+  see the `heading_hold_env` module header for the full reasoning. This encoding also means
+  `eval_metrics::MetricFamily::HeadingHold`'s heading spec must read the value back via
+  `Source::CircularError` (`atan2(sin, cos)`), not `Source::Scaled` — the latter would fold a
+  ~170° error down to ~8°.
 
 ### RL Inference Pattern
 
-All four RL controllers (`RlLevelHoldController`, `RlOrbitController`,
+All five RL controllers (`RlLevelHoldController`, `RlHeadingHoldController`, `RlOrbitController`,
 `RlOrbitResidualController`, `RlLstmOrbitController`) follow the same pattern:
 
 - Backend: `burn`'s `ActorCritic<NdArray>` (CPU; no GPU required at inference time).
@@ -565,13 +588,17 @@ deviations from the paper).
 - `DemonstrationEnv` + `collect_demonstrations()` roll out the expert into a `BcDataset`
   (`training/bc.rs`).
 - The supervised model is saved under `models/<task>/<stem>.mpk`, then handed to
-  `train_ppo --init-from <path>` as a warm start. Supported for `level_hold` / `orbit`.
+  `train_ppo --init-from <path>` as a warm start. Supported for `level_hold` / `heading_hold` /
+  `orbit`. `heading_hold`'s BC expert (`HeadingHoldEnv::make_expert`) re-applies the episode's
+  actual (resampled) targets via `apply_targets` after construction — `HeadingHoldController::new`
+  alone would seed its inner altitude/airspeed from the *spawn* state, which differs from the
+  episode target by the reset's spawn offset.
 
 ### Policy Evaluation
 
 `evaluate_policy` (`src/bin/evaluate_policy.rs`, ndarray/CPU only) rolls a checkpoint
 out over N episodes and reports an `EvaluationSummary` (success rate + `TaskMetrics`
-families). Supports `--task {level_hold|orbit|residual_orbit|lstm_orbit}` and, for
+families). Supports `--task {level_hold|heading_hold|orbit|residual_orbit|lstm_orbit}` and, for
 `lstm_orbit`, `--curriculum-stage {coarse|heading_fine|full}`.
 
 ### Adding a New `ControllerKind` (Checklist)
@@ -580,27 +607,63 @@ families). Supports `--task {level_hold|orbit|residual_orbit|lstm_orbit}` and, f
 
 **PID / non-RL controller:**
 
-1. `kind.rs` — add variant to `ControllerKind` enum
+1. `kind.rs` — add variant to `ControllerKind` enum. Append it (don't insert in the middle) —
+   `ControllerKind` derives `Serialize`/`Deserialize` under `net`, and a mid-enum insertion
+   shifts every later variant's discriminant for a stale peer; bump `net::protocol::PROTOCOL_ID`
+   either way so a mismatched client/server fails cleanly instead of misreading a kind.
 2. `kind.rs` — `name()`: human-readable label
 3. `kind.rs` — `ALL`: add to the cycle list under the correct feature gate
 4. `kind.rs` — `build()`: factory arm
-5. `main.rs` — `apply_controller_switch`: add to the correct tuning family match (`Orbit` or `LevelHold` pattern)
-6. `main.rs` — `cycle_tune_profile`: same tuning family pattern
-7. If the controller has editable setpoints, implement `FlightController::targets()`/
+5. `kind.rs` — `is_heading_hold()`: add if the new kind uses the `heading_hold` tuning pool
+   (e.g. an RL variant of an existing PID-tuned kind)
+6. `controllers/sim_control.rs` — `apply_initial_tuning` **and** `apply_controller_switch`:
+   add to the correct tuning-family match (`Orbit`/`LevelHold`/`HeadingHold` pattern) in *both*
+   systems — they're two independent matches, easy to update one and miss the other (this is
+   exactly the bug fixed alongside `RlHeadingHold`: `apply_initial_tuning` had no `HeadingHold`
+   arm at all and silently fell through to `level_hold` gains)
+7. `main.rs` — `tuning_profile_names` **and** `ui/hud.rs` — `net_tuning_names`: the same
+   tuning-family match exists a third and fourth time, for the HUD's tune-profile dropdown /
+   `cycle_tune_profile` hotkey and the networked-client HUD equivalent. Both are non-exhaustive
+   (`_ => None`/`return None`), so a miss here is silent, not a compile error.
+8. If the controller has editable setpoints, implement `FlightController::targets()`/
    `apply_targets()` — reuse an existing `ControllerTargets` variant when the new controller's
-   widget set matches one already defined (e.g. any orbit-shaped controller reuses `Orbit`; see
-   `controllers/targets.rs`), and add a case to `tests/core/controller_targets.rs`. Skipping this
-   step means the new controller silently ships with an un-editable HUD on the networked client —
-   the exact bug class `ControllerTargets` exists to close (see the Client/Server Networking
-   section above).
+   widget set matches one already defined (e.g. any orbit-shaped controller reuses `Orbit`, any
+   heading-shaped controller reuses `HeadingHold`; see `controllers/targets.rs`), and add a case
+   to `tests/core/controller_targets.rs`. Skipping this step means the new controller silently
+   ships with an un-editable HUD on the networked client — the exact bug class `ControllerTargets`
+   exists to close (see the Client/Server Networking section above).
+9. `ui/map.rs` — `kind_color`: the only *exhaustive* `match` on `ControllerKind` — the compiler
+   forces you to place the new variant here, making it the reliable canary that you added one at
+   all.
+10. `ui/lifecycle_panel.rs` — `SPAWNABLE_KINDS` (the `inference`-gated list, if the new kind is
+    RL) + its `spawnable_kinds_include_rl_when_ml_enabled` test.
+11. `scenario.rs` — `ControllerSpec` variant (RL specs are deliberately **not**
+    `inference`-gated so `.scenario.ron` files stay parseable everywhere), `kind()`,
+    `rl_model_stem()` if RL, `build_controller`'s `inference`-gated arm, **and** its
+    `#[cfg(not(inference))]` catch-all `Err` arm — miss that last one and only the
+    non-inference build fails to compile, easy to not notice if you only build with
+    `--features inference`.
+12. `src/mcp/bridge.rs` — `spawnable_kind_names()` + `parse_spawnable_controller_kind()` (both
+    `inference`-gated per-arm for RL kinds); `src/mcp/service.rs` — the kind lists baked into
+    several `#[tool(description = "...")]` doc strings (grep the file for the sibling kind's
+    name; nothing enforces these at compile time).
 
 **RL controller — all of the above, plus:**
 
-8. `kind.rs` — `model_dir()`: return the `models/` subdirectory name (e.g. `"orbit_residual"`)
-9. `main.rs` — `#[cfg(any(feature = "inference", feature = "training"))]` import block: import `XxxController` and `XxxConfig`
-10. `main.rs` — `apply_rl_controller_switch` guard: add variant to the `matches!()` pattern
-11. `main.rs` — `apply_rl_controller_switch` match arm: call `::load()` with error fallback
-12. `main.rs` — `apply_model_switch` match arm: same `::load()` call for HUD model cycling
+13. `kind.rs` — `model_dir()`: return the `models/` subdirectory name (e.g. `"heading_hold"`)
+14. `src/controllers/mod.rs` — `#[cfg(feature = "inference")] pub mod rl_xxx;` + re-export
+    `RlXxxController` (and `RlXxxConfig`, if the controller has more than one/two setpoints —
+    mirror `RlOrbitConfig`/`RlHeadingHoldConfig` rather than bare positional args)
+15. `controllers/sim_control.rs` — the `inference`-gated import block, `apply_model_switch`
+    match arm, `rl_kind_needs_load_on_change` guard, `apply_rl_controller_switch`'s two match
+    arms (the "no checkpoint" demotion **and** the load-and-demote-on-error arm — miss the
+    demotion and a plane keeps the RL label while actually flying PID), and
+    `preserve_rl_controller`'s arm. Extend the `rl_kind_load_gate` test's hand-maintained kind
+    array.
+16. `Task::HeadingHold`-shaped work in each RL binary: `src/bin/train_ppo.rs`,
+    `src/bin/train_bc.rs`, `src/bin/evaluate_policy.rs` — task enum/parse/reward-config-path/
+    model_dir/default_stem, plus whatever per-task CLI flags the new obs/targets need (see
+    `--target-heading-range` as the template for a new per-task range flag).
 
 **A kind whose `build()` can't reconstruct its full state** (like `Wingman`, which needs a
 leader reference the generic factory doesn't have, or any RL kind, which needs a loaded model
@@ -611,7 +674,7 @@ switches. Add an extract/restore pair — snapshot the state that would be lost 
 `kind.build()`, then re-wrap the freshly built fallback controller *after* — in **both**
 systems, mirroring `extract_orbit_params`/`OrbitController::apply_params` (orbit geometry),
 `extract_wingman_params`/`restore_wingman` (wingman formation state), or
-`preserve_rl_controller` (all four RL kinds: a downcast check for the three pure-policy
+`preserve_rl_controller` (all five RL kinds: a downcast check for the four pure-policy
 controllers, `RlOrbitResidualController::retune` for the one RL kind that owns real PID
 gains). Unlike the other two, `preserve_rl_controller` doesn't need a restore step — it runs
 *instead of* `kind.build()` (returning `true`) rather than wrapping its output, since there's
@@ -636,7 +699,7 @@ nothing for the generic factory to contribute once a policy is loaded.
 
 ## 4. Maneuver Roadmap
 
-1. **Level flight hold** — COMPLETE. Cascade PID: altitude outer → pitch inner, airspeed, roll, yaw. RL policy trained (`RlLevelHoldController`, obs dim=13) over a randomized 500–5000 m / 90–140 m/s target envelope, configurable via `--target-alt-range`/`--target-speed-range` on `train_ppo`/`train_bc`/`evaluate_policy`.
+1. **Level flight hold** — COMPLETE. Cascade PID: altitude outer → pitch inner, airspeed, roll, yaw. RL policy trained (`RlLevelHoldController`, obs dim=13) over a randomized 500–5000 m / 90–140 m/s target envelope, configurable via `--target-alt-range`/`--target-speed-range` on `train_ppo`/`train_bc`/`evaluate_policy`. **Heading hold** (outer heading PID over the level-hold cascade, `HeadingHoldController`) is likewise COMPLETE, with an RL variant (`RlHeadingHoldController`, obs dim=16) added over a randomized ±180° target-heading-change / 500–5000 m / 110–140 m/s envelope, configurable via `--target-heading-range`/`--target-alt-range`/`--target-speed-range`. `models/heading_hold/smoke_heading_hold.mpk` is a **pipeline smoke checkpoint only** (100k steps, ±30° training range) — not flight-quality; run `train-evaluate-optimize` for a production policy.
 2. **Ascent** — COMPLETE. Climbs to target altitude then hands off to level hold.
 3. **Formation flight (wingman)** — COMPLETE. Follows leader at fixed body-frame offset (`WingmanController`).
 4. **Circular orbit** — COMPLETE. 3-level cascade PID around world-frame point. Three RL variants: `RlOrbitController` (direct, obs dim=14), `RlOrbitResidualController` (residual over PID), and `RlLstmOrbitController` (recurrent, Wu-curriculum). Policies also reachable via behavior-cloning warm start.
@@ -701,16 +764,20 @@ path = "src/bin/mcp.rs"
 > backend); `autodiff`/`train` (from `training`) run PPO/BC on top of it; `wgpu` (its own opt-in
 > crate feature) = GPU backend for training, selected at runtime via `--backend wgpu`
 > (`ml_planes::training::Backend`); `tui` = training progress display. `train_ppo` tasks:
-> `level_hold`, `orbit`, `residual_orbit`, `lstm_orbit`. Both `train_ppo` and `train_bc` accept
-> `--seed <u64>` to fix weight init, minibatch shuffling, and (per-env) episode resets for a
-> reproducible run's starting point — see the "Known nondeterminism" note in §6 for what it does
-> and does not guarantee. For `level_hold`, `train_ppo`, `train_bc`, and `evaluate_policy` all
-> accept `--target-alt-range <MIN:MAX|VALUE>` / `--target-speed-range <MIN:MAX|VALUE>` to set the
-> per-episode target-altitude/airspeed envelope the policy is trained/evaluated across (default
-> `500:5000` / `90:140`, jointly stall-feasible for the generic jet at full fuel); a bare `VALUE`
-> pins a single fixed target, reproducing the pre-randomization behavior. Parsed by the shared
-> `training::parse_f32_range`; pass the same ranges to `evaluate_policy` that a checkpoint was
-> trained with for a comparable report.
+> `level_hold`, `heading_hold`, `orbit`, `residual_orbit`, `lstm_orbit`. Both `train_ppo` and
+> `train_bc` accept `--seed <u64>` to fix weight init, minibatch shuffling, and (per-env) episode
+> resets for a reproducible run's starting point — see the "Known nondeterminism" note in §6 for
+> what it does and does not guarantee. For `level_hold`/`heading_hold`, `train_ppo`, `train_bc`,
+> and `evaluate_policy` all accept `--target-alt-range <MIN:MAX|VALUE>` / `--target-speed-range
+> <MIN:MAX|VALUE>` to set the per-episode target-altitude/airspeed envelope the policy is
+> trained/evaluated across (default `500:5000` / `90:140` for `level_hold`, `500:5000` / `110:140`
+> for `heading_hold` — the tighter airspeed floor keeps every sampled corner able to sustain the
+> bank a large heading change requires); a bare `VALUE` pins a single fixed target, reproducing
+> the pre-randomization behavior. `heading_hold` additionally accepts `--target-heading-range
+> <MIN:MAX|VALUE>` in **degrees** (default `-180:180`) for the per-episode target heading *change*
+> (spawns always start on ground track 0, so the sampled value is the required turn). All three
+> are parsed by the shared `training::parse_f32_range`; pass the same ranges to `evaluate_policy`
+> that a checkpoint was trained with for a comparable report.
 
 > **Bevy feature flag note:** `default-features = false` disables all optional
 > subsystems. `bevy_asset` **is** an optional feature of the `bevy` meta-crate
@@ -844,7 +911,13 @@ the binary + a module filter, e.g. `cargo test --no-default-features --test core
 - `mcp_e2e` — MCP end-to-end over real UDP: boots an `ml_planes_server` child, inspect + spawn/remove round-trip (`mcp`+`server`-gated, `#[ignore]`; run with `--features "mcp server" --test net -- --ignored mcp_e2e`)
 
 **`tests/rl/` (`inference`/`training`; the whole binary compiles out without an RL backend):**
-- `rl_inference` — RL controller load + deterministic inference (`inference`/`training`-gated)
+- `rl_inference` — RL controller load + deterministic inference (`inference`/`training`-gated),
+  incl. the level-hold and heading-hold obs-matches-env and stale-dimension guards, and each RL
+  controller's `targets()` round trip through its shared `ControllerTargets` variant
+- `rl_sim_control` — `SimControlPlugin`'s tuning-rebuild systems preserve a loaded RL policy
+  instead of silently replacing it with the PID fallback `ControllerKind::build()` produces
+  (`RlLevelHold`/`RlHeadingHold`/`RlOrbit`/`RlOrbitResidual`), plus the load-failure-demotes-kind
+  guard for `RlLevelHold`/`RlHeadingHold` (`inference`-gated)
 - `ppo_training` — short PPO rollout/update loops (level_hold + orbit), asserting no NaN in
   policy output after training; **not** a convergence/reward-trend check (see the "Known
   nondeterminism" note below) (training-gated; run with `--features training --test rl ppo_training::`)

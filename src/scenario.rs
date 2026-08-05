@@ -33,8 +33,9 @@ use crate::plane::{ControlInputs, FlightState, PlaneId};
 
 #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
 use crate::controllers::{
-    RlLevelHoldController, RlLstmOrbitConfig, RlLstmOrbitController, RlOrbitConfig,
-    RlOrbitController, RlOrbitResidualConfig, RlOrbitResidualController,
+    RlHeadingHoldConfig, RlHeadingHoldController, RlLevelHoldController, RlLstmOrbitConfig,
+    RlLstmOrbitController, RlOrbitConfig, RlOrbitController, RlOrbitResidualConfig,
+    RlOrbitResidualController,
 };
 
 const DEFAULT_STEPS: usize = 640;
@@ -184,6 +185,12 @@ pub enum ControllerSpec {
         altitude: f32,
         airspeed: f32,
     },
+    RlHeadingHold {
+        model: String,
+        heading_deg: f32,
+        altitude: f32,
+        airspeed: f32,
+    },
 }
 
 fn default_residual_scale() -> f32 {
@@ -207,6 +214,7 @@ impl ControllerSpec {
             ControllerSpec::RlOrbit { .. } => ControllerKind::RlOrbit,
             ControllerSpec::RlOrbitResidual { .. } => ControllerKind::RlOrbitResidual,
             ControllerSpec::RlLstmOrbit { .. } => ControllerKind::RlLstmOrbit,
+            ControllerSpec::RlHeadingHold { .. } => ControllerKind::RlHeadingHold,
         }
     }
 
@@ -232,7 +240,8 @@ impl ControllerSpec {
             ControllerSpec::RlLevelHold { model, .. }
             | ControllerSpec::RlOrbit { model, .. }
             | ControllerSpec::RlOrbitResidual { model, .. }
-            | ControllerSpec::RlLstmOrbit { model, .. } => Some(strip_mpk(model)),
+            | ControllerSpec::RlLstmOrbit { model, .. }
+            | ControllerSpec::RlHeadingHold { model, .. } => Some(strip_mpk(model)),
             _ => None,
         }
     }
@@ -479,6 +488,22 @@ impl ResolvedScenario {
                 .map(|c| Box::new(c) as Box<dyn FlightController>)
                 .map_err(|e| format!("failed to load RL model '{model}': {e}")),
             #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
+            ControllerSpec::RlHeadingHold {
+                model,
+                heading_deg,
+                altitude,
+                airspeed,
+            } => {
+                let config = RlHeadingHoldConfig {
+                    target_heading: heading_deg.to_radians(),
+                    target_altitude: *altitude,
+                    target_airspeed: *airspeed,
+                };
+                RlHeadingHoldController::load(&strip_mpk(model), config)
+                    .map(|c| Box::new(c) as Box<dyn FlightController>)
+                    .map_err(|e| format!("failed to load RL model '{model}': {e}"))
+            }
+            #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
             ControllerSpec::RlOrbit {
                 model,
                 altitude,
@@ -554,7 +579,8 @@ impl ResolvedScenario {
             ControllerSpec::RlLevelHold { .. }
             | ControllerSpec::RlOrbit { .. }
             | ControllerSpec::RlOrbitResidual { .. }
-            | ControllerSpec::RlLstmOrbit { .. } => Err(
+            | ControllerSpec::RlLstmOrbit { .. }
+            | ControllerSpec::RlHeadingHold { .. } => Err(
                 "RL controllers from .scenario.ron require a native build with --features inference"
                     .into(),
             ),
@@ -650,7 +676,7 @@ fn yaw_angle(attitude: Quat) -> f32 {
 /// Level base attitude (body +Z up → world +Y up), yawed by `heading_deg`.
 ///
 /// The yaw is negated so `heading_deg` matches the `atan2(z, x)` heading
-/// convention used by [`yaw_angle`] and `HeadingHoldController::heading_from_state`:
+/// convention used by [`yaw_angle`] and `heading_hold::ground_track_heading`:
 /// `heading_deg = 90` points the nose toward +Z (not -Z).
 fn initial_attitude(heading_deg: Option<f32>) -> Quat {
     let base = Quat::from_rotation_x(-FRAC_PI_2);
@@ -836,7 +862,7 @@ mod tests {
         let p = &r.planes[0];
         let v = p.state.velocity;
         // heading_deg must match the atan2(z, x) convention used by yaw_angle and
-        // HeadingHoldController::heading_from_state: heading 90° → flying +Z.
+        // heading_hold::ground_track_heading: heading 90° → flying +Z.
         assert!(v.x.abs() < 1.0, "vx={}", v.x);
         assert!(v.z > 0.0, "vz={} (heading 90° should fly +Z)", v.z);
         assert!((v.length() - DEFAULT_SPEED).abs() < 1e-3);

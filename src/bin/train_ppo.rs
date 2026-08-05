@@ -41,11 +41,17 @@
 //!                             closely, but a long run's final checkpoint may not be byte-for-byte
 //!                             identical. `wgpu` is best-effort only (GPU reduction order isn't
 //!                             guaranteed stable either).
-//!   --target-alt-range <MIN:MAX|VALUE>    level_hold only: target altitude [m] is resampled
-//!                             from this range every episode (default: 500:5000). A bare VALUE
-//!                             pins a single fixed target instead (old behavior).
-//!   --target-speed-range <MIN:MAX|VALUE>  level_hold only: target airspeed [m/s], same
-//!                             MIN:MAX|VALUE form (default: 90:140).
+//!   --target-alt-range <MIN:MAX|VALUE>    level_hold/heading_hold only: target altitude [m] is
+//!                             resampled from this range every episode (default: 500:5000). A
+//!                             bare VALUE pins a single fixed target instead (old behavior).
+//!   --target-speed-range <MIN:MAX|VALUE>  level_hold/heading_hold only: target airspeed [m/s],
+//!                             same MIN:MAX|VALUE form (default: 90:140 for level_hold, 110:140
+//!                             for heading_hold — see `heading_hold_env` module doc for why the
+//!                             heading task needs a tighter floor).
+//!   --target-heading-range <MIN:MAX|VALUE>  heading_hold only: target heading change
+//!                             [**degrees**] resampled every episode (default: -180:180). A bare
+//!                             VALUE pins a single fixed heading change. Spawns always start on
+//!                             ground track 0, so the sampled value IS the required turn.
 
 #[cfg(not(feature = "training"))]
 fn main() {
@@ -191,10 +197,34 @@ fn main() {
                 std::process::exit(2);
             })
         })
+        .unwrap_or_else(|| match task {
+            Task::HeadingHold => {
+                ml_planes::training::heading_hold_env::DEFAULT_TARGET_AIRSPEED_MIN
+                    ..=ml_planes::training::heading_hold_env::DEFAULT_TARGET_AIRSPEED_MAX
+            }
+            _ => {
+                ml_planes::training::level_hold_env::DEFAULT_TARGET_AIRSPEED_MIN
+                    ..=ml_planes::training::level_hold_env::DEFAULT_TARGET_AIRSPEED_MAX
+            }
+        });
+
+    // heading_hold only: target heading CHANGE [deg], converted to radians at the boundary
+    // (CLI/HUD convention is degrees; the env stores radians).
+    let target_heading_range = args
+        .windows(2)
+        .find(|w| w[0] == "--target-heading-range")
+        .map(|w| {
+            ml_planes::training::parse_f32_range(&w[1]).unwrap_or_else(|e| {
+                eprintln!("--target-heading-range: {e}");
+                std::process::exit(2);
+            })
+        })
         .unwrap_or(
-            ml_planes::training::level_hold_env::DEFAULT_TARGET_AIRSPEED_MIN
-                ..=ml_planes::training::level_hold_env::DEFAULT_TARGET_AIRSPEED_MAX,
+            ml_planes::training::heading_hold_env::DEFAULT_TARGET_HEADING_DEG_MIN
+                ..=ml_planes::training::heading_hold_env::DEFAULT_TARGET_HEADING_DEG_MAX,
         );
+    let target_heading_range =
+        target_heading_range.start().to_radians()..=target_heading_range.end().to_radians();
 
     let save_path = save_path_for(task, output_stem);
 
@@ -213,6 +243,7 @@ fn main() {
             bc_epochs,
             target_alt_range,
             target_speed_range,
+            target_heading_range,
         ),
         #[cfg(feature = "wgpu")]
         Backend::Wgpu => run::<Autodiff<Wgpu>>(
@@ -229,6 +260,7 @@ fn main() {
             bc_epochs,
             target_alt_range,
             target_speed_range,
+            target_heading_range,
         ),
     }
 }
@@ -237,6 +269,7 @@ fn main() {
 #[derive(Clone, Copy)]
 enum Task {
     LevelHold,
+    HeadingHold,
     Orbit,
     ResidualOrbit,
     LstmOrbit,
@@ -247,11 +280,12 @@ impl Task {
     fn parse(value: &str) -> Result<Self, String> {
         match value {
             "level_hold" => Ok(Self::LevelHold),
+            "heading_hold" => Ok(Self::HeadingHold),
             "orbit" => Ok(Self::Orbit),
             "residual_orbit" => Ok(Self::ResidualOrbit),
             "lstm_orbit" => Ok(Self::LstmOrbit),
             other => Err(format!(
-                "Unsupported --task '{other}'. Use 'level_hold', 'orbit', 'residual_orbit', or 'lstm_orbit'."
+                "Unsupported --task '{other}'. Use 'level_hold', 'heading_hold', 'orbit', 'residual_orbit', or 'lstm_orbit'."
             )),
         }
     }
@@ -259,6 +293,7 @@ impl Task {
     fn reward_config_path(self) -> &'static str {
         match self {
             Self::LevelHold => "assets/training/level_hold.reward.ron",
+            Self::HeadingHold => "assets/training/heading_hold.reward.ron",
             Self::Orbit | Self::ResidualOrbit => "assets/training/orbit.reward.ron",
             Self::LstmOrbit => "assets/training/wu_orbit.reward.ron",
         }
@@ -271,6 +306,7 @@ impl Task {
     fn default_ppo_config_path(self) -> Option<&'static str> {
         match self {
             Self::LevelHold => Some("assets/training/level_hold.ppo.ron"),
+            Self::HeadingHold => Some("assets/training/heading_hold.ppo.ron"),
             Self::Orbit | Self::ResidualOrbit | Self::LstmOrbit => None,
         }
     }
@@ -278,6 +314,7 @@ impl Task {
     fn model_dir(self) -> &'static str {
         match self {
             Self::LevelHold => "level_hold",
+            Self::HeadingHold => "heading_hold",
             Self::Orbit => "orbit",
             Self::ResidualOrbit => "orbit_residual",
             Self::LstmOrbit => "lstm_orbit",
@@ -287,6 +324,7 @@ impl Task {
     fn default_stem(self) -> &'static str {
         match self {
             Self::LevelHold => "ppo_level_hold",
+            Self::HeadingHold => "ppo_heading_hold",
             Self::Orbit => "ppo_orbit",
             Self::ResidualOrbit => "ppo_orbit_residual",
             Self::LstmOrbit => "ppo_lstm_orbit",
@@ -328,6 +366,7 @@ fn run<B>(
     bc_epochs: usize,
     target_alt_range: std::ops::RangeInclusive<f32>,
     target_speed_range: std::ops::RangeInclusive<f32>,
+    target_heading_range: std::ops::RangeInclusive<f32>,
 ) where
     B: burn::tensor::backend::AutodiffBackend,
     B::Device: Default,
@@ -337,10 +376,12 @@ fn run<B>(
     use ml_planes::plane::config::PlaneConfig;
     use ml_planes::training::ppo::CsvLog;
     use ml_planes::training::reward_config::{
-        load_reward_config, load_ron_config, LevelHoldRewardConfig, OrbitRewardConfig,
+        load_reward_config, load_ron_config, HeadingHoldRewardConfig, LevelHoldRewardConfig,
+        OrbitRewardConfig,
     };
     use ml_planes::training::{
-        LevelHoldEnv, OrbitEnv, PpoHyperparams, ResidualOrbitEnv, WuOrbitEnv, WuOrbitRewardConfig,
+        HeadingHoldEnv, LevelHoldEnv, OrbitEnv, PpoHyperparams, ResidualOrbitEnv, WuOrbitEnv,
+        WuOrbitRewardConfig,
     };
 
     fn open_log(
@@ -462,6 +503,59 @@ fn run<B>(
                 total_timesteps,
                 init_from,
                 LevelHoldEnv::with_target_ranges(
+                    target_alt_range,
+                    target_speed_range,
+                    cfg,
+                    reward_cfg,
+                ),
+                log,
+                &hp,
+                bc_steps,
+                bc_epochs,
+            )
+        }
+        Task::HeadingHold => {
+            let path = reward_path.as_str();
+            let reward_cfg: HeadingHoldRewardConfig = match load_reward_config(path) {
+                Ok(cfg) => {
+                    println!("Loaded reward config from {path}");
+                    cfg
+                }
+                Err(e) => {
+                    eprintln!("Warning: could not load {path}: {e}. Using defaults.");
+                    HeadingHoldRewardConfig::default()
+                }
+            };
+            let mut log_fields = reward_cfg.log_fields();
+            log_fields.extend(hp.log_fields());
+            log_fields.push((
+                "target_alt_range",
+                format!("{}:{}", target_alt_range.start(), target_alt_range.end()),
+            ));
+            log_fields.push((
+                "target_speed_range",
+                format!(
+                    "{}:{}",
+                    target_speed_range.start(),
+                    target_speed_range.end()
+                ),
+            ));
+            log_fields.push((
+                "target_heading_range_deg",
+                format!(
+                    "{}:{}",
+                    target_heading_range.start().to_degrees(),
+                    target_heading_range.end().to_degrees()
+                ),
+            ));
+            let log = open_log(&log_file, "heading_hold", path, log_fields);
+            run_training_loop_bc::<B, _>(
+                plain,
+                save_path,
+                total_timesteps,
+                init_from,
+                HeadingHoldEnv::with_target_ranges(
+                    target_heading_range,
                     target_alt_range,
                     target_speed_range,
                     cfg,

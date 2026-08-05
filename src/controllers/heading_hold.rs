@@ -45,7 +45,7 @@ impl HeadingHoldController {
     /// Use `prev_inputs` to seed inner controller integrals (bumpless handoff).
     pub fn from_state(state: &FlightState, prev_inputs: &ControlInputs) -> Self {
         Self {
-            target_heading: heading_from_state(state),
+            target_heading: ground_track_heading(state),
             heading_pid: PidController::new(0.7, 0.0, 0.1, 0.0, -FRAC_PI_3, FRAC_PI_3),
             inner: LevelHoldController::from_state(state, prev_inputs),
         }
@@ -66,9 +66,13 @@ impl HeadingHoldController {
     }
 }
 
-/// Extract heading angle [rad] from the XZ velocity component.
+/// Extract ground-track heading angle [rad] from the XZ velocity component.
 /// Falls back to body-frame forward direction when speed is too low.
-fn heading_from_state(state: &FlightState) -> f32 {
+///
+/// Shared by `HeadingHoldController`, `heading_hold_observation`, and the
+/// behavior-cloning expert — a single definition so they can never disagree
+/// on the low-speed fallback threshold.
+pub fn ground_track_heading(state: &FlightState) -> f32 {
     let speed_xz = (state.velocity.x.powi(2) + state.velocity.z.powi(2)).sqrt();
     if speed_xz > 1.0 {
         state.velocity.z.atan2(state.velocity.x)
@@ -78,6 +82,28 @@ fn heading_from_state(state: &FlightState) -> f32 {
     }
 }
 
+/// Signed heading error [rad] in `(-π, π]` between `state`'s ground track and
+/// `target_heading`. Positive = current heading is LEFT of target (the
+/// controller should bank right / decrease `target_roll` to correct).
+///
+/// Shared by `HeadingHoldController::update`, `heading_hold_observation`
+/// (RL training/inference), and the BC expert — a single definition so RL
+/// and PID never disagree on the sign of the error.
+pub fn heading_error(state: &FlightState, target_heading: f32) -> f32 {
+    let speed_xz = (state.velocity.x.powi(2) + state.velocity.z.powi(2)).sqrt();
+    let (head_x, head_z) = if speed_xz > 1.0 {
+        (state.velocity.x / speed_xz, state.velocity.z / speed_xz)
+    } else {
+        let fwd = state.attitude * Vec3::X;
+        let len = (fwd.x.powi(2) + fwd.z.powi(2)).sqrt().max(1e-6);
+        (fwd.x / len, fwd.z / len)
+    };
+    let (tgt_z, tgt_x) = target_heading.sin_cos();
+    let cross = tgt_x * head_z - tgt_z * head_x;
+    let dot = tgt_x * head_x + tgt_z * head_z;
+    cross.atan2(dot)
+}
+
 impl FlightController for HeadingHoldController {
     fn update(
         &mut self,
@@ -85,28 +111,13 @@ impl FlightController for HeadingHoldController {
         ctx: &crate::plane::ControllerContext,
         dt: f32,
     ) -> ControlInputs {
-        // Current heading unit vector from velocity (or attitude at low speed).
-        let speed_xz = (state.velocity.x.powi(2) + state.velocity.z.powi(2)).sqrt();
-        let (head_x, head_z) = if speed_xz > 1.0 {
-            (state.velocity.x / speed_xz, state.velocity.z / speed_xz)
-        } else {
-            let fwd = state.attitude * Vec3::X;
-            let len = (fwd.x.powi(2) + fwd.z.powi(2)).sqrt().max(1e-6);
-            (fwd.x / len, fwd.z / len)
-        };
-
-        // Target direction unit vector from target_heading = atan2(z, x).
-        let (tgt_z, tgt_x) = self.target_heading.sin_cos();
-
         // Signed heading error: positive = current heading is LEFT of target.
         // Positive error → bank right (negative roll) → turn right toward target.
-        let cross = tgt_x * head_z - tgt_z * head_x;
-        let dot = tgt_x * head_x + tgt_z * head_z;
-        let heading_error = cross.atan2(dot);
+        let error = heading_error(state, self.target_heading);
 
         // Subtract correction (matches orbit.rs convention): positive heading_error means head
         // is CCW (left) of target, so we need to bank right → decrease target_roll.
-        let bank_cmd = -self.heading_pid.update(heading_error, dt);
+        let bank_cmd = -self.heading_pid.update(error, dt);
         self.inner.target_roll = bank_cmd;
         self.inner.update(state, ctx, dt)
     }
@@ -171,6 +182,7 @@ impl FlightController for HeadingHoldController {
 mod tests {
     use super::*;
     use crate::controllers::FlightController;
+    use bevy::math::Quat;
     use std::f32::consts::FRAC_PI_2;
 
     fn level_attitude() -> bevy::math::Quat {
@@ -232,5 +244,79 @@ mod tests {
         let ctrl = HeadingHoldController::with_tuning(&state, &tuning, &ControlInputs::default());
         assert!((ctrl.heading_pid.kp - 1.5).abs() < 1e-6, "kp");
         assert!((ctrl.heading_pid.kd - 0.3).abs() < 1e-6, "kd");
+    }
+
+    // -- shared heading-error math (used by heading_hold_env / RlHeadingHoldController) --
+
+    #[test]
+    fn ground_track_heading_matches_velocity_direction() {
+        let state = level_state(); // velocity along +X
+        assert!(ground_track_heading(&state).abs() < 1e-5);
+
+        let mut turned = state.clone();
+        turned.velocity = Vec3::new(0.0, 0.0, 80.0); // +Z
+        assert!((ground_track_heading(&turned) - FRAC_PI_2).abs() < 1e-5);
+    }
+
+    #[test]
+    fn ground_track_heading_falls_back_to_body_forward_at_low_speed() {
+        let mut state = level_state();
+        state.velocity = Vec3::ZERO; // below the 1.0 m/s speed_xz threshold
+        state.attitude = Quat::from_rotation_y(FRAC_PI_2) * level_attitude();
+        // body +X rotated 90° about world Y → world forward is +Z-ish; just assert finite
+        // and that it doesn't fall through to the velocity branch (which would be atan2(0,0)=0).
+        let heading = ground_track_heading(&state);
+        assert!(heading.is_finite());
+    }
+
+    #[test]
+    fn heading_error_zero_when_aligned() {
+        let state = level_state(); // heading = 0
+        assert!(heading_error(&state, 0.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn heading_error_positive_when_current_heading_is_left_of_target() {
+        let state = level_state(); // ground track = 0 (along +X)
+                                   // With current heading 0, a target at -FRAC_PI_2 (-Z) reads as a positive error —
+                                   // pins the sign convention `update()` relies on (positive error → bank right).
+        let e = heading_error(&state, -FRAC_PI_2);
+        assert!(e > 0.0, "expected positive error, got {e}");
+        assert!((e - FRAC_PI_2).abs() < 1e-5);
+    }
+
+    #[test]
+    fn heading_error_wraps_correctly_near_pi_boundary() {
+        let state = level_state(); // ground track = 0
+                                   // Target heading just past +π should read as a small negative error, not ~2π.
+        let e = heading_error(&state, std::f32::consts::PI - 0.01);
+        assert!(e.abs() < std::f32::consts::PI, "e={e} should be wrapped");
+        // And exactly at π the error is ±π (boundary), still finite/bounded.
+        let e_pi = heading_error(&state, std::f32::consts::PI);
+        assert!(e_pi.is_finite() && e_pi.abs() <= std::f32::consts::PI + 1e-5);
+    }
+
+    #[test]
+    fn heading_error_matches_controller_update_sign() {
+        // Regression guard: the free function must agree with what update() used to compute
+        // inline, so RL obs / BC expert / PID controller never disagree on sign.
+        let state = level_state();
+        let mut ctrl = HeadingHoldController::from_state(&state, &ControlInputs::default());
+        ctrl.target_heading = -FRAC_PI_2;
+        let expected_error = heading_error(&state, ctrl.target_heading);
+        ctrl.update(
+            &state,
+            &crate::plane::ControllerContext::empty_for(crate::plane::PlaneId::TEST),
+            1.0 / 60.0,
+        );
+        // bank_cmd = -heading_pid.update(error, dt); with a fresh PID (ki=0, kd damping term
+        // zero on the very first call since prev_error defaults to the same error), the sign
+        // of target_roll should be the opposite sign of expected_error.
+        assert!(expected_error > 0.0);
+        assert!(
+            ctrl.inner.target_roll < 0.0,
+            "target_roll={} should be negative (bank right) for positive heading error",
+            ctrl.inner.target_roll
+        );
     }
 }

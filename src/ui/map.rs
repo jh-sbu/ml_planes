@@ -123,7 +123,8 @@ fn kind_color(kind: ControllerKind) -> egui::Color32 {
         ControllerKind::RlOrbit
         | ControllerKind::RlOrbitResidual
         | ControllerKind::RlLstmOrbit
-        | ControllerKind::RlLevelHold => egui::Color32::from_rgb(190, 110, 255), // purple
+        | ControllerKind::RlLevelHold
+        | ControllerKind::RlHeadingHold => egui::Color32::from_rgb(190, 110, 255), // purple
         ControllerKind::FlightPlan => egui::Color32::from_rgb(255, 170, 60), // orange
         ControllerKind::Manual => egui::Color32::from_rgb(200, 200, 200), // grey
     }

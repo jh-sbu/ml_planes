@@ -53,6 +53,12 @@ pub enum ControllerKind {
     /// the generic factory cannot construct it without the plan, so `build()`
     /// falls back to `Orbit`.
     FlightPlan,
+    /// ML-based heading hold (PPO policy). Controller must be constructed
+    /// explicitly via `RlHeadingHoldController::load()`; `build()` falls back
+    /// to `HeadingHold` (generic factory cannot produce an RL controller
+    /// without a model path). Declared last (append-only) so existing
+    /// bincode discriminants for a stale net peer don't shift.
+    RlHeadingHold,
 }
 
 impl ControllerKind {
@@ -71,6 +77,7 @@ impl ControllerKind {
         Self::Manual,
         Self::LevelHold,
         Self::HeadingHold,
+        Self::RlHeadingHold,
         Self::Ascent,
         Self::RlLevelHold,
         Self::Orbit,
@@ -93,6 +100,7 @@ impl ControllerKind {
             ControllerKind::RlOrbitResidual => "RL Orbit Residual",
             ControllerKind::RlLstmOrbit => "RL LSTM Orbit",
             ControllerKind::FlightPlan => "Flight Plan (L1)",
+            ControllerKind::RlHeadingHold => "RL Heading Hold",
         }
     }
 
@@ -104,13 +112,17 @@ impl ControllerKind {
             ControllerKind::RlOrbit => Some("orbit"),
             ControllerKind::RlOrbitResidual => Some("orbit_residual"),
             ControllerKind::RlLstmOrbit => Some("lstm_orbit"),
+            ControllerKind::RlHeadingHold => Some("heading_hold"),
             _ => None,
         }
     }
 
     /// Whether this kind uses the `heading_hold` tuning pool.
     pub fn is_heading_hold(self) -> bool {
-        matches!(self, ControllerKind::HeadingHold)
+        matches!(
+            self,
+            ControllerKind::HeadingHold | ControllerKind::RlHeadingHold
+        )
     }
 
     /// Return the next kind in the cycle (interactive UI; Wingman is excluded).
@@ -147,7 +159,8 @@ impl ControllerKind {
             ControllerKind::Ascent => {
                 Box::new(AscentController::new(state, state.altitude + 1000.0))
             }
-            ControllerKind::HeadingHold => match tuning {
+            // RlHeadingHold requires a model path — fall back to HeadingHold.
+            ControllerKind::HeadingHold | ControllerKind::RlHeadingHold => match tuning {
                 Some(t) => t.build(state, prev_inputs),
                 None => Box::new(HeadingHoldController::from_state(state, prev_inputs)),
             },
@@ -204,5 +217,32 @@ mod tests {
             .as_any_mut()
             .downcast_mut::<OrbitController>()
             .is_some());
+    }
+
+    #[cfg(feature = "inference")]
+    #[test]
+    fn rl_heading_hold_uses_heading_hold_model_dir() {
+        assert_eq!(
+            ControllerKind::RlHeadingHold.model_dir(),
+            Some("heading_hold")
+        );
+        assert!(ControllerKind::ALL.contains(&ControllerKind::RlHeadingHold));
+    }
+
+    #[test]
+    fn rl_heading_hold_builds_pid_heading_hold_fallback() {
+        let mut controller =
+            ControllerKind::RlHeadingHold.build(&state(), None, &ControlInputs::default());
+        assert!(controller
+            .as_any_mut()
+            .downcast_mut::<HeadingHoldController>()
+            .is_some());
+    }
+
+    #[test]
+    fn rl_heading_hold_uses_heading_hold_tuning_pool() {
+        assert!(ControllerKind::RlHeadingHold.is_heading_hold());
+        assert!(ControllerKind::HeadingHold.is_heading_hold());
+        assert!(!ControllerKind::LevelHold.is_heading_hold());
     }
 }

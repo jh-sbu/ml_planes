@@ -160,6 +160,10 @@ fn controller_kind_roundtrips() {
         ControllerKind::Orbit,
         ControllerKind::FlightPlan,
         ControllerKind::Wingman,
+        // Appended (protocol v4) — round-trip it like every other variant even
+        // though the variant only *builds* on inference builds; Serialize/Deserialize
+        // are unconditional on the enum.
+        ControllerKind::RlHeadingHold,
     ] {
         assert_ron_roundtrip(&kind);
     }
