@@ -1,0 +1,23 @@
+// PPO hyperparameters for the FINAL fine-tune stage that produced
+// models/heading_hold/hh_s3g_verylowlr_bigbatch.mpk — see heading_hold_tight_tracking.reward.ron
+// for the full recipe and the earlier stages this continues from. NOT the task default; pass
+// explicitly via --ppo-config. entropy_coef MUST be 0.0: the task default (0.005, tuned for
+// training a heading policy from random init) actively destabilizes PPO once the policy is
+// already BC-pretrained/converged — a 2026-08-05 diagnostic batch found entropy grew
+// unboundedly and value_loss oscillated wildly under entropy_coef=0.005 + the current
+// terminal_failure_penalty scale, while entropy_coef=0.0 (mirroring level_hold.ppo.ron)
+// converged cleanly in the same run. lr=3e-5 (10x below the task default 3e-4) and
+// rollout_steps=4096 (2x the default 2048, for a lower-variance value target) are what closed
+// the final altitude-tracking gap after several coarser passes plateaued around 1.3-2m.
+(
+    gamma: 0.99,
+    gae_lambda: 0.95,
+    clip_epsilon: 0.1,
+    value_coef: 0.5,
+    entropy_coef: 0.0,
+    lr: 0.00003,
+    rollout_steps: 4096,
+    n_epochs: 4,
+    minibatch: 64,
+    seed: Some(44),
+)

@@ -1,0 +1,76 @@
+// Tightened variant of heading_hold.reward.ron for a "stably ≤1m alt / ≤1m/s speed / ≤1deg
+// heading" tail-tracking target — NOT wired in as the task default; pass explicitly via
+// --reward-config. Promoted from a 2026-08-05 /goal session
+// (target/skill-runs/heading_hold-goal-20260805/): a `heading_hold-goal-tight1` run chain
+// starting from the default reward's own BC+curriculum baseline, tightening
+// alt_error_scale/speed_error_scale/heading_error_weight, then a low-LR (3e-5) + doubled
+// rollout_steps (4096) fine-tune pass — reused `models/heading_hold/hh_s3g_verylowlr_bigbatch.mpk`
+// closed the gap. Final 1000-episode eval at the full -180:180 target-heading-range:
+// success_rate=1.0, mean_tail_abs_heading_rad=0.0078 (0.44deg), mean_tail_abs_altitude_m=0.816,
+// mean_tail_abs_speed_mps=0.494 — matches heading_hold_tight_tracking.ppo.ron (entropy_coef
+// MUST be 0.0, not the default 0.005 — see that file's comment for why).
+//
+// Deliberately has NO |roll| penalty term (unlike level_hold's roll_scale/roll_weight):
+// bank is the control authority for turning here, so penalizing roll magnitude would fight
+// the task. Roll is governed instead by roll_rate (chatter guard) and bank_excess (an envelope
+// guard past the PID heading loop's own +-60 deg clamp, so the BC expert never incurs it).
+//
+// heading_hold_tight_tracking.ppo.ron pairs with this file as the FINAL fine-tune stage's
+// hyperparameters only (lr=3e-5, rollout_steps=4096) — the run that produced
+// hh_s3g_verylowlr_bigbatch.mpk got there via a longer staged process (default reward's own
+// -30/-90/-180 curriculum, entropy_coef forced to 0.0 throughout, then several rounds of
+// reward-scale search and progressively-lower-LR continuation passes); reusing this ppo
+// config from scratch on the default reward.ron is not expected to reproduce the result in
+// one shot. Full per-stage configs/logs: target/skill-runs/heading_hold-goal-20260805/.
+(
+    // Heading error term [rad]: -(|heading_error| / heading_error_scale) * heading_error_weight
+    heading_error_scale:  0.5,
+    heading_error_weight: 1.2,
+
+    // Altitude error term
+    alt_error_scale:      60.0,
+    alt_error_weight:     1.0,
+
+    // Airspeed error term
+    speed_error_scale:    10.0,
+    speed_error_weight:   0.5,
+
+    // Sideslip angle term [rad]
+    beta_scale:           0.5,
+    beta_weight:          0.15,
+
+    // Roll-RATE term [rad/s] — discourages aileron chatter without penalizing a held bank
+    roll_rate_scale:      1.0,
+    roll_rate_weight:     0.10,
+
+    // Bank-excess envelope guard: penalizes bank beyond bank_soft_limit (matches the PID
+    // heading loop's own +-FRAC_PI_3 clamp, so the BC expert never incurs this term)
+    bank_soft_limit:      1.0471975512,  // FRAC_PI_3 = 60 deg
+    bank_excess_scale:    0.35,
+    bank_excess_weight:   1.0,
+
+    // Constant per-step bonus while alive
+    alive_bonus:          0.01,
+
+    // Applied once on episode Failure (crash / speed collapse), never on Timeout — every
+    // other term above is negative, so without this an early failure is rewarded relative
+    // to riding out the episode. Sized to the worst-case *discounted* cost of that
+    // alternative, not just its per-step magnitude: at gamma=0.99 the discount horizon is
+    // 1/(1-gamma) = 100 steps, and the worst-case per-step heading term (180 deg error) is
+    // -(pi/heading_error_scale)*heading_error_weight = -(pi/0.5)*1.2 ~= -7.54 (heading_error_weight
+    // is doubled here vs. the default heading_hold.reward.ron's 0.6, to pull tail heading error
+    // tighter), so sitting at max error forever discounts to ~= -754. -1000.0 preserves
+    // (in fact slightly exceeds) the ~1.33x margin the default profile's -500.0/-377 pairing
+    // established over its own 0.6-weight worst case — the penalty must exceed the discounted
+    // cost or a policy that deliberately stalls out (min_airspeed floor is a couple seconds
+    // away) beats one that completes a hard turn. See reward_config.rs's
+    // heading_hold_failure_penalty_covers_discounted_horizon test (default-profile only;
+    // this file's own margin was checked by hand above, not by that test).
+    terminal_failure_penalty: -1000.0,
+
+    // Termination conditions
+    min_altitude:       10.0,   // [m] crash if below
+    max_altitude_error:  500.0, // [m] diverged if |alt - target| exceeds this
+    min_airspeed:        60.0,  // [m/s] stall/speed-collapse floor
+    max_episode_steps:  3600,   // 60s @ 60Hz — worst-case 180deg turn at the 110 m/s floor is ~30s
+)
