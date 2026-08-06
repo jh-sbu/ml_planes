@@ -99,7 +99,15 @@ pub const DEFAULT_TARGET_AIRSPEED_MIN: f32 = 110.0;
 pub const DEFAULT_TARGET_AIRSPEED_MAX: f32 = 140.0;
 
 const MIN_SPAWN_ALTITUDE_MARGIN: f32 = 50.0;
-const MIN_SPAWN_AIRSPEED: f32 = 70.0;
+/// Spawn is never closer than this to `min_airspeed`, the instant-termination floor.
+///
+/// Expressed as a *margin over the reward config's floor* rather than a bare airspeed,
+/// mirroring the `min_altitude + MIN_SPAWN_ALTITUDE_MARGIN` clamp below, so it tracks a
+/// retuned `min_airspeed` automatically. A bare constant stops being a margin the moment
+/// the target envelope moves down: at a 90 m/s target with the ±20 spawn offset, the old
+/// flat 70.0 put episode starts 10 m/s from instant failure. A hard turn at the envelope
+/// floor bleeds speed fast, so such an episode is unlearnable rather than merely hard.
+const MIN_SPAWN_AIRSPEED_MARGIN: f32 = 20.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TerminationReason {
@@ -321,7 +329,8 @@ impl TrainingEnv for HeadingHoldEnv {
         );
         let spawn_alt = (self.target_altitude + alt_offset)
             .max(self.reward_cfg.min_altitude + MIN_SPAWN_ALTITUDE_MARGIN);
-        let spawn_spd = (self.target_airspeed + spd_offset).max(MIN_SPAWN_AIRSPEED);
+        let spawn_spd = (self.target_airspeed + spd_offset)
+            .max(self.reward_cfg.min_airspeed + MIN_SPAWN_AIRSPEED_MARGIN);
 
         let droll = self.rng.next_f32(-ROLL_RANGE, ROLL_RANGE);
         let dpitch = self.rng.next_f32(-PITCH_RANGE, PITCH_RANGE);
@@ -697,6 +706,34 @@ mod tests {
         );
     }
 
+    /// A hard turn at the envelope floor bleeds speed fast, and `min_airspeed` is an
+    /// *instant* episode failure — so an episode that spawns already inside the bleed
+    /// budget is unlearnable, not merely hard. The spawn clamp must therefore be
+    /// expressed as a margin over the termination floor, not as a bare constant that
+    /// silently stops being a margin when the target envelope moves down.
+    #[test]
+    fn spawn_airspeed_keeps_margin_over_termination_floor() {
+        let reward_cfg = HeadingHoldRewardConfig::default();
+        let min_air = reward_cfg.min_airspeed;
+        let mut env = HeadingHoldEnv::with_target_ranges(
+            0.0..=0.0,
+            1000.0..=1000.0,
+            // The floor `DEFAULT_TARGET_AIRSPEED_MIN` is about to become (commit 4).
+            90.0..=90.0,
+            jet_cfg(),
+            reward_cfg,
+        );
+        for _ in 0..200 {
+            env.reset();
+            let spawn = env.current_state().airspeed;
+            assert!(
+                spawn >= min_air + MIN_SPAWN_AIRSPEED_MARGIN,
+                "spawn {spawn} m/s leaves under {MIN_SPAWN_AIRSPEED_MARGIN} m/s \
+                 over the min_airspeed {min_air} instant-fail floor"
+            );
+        }
+    }
+
     #[test]
     fn spawn_airspeed_is_clamped() {
         let mut env = HeadingHoldEnv::with_target_ranges(
@@ -708,11 +745,12 @@ mod tests {
         );
         env.airspeed_spawn_offset_range = -1000.0..=-1000.0;
         env.reset();
+        let floor = HeadingHoldRewardConfig::default().min_airspeed + MIN_SPAWN_AIRSPEED_MARGIN;
         assert!(
-            env.current_state().airspeed >= MIN_SPAWN_AIRSPEED,
+            env.current_state().airspeed >= floor,
             "airspeed {} should be clamped above {}",
             env.current_state().airspeed,
-            MIN_SPAWN_AIRSPEED
+            floor
         );
     }
 
