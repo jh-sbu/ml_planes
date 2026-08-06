@@ -276,6 +276,7 @@ impl HeadingHoldEnv {
         let beta = self.state.beta.abs();
         let p = self.state.angular_velocity.x.abs();
         let bank_excess = (roll_angle(self.state.attitude).abs() - c.bank_soft_limit).max(0.0);
+        let alpha_excess = (self.state.alpha.abs() - c.alpha_soft_limit).max(0.0);
 
         -(heading_err / c.heading_error_scale) * c.heading_error_weight
             - (alt_err / c.alt_error_scale) * c.alt_error_weight
@@ -283,6 +284,7 @@ impl HeadingHoldEnv {
             - (beta / c.beta_scale) * c.beta_weight
             - (p / c.roll_rate_scale) * c.roll_rate_weight
             - (bank_excess / c.bank_excess_scale) * c.bank_excess_weight
+            - (alpha_excess / c.alpha_excess_scale) * c.alpha_excess_weight
             + c.alive_bonus
     }
 
@@ -461,6 +463,56 @@ mod tests {
     fn env_dt_is_the_shared_physics_dt() {
         let env = HeadingHoldEnv::new(0.0, 1000.0, 120.0, jet_cfg());
         assert_eq!(env.dt, PHYSICS_DT);
+    }
+
+    /// Angle-of-attack margin guard: past `alpha_soft_limit` the reward must fall
+    /// off linearly, the same shape as the bank-excess guard. Without it nothing in
+    /// the reward keeps a policy off `cl_max` — at the low-speed/high-altitude corner
+    /// of the envelope (90 m/s at 5000 m, where level flight already needs CL ≈ 1.15
+    /// of the generic jet's 1.4 max) a policy that keeps pulling for altitude or turn
+    /// rate rides α past the stall and departs, which is exactly what a live-sim
+    /// rollout of the pre-guard checkpoints did.
+    #[test]
+    fn alpha_excess_beyond_soft_limit_reduces_reward() {
+        let mut reward_cfg = HeadingHoldRewardConfig::default();
+        reward_cfg.alpha_soft_limit = 0.26;
+        reward_cfg.alpha_excess_scale = 0.1;
+        reward_cfg.alpha_excess_weight = 1.0;
+        let mut env = HeadingHoldEnv::with_reward_config(0.0, 1000.0, 120.0, jet_cfg(), reward_cfg);
+        env.reset();
+
+        env.state.alpha = 0.26;
+        let at_limit = env.compute_reward();
+        env.state.alpha = 0.36; // 0.1 rad past the limit = one full `scale`
+        let past_limit = env.compute_reward();
+
+        assert!(
+            (at_limit - past_limit - 1.0).abs() < 1e-4,
+            "0.1 rad past a 0.1-rad scale at weight 1.0 must cost exactly 1.0 \
+             (at_limit {at_limit}, past_limit {past_limit})"
+        );
+    }
+
+    /// Below the soft limit the guard must be completely inert — ordinary slow flight
+    /// at altitude legitimately sits at a high-ish α and must not be penalized for it.
+    #[test]
+    fn alpha_below_soft_limit_is_not_penalized() {
+        let mut reward_cfg = HeadingHoldRewardConfig::default();
+        reward_cfg.alpha_soft_limit = 0.26;
+        reward_cfg.alpha_excess_scale = 0.1;
+        reward_cfg.alpha_excess_weight = 1.0;
+        let mut env = HeadingHoldEnv::with_reward_config(0.0, 1000.0, 120.0, jet_cfg(), reward_cfg);
+        env.reset();
+
+        env.state.alpha = 0.10;
+        let low = env.compute_reward();
+        env.state.alpha = 0.26;
+        let at_limit = env.compute_reward();
+
+        assert!(
+            (low - at_limit).abs() < 1e-6,
+            "α below the soft limit must cost nothing (low {low}, at_limit {at_limit})"
+        );
     }
 
     /// The alternate constructors route through `new()` today, but nothing pinned

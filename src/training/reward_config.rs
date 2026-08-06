@@ -84,6 +84,21 @@ pub struct HeadingHoldRewardConfig {
     pub bank_soft_limit: f32,
     pub bank_excess_scale: f32,
     pub bank_excess_weight: f32,
+    /// Angle-of-attack magnitude [rad] below which no α-excess penalty applies.
+    /// The bank guard above caps *commanded* bank, but bank is not what stalls the
+    /// airframe — α is, and at the low-speed/high-altitude corner (90 m/s at 5000 m,
+    /// where level flight already needs CL ≈ 1.15 of the generic jet's 1.4 `cl_max`)
+    /// even a modest bank runs α past the stall. Nothing else in this reward keeps a
+    /// policy off `cl_max`: `compute_aero_forces` just clamps CL, so the airframe
+    /// mushes and departs while the policy keeps pulling. Set below the airframe's
+    /// stall α — for the generic jet `(cl_max - cl0) / cl_alpha` = 0.289 rad.
+    pub alpha_soft_limit: f32,
+    pub alpha_excess_scale: f32,
+    /// Weight of the α-excess guard. **Defaults to 0.0 (inert)** so every profile
+    /// written before the guard existed keeps its exact reward; a profile that wants
+    /// stall protection opts in explicitly (see
+    /// `assets/training/heading_hold_stall_safe.reward.ron`).
+    pub alpha_excess_weight: f32,
     pub alive_bonus: f32,
     /// Applied once on episode `Failure` (crash / speed collapse), never on
     /// `Timeout`. Every other term here is negative, so without this an
@@ -114,6 +129,9 @@ impl HeadingHoldRewardConfig {
             ("bank_soft_limit", self.bank_soft_limit.to_string()),
             ("bank_excess_scale", self.bank_excess_scale.to_string()),
             ("bank_excess_weight", self.bank_excess_weight.to_string()),
+            ("alpha_soft_limit", self.alpha_soft_limit.to_string()),
+            ("alpha_excess_scale", self.alpha_excess_scale.to_string()),
+            ("alpha_excess_weight", self.alpha_excess_weight.to_string()),
             ("alive_bonus", self.alive_bonus.to_string()),
             (
                 "terminal_failure_penalty",
@@ -143,6 +161,10 @@ impl Default for HeadingHoldRewardConfig {
             bank_soft_limit: std::f32::consts::FRAC_PI_3,
             bank_excess_scale: 0.35,
             bank_excess_weight: 1.0,
+            // Inert by default — see the field's doc comment.
+            alpha_soft_limit: 0.26,
+            alpha_excess_scale: 0.1,
+            alpha_excess_weight: 0.0,
             alive_bonus: 0.01,
             // Sized to cover the worst-case discounted cost of surviving at maximum
             // heading error rather than failing early — see the matching comment in
@@ -356,9 +378,11 @@ mod tests {
     fn heading_hold_log_fields_covers_all_fields() {
         let cfg = HeadingHoldRewardConfig::default();
         let fields = cfg.log_fields();
-        assert_eq!(fields.len(), 19);
+        assert_eq!(fields.len(), 22);
         assert!(fields.iter().any(|(k, _)| *k == "heading_error_scale"));
         assert!(fields.iter().any(|(k, _)| *k == "bank_soft_limit"));
+        assert!(fields.iter().any(|(k, _)| *k == "alpha_soft_limit"));
+        assert!(fields.iter().any(|(k, _)| *k == "alpha_excess_weight"));
         assert!(fields.iter().any(|(k, _)| *k == "terminal_failure_penalty"));
         assert!(fields.iter().any(|(k, _)| *k == "max_episode_steps"));
     }
@@ -379,6 +403,9 @@ mod tests {
             bank_soft_limit: 1.0471975512,
             bank_excess_scale: 0.35,
             bank_excess_weight: 1.0,
+            alpha_soft_limit: 0.26,
+            alpha_excess_scale: 0.1,
+            alpha_excess_weight: 0.0,
             alive_bonus: 0.01,
             terminal_failure_penalty: -50.0,
             min_altitude: 10.0,

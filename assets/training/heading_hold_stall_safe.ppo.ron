@@ -1,0 +1,25 @@
+// PPO hyperparameters for the final stage that produced
+// models/heading_hold/skill_heading_hold_goal3_alpha_guard.mpk — see
+// heading_hold_stall_safe.reward.ron for the full recipe and what the alpha guard is for.
+// NOT the task default; pass explicitly via --ppo-config.
+//
+// entropy_coef MUST stay 0.0: every heading_hold run in this lineage continues from a
+// BC/PPO-converged policy, and the task file's own 0.005 default catastrophically diverges
+// from such a warm start (see heading_hold_tight_tracking.ppo.ron's comment).
+//
+// lr = 3e-5 rather than the 1e-5 the earlier precision-tightening stages used: this stage has
+// to *change* behavior (stop riding cl_max at the low-speed corner), not just polish it. A 1e-5
+// pass with the same reward moved the corner barely at all, and 1e-4 overshot — it bought
+// envelope-wide survival by giving up altitude tracking entirely (8.9 m tail error).
+(
+    gamma: 0.99,
+    gae_lambda: 0.95,
+    clip_epsilon: 0.1,
+    value_coef: 0.5,
+    entropy_coef: 0.0,
+    lr: 0.00003,
+    rollout_steps: 4096,
+    n_epochs: 4,
+    minibatch: 64,
+    seed: Some(44),
+)

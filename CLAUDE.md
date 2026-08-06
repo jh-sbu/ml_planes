@@ -107,7 +107,7 @@ src/
 | `RlOrbitController` | struct | Burn `ActorCritic` policy for orbit (obs dim=14); `inference`/`training`-gated |
 | `RlOrbitResidualController` | struct | Burn `ActorCritic` policy emitting residual deltas added to the PID orbit baseline (obs dim=14); paired with `ResidualOrbitEnv` |
 | `RlLstmOrbitController` | struct | Recurrent `LstmActorCritic` orbit policy (Wu et al. FC-LSTM-FC); carries `LstmHiddenState` across steps; paired with `WuOrbitEnv` |
-| `LevelHoldRewardConfig` / `HeadingHoldRewardConfig` / `OrbitRewardConfig` | plain structs | Reward weights, scales, alive bonus, failure penalty, and termination thresholds; loaded from `assets/training/*.reward.ron` at training startup. `HeadingHoldRewardConfig` has no `\|roll\|` penalty (bank is the control authority for turning) — instead a roll-*rate* term (chatter guard) plus a bank-*excess* term past ±60° (matching the PID heading loop's own clamp) |
+| `LevelHoldRewardConfig` / `HeadingHoldRewardConfig` / `OrbitRewardConfig` | plain structs | Reward weights, scales, alive bonus, failure penalty, and termination thresholds; loaded from `assets/training/*.reward.ron` at training startup. `HeadingHoldRewardConfig` has no `\|roll\|` penalty (bank is the control authority for turning) — instead a roll-*rate* term (chatter guard), a bank-*excess* term past ±60° (matching the PID heading loop's own clamp), and an **α-excess** term past `alpha_soft_limit` (stall guard; **weight defaults to 0.0/inert**, opt in via a profile — see `heading_hold_stall_safe.reward.ron`). Its fields carry no `#[serde(default)]` by design, so adding one invalidates every shipped profile file — update them all, and `tests/core/training_assets.rs` will catch it if you don't (a parse failure is only a runtime *warning* that silently falls back to the compiled defaults) |
 | `WuOrbitRewardConfig` / `CurriculumStage` | plain structs/enum | Wu et al. multiplicative-Gaussian orbit reward (`R^TT × R^PS × R^RS`) + 3-stage curriculum; from `wu_orbit.reward.ron` |
 | `PpoHyperparams` | plain struct | PPO training-loop config (gamma, gae_lambda, clip, lr, …); from `assets/training/*.ppo.ron` |
 | `WingmanController` | struct | Formation flight; holds a fixed offset in the leader's body frame via a heading-damped lateral cascade (cross-track → heading → bank) |
@@ -228,15 +228,32 @@ loaded) jet:
 ```
 
 **`heading_hold` task** (added after the fuel-model rework, so it was never affected by the
-history above — its 16-dim observation was current from the start). Only checkpoint shipped is
-`models/heading_hold/smoke_heading_hold.mpk`, a **pipeline smoke test** (100k steps, `--bc-steps
-20000 --bc-epochs 5 --target-heading-range -30:30`), not a flight-quality policy — run
-`train-evaluate-optimize` for one, then re-tune PID gains the same way as the other tasks. It was
-also trained under the pre-2026-08 `terminal_failure_penalty: -50.0` (now `-500.0` — a code
-review found -50 didn't cover the discounted cost of surviving at max heading error, so early
-failure could beat completing a hard turn; see `heading_hold.reward.ron`'s comment); its returns
-aren't comparable to a policy trained after the change, though the checkpoint still loads fine
-(the observation is unchanged).
+history above — its 16-dim observation was current from the start). The current production
+checkpoint is **`models/heading_hold/skill_heading_hold_goal3_alpha_guard.mpk`**, the first one
+retrained after the 2026-08-06 physics/envelope changes (64 Hz training integrator, 90 m/s
+airspeed floor) that left the earlier `skill_heading_hold_goal{,2}_*` checkpoints behaviorally
+stale. 1000-episode eval at the full envelope: `success_rate 0.995`,
+`mean_tail_abs_heading_rad 0.00856` (0.49°), `mean_tail_abs_altitude_m 1.431`,
+`mean_tail_abs_speed_mps 0.323`; live Rapier rollouts at four nominal operating points track to
+0.97–1.58 m / 0.37–0.39 m/s / 0.31–0.51°. Reward/PPO profiles:
+`assets/training/heading_hold_stall_safe.{reward,ppo}.ron` (pass both explicitly; neither is the
+task default). `smoke_heading_hold.mpk` remains as the pipeline smoke test only (100k steps,
+`--target-heading-range -30:30`, and the pre-2026-08 `terminal_failure_penalty: -50.0`); it is
+not flight-quality and its returns aren't comparable to anything trained since.
+
+**Known envelope limit (heading_hold).** At the joint corner of ≥5000 m *and* ≤90 m/s *and* a
+large commanded turn, the generic jet has almost no maneuvering margin — loaded (7000 kg) level
+flight there already needs CL ≈ 1.15 of `cl_max` 1.4, capping sustained level turns near 35°
+bank — and every checkpoint to date, RL or PID, degrades badly there. Live rollouts of the
+current policy still depart at 5000 m / 90 m/s / 120° turn. This is an airframe-margin corner,
+not a tracking-quality one: the PID expert loses ~111 m of altitude at that same point versus
+~1.4 m envelope-wide (measure it with `examples/heading_hold_expert_baseline.rs`, which rolls
+`HeadingHoldEnv::make_expert()` through the same env, tail window, and success definition
+`evaluate_policy` uses). **Do not chase it by loosening `max_altitude_error`** — that hides the
+failure in the accept gate instead of fixing it. The reward's `alpha_soft_limit` /
+`alpha_excess_weight` guard (see `heading_hold_stall_safe.reward.ron`) is what keeps the policy
+off `cl_max` elsewhere in the envelope; `compute_aero_forces` merely clamps CL, so without that
+term nothing tells a policy that it is mushing.
 
 ### Action Spaces
 
@@ -731,7 +748,7 @@ that ships a non-default target) `tests/core/scenario.rs`.
 
 ## 4. Maneuver Roadmap
 
-1. **Level flight hold** — COMPLETE. Cascade PID: altitude outer → pitch inner, airspeed, roll, yaw. RL policy trained (`RlLevelHoldController`, obs dim=13) over a randomized 500–5000 m / 90–140 m/s target envelope, configurable via `--target-alt-range`/`--target-speed-range` on `train_ppo`/`train_bc`/`evaluate_policy`. **Heading hold** (outer heading PID over the level-hold cascade, `HeadingHoldController`) is likewise COMPLETE, with an RL variant (`RlHeadingHoldController`, obs dim=16) added over a randomized ±180° target-heading-change / 500–5000 m / 90–140 m/s envelope, configurable via `--target-heading-range`/`--target-alt-range`/`--target-speed-range`. `models/heading_hold/smoke_heading_hold.mpk` is a **pipeline smoke checkpoint only** (100k steps, ±30° training range) — not flight-quality; run `train-evaluate-optimize` for a production policy.
+1. **Level flight hold** — COMPLETE. Cascade PID: altitude outer → pitch inner, airspeed, roll, yaw. RL policy trained (`RlLevelHoldController`, obs dim=13) over a randomized 500–5000 m / 90–140 m/s target envelope, configurable via `--target-alt-range`/`--target-speed-range` on `train_ppo`/`train_bc`/`evaluate_policy`. **Heading hold** (outer heading PID over the level-hold cascade, `HeadingHoldController`) is likewise COMPLETE, with an RL variant (`RlHeadingHoldController`, obs dim=16) added over a randomized ±180° target-heading-change / 500–5000 m / 90–140 m/s envelope, configurable via `--target-heading-range`/`--target-alt-range`/`--target-speed-range`. Production checkpoint: `models/heading_hold/skill_heading_hold_goal3_alpha_guard.mpk` (0.49° / 1.43 m / 0.32 m/s tail error at `success_rate` 0.995 over 1000 episodes) with `assets/training/heading_hold_stall_safe.{reward,ppo}.ron`; see the heading_hold checkpoint notes in §2 for its one known envelope limit. `smoke_heading_hold.mpk` is a pipeline smoke checkpoint only.
 2. **Ascent** — COMPLETE. Climbs to target altitude then hands off to level hold.
 3. **Formation flight (wingman)** — COMPLETE. Follows leader at fixed body-frame offset (`WingmanController`).
 4. **Circular orbit** — COMPLETE. 3-level cascade PID around world-frame point. Three RL variants: `RlOrbitController` (direct, obs dim=14), `RlOrbitResidualController` (residual over PID), and `RlLstmOrbitController` (recurrent, Wu-curriculum). Policies also reachable via behavior-cloning warm start.
@@ -918,6 +935,10 @@ the binary + a module filter, e.g. `cargo test --no-default-features --test core
 **`tests/core/` (core sim, `--no-default-features`):**
 - `pid_convergence` — pure PID closed-loop step response
 - `spawn_reset` — `TrainingEnv::reset()` produces correct initial `FlightState`
+- `training_assets` — every shipped `assets/training/*.reward.ron` profile parses into its
+  config struct (the structs have no `#[serde(default)]`, and the training binaries downgrade
+  a parse failure to a warning + compiled defaults, so a stale profile otherwise trains the
+  wrong reward and still reports success)
 - `orbit_tune_sync` — orbit tuning-pool / gain-sync invariants
 - `scenario` — `.scenario.ron` parse/resolve/build, per-plane `fuel_fraction` carried through `resolve()`, `ControllerSpec::kind()` mapping, `spawn_resolved_scenario` live spawn, `default.scenario.ron` resolve, + CSV header pinning (`ml_planes::scenario::CSV_HEADER`, incl. trailing `fuel_remaining`); self-referential wingman-leader rejection; resolved-vs-runtime `PlaneId` remap, leader-skip cascade, and a scenario wingman's `WingmanController` surviving the tuning rebuild end-to-end
 - `lifecycle` — runtime spawn/remove commands, auto-indexing, orphaned-wingman + camera cleanup (camera case is `visual`-gated, so it runs only under `just test-visual`), + a `Wingman`-kind plane with no `WingmanController` installed falling back to `LevelHold`

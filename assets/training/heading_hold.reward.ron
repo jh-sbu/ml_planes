@@ -38,6 +38,14 @@
     bank_excess_scale:    0.35,
     bank_excess_weight:   1.0,
 
+    // Angle-of-attack margin guard: penalizes |alpha| beyond alpha_soft_limit, the same
+    // shape as the bank guard above. Inert here (weight 0.0) so this profile's reward is
+    // byte-for-byte the one its checkpoints were trained under; see
+    // heading_hold_stall_safe.reward.ron for the profile that turns it on and why.
+    alpha_soft_limit:     0.26,
+    alpha_excess_scale:   0.1,
+    alpha_excess_weight:  0.0,
+
     // Constant per-step bonus while alive
     alive_bonus:          0.01,
 
