@@ -156,7 +156,7 @@ pub fn l1_straight_bank(
 mod tests {
     use super::*;
     use crate::controllers::level_hold::LevelHoldController;
-    use crate::plane::{ControlInputs, PlaneConfig};
+    use crate::plane::{ControlInputs, PlaneConfig, PHYSICS_DT};
     use crate::training::integrate_state;
     use bevy::math::{Quat, Vec3};
     use std::f32::consts::FRAC_PI_2;
@@ -269,7 +269,7 @@ mod tests {
         inner.target_altitude = 1000.0;
         inner.target_airspeed = 100.0;
 
-        let dt = 1.0 / 64.0;
+        let dt = PHYSICS_DT;
         let initial_xtrack = state.position.z.abs();
         let mut min_xtrack = initial_xtrack;
 

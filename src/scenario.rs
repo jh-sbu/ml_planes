@@ -29,7 +29,7 @@ use crate::controllers::{
     HeadingHoldController, L1Controller, LevelHoldController, ManualController, OrbitController,
     OrbitDirection, OrbitParams, WingmanController,
 };
-use crate::plane::{ControlInputs, FlightState, PlaneId};
+use crate::plane::{ControlInputs, FlightState, PlaneId, PHYSICS_DT};
 
 #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
 use crate::controllers::{
@@ -628,7 +628,7 @@ pub fn csv_row(
     format!(
         "{},{:.3},{},{:.2},{:.2},{:.2},{:.2},{:.3},{:.3},{:.3},{:.3},{:.3},{:.4},{:.4},{:.4},{:.3},{:.3},{:.3},{:.3},{},{:.1}",
         step,
-        step as f32 / 64.0,
+        step as f32 * PHYSICS_DT,
         name,
         state.position.x,
         state.altitude,
@@ -922,7 +922,7 @@ mod tests {
             let mut ctrl = r.build_controller(idx).expect("build");
             assert_eq!(&ctrl.name(), name);
             let ctx = ControllerContext::empty_for(r.planes[idx].id);
-            let out = ctrl.update(&r.planes[idx].state, &ctx, 1.0 / 64.0);
+            let out = ctrl.update(&r.planes[idx].state, &ctx, PHYSICS_DT);
             assert!(out.elevator.is_finite() && out.throttle.is_finite());
         }
     }

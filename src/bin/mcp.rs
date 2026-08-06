@@ -45,6 +45,7 @@ use ml_planes::mcp::{
     SnapshotHandle,
 };
 use ml_planes::net::{start_renet_client, ConnectTarget, NetProtocolPlugin};
+use ml_planes::plane::PHYSICS_DT_F64;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -122,7 +123,7 @@ fn spawn_sim_client(
     std::thread::spawn(move || {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins.set(ScheduleRunnerPlugin::run_loop(
-            Duration::from_secs_f64(1.0 / 64.0),
+            Duration::from_secs_f64(PHYSICS_DT_F64),
         )))
         .add_plugins(bevy::transform::TransformPlugin)
         .add_plugins(bevy::asset::AssetPlugin::default())

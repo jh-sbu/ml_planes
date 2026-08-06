@@ -35,7 +35,7 @@ use bevy_replicon_renet::RepliconRenetPlugins;
 use ml_planes::controllers::ControllerKind;
 use ml_planes::mcp::{control_channel, ControlRequest, McpBridgePlugin, SnapshotHandle};
 use ml_planes::net::{start_renet_client, ConnectTarget, NetProtocolPlugin};
-use ml_planes::plane::PlaneId;
+use ml_planes::plane::{PlaneId, PHYSICS_DT_F64};
 use ml_planes::training::SpawnSpec;
 
 /// Kills the server child when the test scope ends (pass or panic).
@@ -80,7 +80,7 @@ fn spawn_client(addr: SocketAddr) -> (SnapshotHandle, crossbeam_channel::Sender<
     std::thread::spawn(move || {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins.set(ScheduleRunnerPlugin::run_loop(
-            Duration::from_secs_f64(1.0 / 64.0),
+            Duration::from_secs_f64(PHYSICS_DT_F64),
         )))
         .add_plugins(bevy::transform::TransformPlugin)
         .add_plugins(bevy::asset::AssetPlugin::default())

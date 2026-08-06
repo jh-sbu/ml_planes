@@ -46,7 +46,10 @@ use bevy_replicon_renet::renet::ConnectionConfig;
 use bevy_replicon_renet::{RenetChannelsExt, RenetClient};
 
 use crate::net::protocol::PROTOCOL_ID;
-use crate::plane::{FlightState, PlaneId, PlaneRenderPose, PlaneTuningHandle, PlaneTuningPath};
+use crate::plane::{
+    FlightState, PlaneId, PlaneRenderPose, PlaneTuningHandle, PlaneTuningPath, PHYSICS_DT_F64,
+    PHYSICS_HZ_F64,
+};
 
 /// A child `ml_planes_server` process that is killed when this handle is dropped,
 /// so a server the client launched (Start New Server) dies with the client on every
@@ -112,10 +115,12 @@ pub fn check_local_server_staleness() -> Option<String> {
 /// Server replication tick rate. Snapshots are stamped with `tick / SERVER_TICK_HZ`
 /// to reconstruct a uniform server-time timeline, independent of the client's frame
 /// rate. Must match the server's `Time<Fixed>` rate (bevy_replicon increments its tick
-/// in `FixedPostUpdate`, Bevy's default 64 Hz) and the Rapier `TimestepMode::Fixed`
-/// `dt = 1/64` used by `ml_planes_server`.
-const SERVER_TICK_HZ: f64 = 64.0;
-const TICK: f64 = 1.0 / SERVER_TICK_HZ;
+/// in `FixedPostUpdate`) and the Rapier `TimestepMode::Fixed` dt used by
+/// `ml_planes_server` — which is why these alias [`crate::plane::timestep`] rather than
+/// restating 64 locally. Kept as local names because "tick" is the right word on this
+/// side of the wire, but they can no longer drift from the physics rate.
+const SERVER_TICK_HZ: f64 = PHYSICS_HZ_F64;
+const TICK: f64 = PHYSICS_DT_F64;
 
 /// Target lag of the playback clock behind the newest received snapshot. Must exceed
 /// the client's snapshot inter-arrival interval *including jitter* so the playback

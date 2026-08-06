@@ -12,7 +12,7 @@ use ml_planes::controllers::{
     FlightPlanLeg, FormationOffset, HeadingHoldController, L1Controller, LevelHoldController,
     ManualController, OrbitController, OrbitDirection, OrbitParams, WingmanController,
 };
-use ml_planes::plane::{ControlInputs, FlightState, PlaneId};
+use ml_planes::plane::{ControlInputs, FlightState, PlaneId, PHYSICS_DT};
 
 /// Level flight state heading +X at `altitude`/`airspeed`.
 fn level_state(position: Vec3, airspeed: f32) -> FlightState {
@@ -164,7 +164,7 @@ fn apply_targets_on_ascent_clears_complete_when_altitude_changes() {
     ctrl.update(
         &at_target,
         &ml_planes::plane::ControllerContext::empty_for(PlaneId::TEST),
-        1.0 / 64.0,
+        PHYSICS_DT,
     );
     assert!(ctrl.complete, "precondition: latched complete");
 
@@ -183,7 +183,7 @@ fn apply_targets_on_ascent_keeps_complete_when_altitude_unchanged() {
     ctrl.update(
         &at_target,
         &ml_planes::plane::ControllerContext::empty_for(PlaneId::TEST),
-        1.0 / 64.0,
+        PHYSICS_DT,
     );
     assert!(ctrl.complete, "precondition: latched complete");
 

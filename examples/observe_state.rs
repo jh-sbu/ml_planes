@@ -68,7 +68,7 @@ fn main() {
         .add_plugins(bevy::transform::TransformPlugin)
         .add_plugins(bevy::asset::AssetPlugin::default())
         .insert_resource(TimestepMode::Fixed {
-            dt: 1.0 / 64.0,
+            dt: ml_planes::plane::PHYSICS_DT,
             substeps: 1,
         })
         .add_plugins(RapierPhysicsPlugin::<NoUserData>::default().in_fixed_schedule())
@@ -77,7 +77,7 @@ fn main() {
     // 1/64 s per update = exactly one fixed tick per update (no accumulator overflow),
     // matching the production sim (main.rs) and the test harness (tests/common/mod.rs).
     app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(
-        1.0 / 64.0,
+        ml_planes::plane::PHYSICS_DT,
     )));
 
     // finish() initialises plugin resources; required before manual app.update() driving.

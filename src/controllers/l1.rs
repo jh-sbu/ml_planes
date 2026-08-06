@@ -348,6 +348,7 @@ impl FlightController for L1Controller {
 mod tests {
     use super::*;
     use crate::controllers::flight_plan::FlightPlanLeg;
+    use crate::plane::PHYSICS_DT;
     use bevy::math::{Quat, Vec3};
     use std::f32::consts::FRAC_PI_2;
 
@@ -425,7 +426,7 @@ mod tests {
             &ControlInputs::default(),
         );
         assert_eq!(ctrl.leg_index, 0);
-        ctrl.update(&state, &ctx(), 1.0 / 64.0);
+        ctrl.update(&state, &ctx(), PHYSICS_DT);
         assert_eq!(ctrl.leg_index, 1, "should advance after capturing waypoint");
     }
 
@@ -437,7 +438,7 @@ mod tests {
             plan(vec![wpt(5000.0, 0.0, 200.0), orbit(0.0, 0.0, 1000.0, None)]),
             &ControlInputs::default(),
         );
-        ctrl.update(&state, &ctx(), 1.0 / 64.0);
+        ctrl.update(&state, &ctx(), PHYSICS_DT);
         assert_eq!(ctrl.leg_index, 0, "far waypoint should not advance");
     }
 
@@ -449,11 +450,11 @@ mod tests {
             plan(vec![wpt(100.0, 0.0, 200.0)]),
             &ControlInputs::default(),
         );
-        ctrl.update(&state, &ctx(), 1.0 / 64.0);
+        ctrl.update(&state, &ctx(), PHYSICS_DT);
         assert_eq!(ctrl.phase, L1Phase::Finished);
         // Subsequent ticks command wings-level.
         let s2 = make_state(Vec3::new(10.0, 1000.0, 0.0), Vec3::new(100.0, 0.0, 5.0));
-        ctrl.update(&s2, &ctx(), 1.0 / 64.0);
+        ctrl.update(&s2, &ctx(), PHYSICS_DT);
         assert_eq!(ctrl.inner.target_roll, 0.0);
     }
 
@@ -476,7 +477,7 @@ mod tests {
         for k in 0..(steps * 9 / 10) {
             let theta = TWO_PI * (k as f32) / (steps as f32);
             let s = orbit_state(center, radius, theta, 100.0, 1000.0);
-            ctrl.update(&s, &ctx(), 1.0 / 64.0);
+            ctrl.update(&s, &ctx(), PHYSICS_DT);
         }
         assert_eq!(
             ctrl.leg_index, 0,
@@ -487,7 +488,7 @@ mod tests {
         for k in (steps * 9 / 10)..=(steps + steps / 20) {
             let theta = TWO_PI * (k as f32) / (steps as f32);
             let s = orbit_state(center, radius, theta, 100.0, 1000.0);
-            ctrl.update(&s, &ctx(), 1.0 / 64.0);
+            ctrl.update(&s, &ctx(), PHYSICS_DT);
         }
         assert_eq!(ctrl.leg_index, 1, "should advance after one full turn");
     }
@@ -501,7 +502,7 @@ mod tests {
             plan(vec![wpt(1000.0, 0.0, 200.0), orbit(0.0, 0.0, 1000.0, None)]),
             &ControlInputs::default(),
         );
-        ctrl.update(&state, &ctx(), 1.0 / 64.0);
+        ctrl.update(&state, &ctx(), PHYSICS_DT);
         match ctrl.status {
             L1Status::Waypoint {
                 x,
@@ -533,7 +534,7 @@ mod tests {
             plan(vec![orbit(0.0, 0.0, 1000.0, None)]),
             &ControlInputs::default(),
         );
-        ctrl.update(&start, &ctx(), 1.0 / 64.0);
+        ctrl.update(&start, &ctx(), PHYSICS_DT);
         match ctrl.status {
             L1Status::Orbit {
                 radius,
@@ -560,10 +561,10 @@ mod tests {
             plan(vec![wpt(100.0, 0.0, 200.0)]),
             &ControlInputs::default(),
         );
-        ctrl.update(&state, &ctx(), 1.0 / 64.0);
+        ctrl.update(&state, &ctx(), PHYSICS_DT);
         assert_eq!(ctrl.phase, L1Phase::Finished);
         // A subsequent tick records the Finished status.
-        ctrl.update(&state, &ctx(), 1.0 / 64.0);
+        ctrl.update(&state, &ctx(), PHYSICS_DT);
         assert_eq!(ctrl.status, L1Status::Finished);
     }
 
@@ -583,7 +584,7 @@ mod tests {
         for k in 0..=(steps * 3) {
             let theta = TWO_PI * (k as f32) / (steps as f32);
             let s = orbit_state(center, radius, theta, 100.0, 1000.0);
-            ctrl.update(&s, &ctx(), 1.0 / 64.0);
+            ctrl.update(&s, &ctx(), PHYSICS_DT);
         }
         assert_eq!(ctrl.leg_index, 0);
         assert_eq!(ctrl.phase, L1Phase::Following);

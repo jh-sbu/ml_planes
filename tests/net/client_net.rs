@@ -12,7 +12,7 @@ use bevy::prelude::*;
 use bevy_replicon::client::confirm_history::EntityReplicated;
 use bevy_replicon::prelude::RepliconTick;
 use ml_planes::net::{ClientNetPlugin, NetInterpolation, NetRenderClock};
-use ml_planes::plane::{FlightState, PlaneId};
+use ml_planes::plane::{FlightState, PlaneId, PHYSICS_DT_F64};
 
 /// A minimal headless app with just the client rendering systems. `MinimalPlugins`
 /// supplies the `Time` the interpolation reads. The real client gets
@@ -139,7 +139,7 @@ fn batched_ticks_collapse_to_the_newest() {
     assert_eq!(interp.snapshots.len(), 1, "batch collapses to one snapshot");
     let snap = interp.snapshots.back().unwrap();
     assert!(
-        (snap.server_time - 12.0 / 64.0).abs() < 1e-9,
+        (snap.server_time - 12.0 * PHYSICS_DT_F64).abs() < 1e-9,
         "snapshot uses the newest tick (12), got server_time {}",
         snap.server_time
     );

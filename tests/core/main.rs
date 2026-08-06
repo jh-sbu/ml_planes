@@ -9,6 +9,7 @@ mod controller_targets;
 mod controller_telemetry;
 mod lifecycle;
 mod orbit_tune_sync;
+mod physics_timestep;
 mod pid_convergence;
 mod plane_assets;
 mod render_pose_order;

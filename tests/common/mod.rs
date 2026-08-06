@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy::time::TimeUpdateStrategy;
 use bevy_rapier3d::prelude::*;
 
-use ml_planes::plane::{PlaneConfig, PlanePlugin};
+use ml_planes::plane::{PlaneConfig, PlanePlugin, PHYSICS_DT};
 
 /// Build a headless Bevy app with Rapier physics and PlanePlugin.
 ///
@@ -36,7 +36,7 @@ pub fn build_headless_app_with(configure: impl FnOnce(&mut App)) -> App {
         .add_plugins(bevy::transform::TransformPlugin)
         .add_plugins(bevy::asset::AssetPlugin::default())
         .insert_resource(TimestepMode::Fixed {
-            dt: 1.0 / 64.0,
+            dt: PHYSICS_DT,
             substeps: 1,
         })
         .add_plugins(RapierPhysicsPlugin::<NoUserData>::default().in_fixed_schedule())
@@ -45,7 +45,7 @@ pub fn build_headless_app_with(configure: impl FnOnce(&mut App)) -> App {
     // 1/64 s per update = exactly one fixed tick per update (no accumulator overflow).
     // Tests are deterministic: 1 update = 1 fixed tick = 1 Rapier step.
     app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(
-        1.0 / 64.0,
+        PHYSICS_DT,
     )));
 
     configure(&mut app);

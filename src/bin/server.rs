@@ -32,7 +32,7 @@ use ml_planes::net::{
     start_renet_server, NetProtocolPlugin, ServerPort, ServerScenario, ServerSimPlugin,
     DEFAULT_PORT,
 };
-use ml_planes::plane::PlanePlugin;
+use ml_planes::plane::{PlanePlugin, PHYSICS_DT};
 
 fn main() {
     let args = parse_args();
@@ -51,7 +51,7 @@ fn main() {
     .add_plugins(bevy::asset::AssetPlugin::default())
     .add_plugins(StatesPlugin)
     .insert_resource(TimestepMode::Fixed {
-        dt: 1.0 / 64.0,
+        dt: PHYSICS_DT,
         substeps: 1,
     })
     .add_plugins(RapierPhysicsPlugin::<NoUserData>::default().in_fixed_schedule())

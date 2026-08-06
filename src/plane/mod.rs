@@ -4,6 +4,7 @@ pub mod inputs;
 pub mod plugin;
 pub mod state;
 pub mod systems;
+pub mod timestep;
 
 pub use config::{FuelProperties, FuelType, PlaneConfig, Powerplant};
 pub use context::{ControllerContext, NextPlaneId, PlaneId, PlaneSnapshot, SpawnedPlane};
@@ -12,6 +13,7 @@ pub use plugin::{
     FlightPlanHandle, PlaneConfigHandle, PlanePlugin, PlaneTuningHandle, PlaneTuningPath,
 };
 pub use state::{FlightState, FUEL_OBS_SCALE};
+pub use timestep::{PHYSICS_DT, PHYSICS_DT_F64, PHYSICS_HZ, PHYSICS_HZ_F64};
 
 /// Ordering contract for the plane `Transform` a frame renders.
 ///

@@ -11,6 +11,10 @@ use bevy_rapier3d::prelude::*;
 use ml_planes::controllers::SimControlPlugin;
 use ml_planes::environment::{EnvironmentPlugin, LifecyclePlugin};
 use ml_planes::plane::PlanePlugin;
+// Only the local-physics build installs a Rapier timestep; the pure networked client
+// renders replicated state and never steps physics.
+#[cfg(any(not(feature = "net"), feature = "server"))]
+use ml_planes::plane::PHYSICS_DT;
 
 #[cfg(feature = "visual")]
 use ml_planes::controllers::{ControllerKind, PlaneTuning, SelectedTuningProfile};
@@ -83,7 +87,7 @@ fn main() {
     #[cfg(any(not(feature = "net"), feature = "server"))]
     {
         app.insert_resource(TimestepMode::Fixed {
-            dt: 1.0 / 64.0,
+            dt: PHYSICS_DT,
             substeps: 1,
         });
         app.add_plugins(RapierPhysicsPlugin::<NoUserData>::default().in_fixed_schedule());

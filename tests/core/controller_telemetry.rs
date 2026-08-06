@@ -10,7 +10,7 @@ use ml_planes::controllers::{
     AscentController, ControllerTelemetry, FlightController, FlightPlan, FlightPlanLeg,
     FormationOffset, L1Controller, L1Status, OrbitController, OrbitDirection, WingmanController,
 };
-use ml_planes::plane::{ControlInputs, FlightState, PlaneId};
+use ml_planes::plane::{ControlInputs, FlightState, PlaneId, PHYSICS_DT};
 
 /// Level flight state heading +X at `altitude`/`airspeed`.
 fn level_state(position: Vec3, airspeed: f32) -> FlightState {
@@ -81,7 +81,7 @@ fn flight_plan_telemetry_reports_leg_and_status() {
     l1.update(
         &state,
         &ml_planes::plane::ControllerContext::empty_for(PlaneId::TEST),
-        1.0 / 64.0,
+        PHYSICS_DT,
     );
 
     match l1.telemetry(&state) {
@@ -130,7 +130,7 @@ fn ascent_telemetry_reflects_complete_latch() {
     ascent.update(
         &at_target,
         &ml_planes::plane::ControllerContext::empty_for(PlaneId::TEST),
-        1.0 / 64.0,
+        PHYSICS_DT,
     );
     assert_eq!(
         ascent.telemetry(&at_target),

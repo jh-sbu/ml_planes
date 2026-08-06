@@ -10,7 +10,7 @@ use ml_planes::controllers::{
     ControllerTargets, FlightController, ModelLoadError, RlHeadingHoldConfig,
     RlHeadingHoldController, RlLevelHoldController, RlOrbitConfig, RlOrbitController,
 };
-use ml_planes::plane::{ControllerContext, FlightState, PlaneId};
+use ml_planes::plane::{ControllerContext, FlightState, PlaneId, PHYSICS_DT};
 use ml_planes::training::heading_hold_env::{heading_hold_observation, HEADING_HOLD_OBS_DIM};
 use ml_planes::training::level_hold_env::{level_hold_observation, LEVEL_HOLD_OBS_DIM};
 use ml_planes::training::ppo::model::ActorCritic;
@@ -79,7 +79,7 @@ fn loaded_orbit_policy_runs_forward_pass() {
     let inputs = ctrl.update(
         &state,
         &ControllerContext::empty_for(PlaneId::TEST),
-        1.0 / 64.0,
+        PHYSICS_DT,
     );
     assert!(
         inputs.elevator.is_finite()
