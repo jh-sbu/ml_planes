@@ -416,9 +416,11 @@ fn plane_summary_value(p: &PlaneSnapshot) -> Value {
     })
 }
 
-/// JSON array of per-plane summaries.
+/// `{ "planes": [...] }` — MCP `structuredContent` must be a JSON object, not a bare array.
 fn list_planes_value(snap: &SimSnapshot) -> Value {
-    Value::Array(snap.planes.iter().map(plane_summary_value).collect())
+    json!({
+        "planes": snap.planes.iter().map(plane_summary_value).collect::<Vec<_>>(),
+    })
 }
 
 /// Full state of one plane, or `None` if no plane carries that id. The full [`PlaneSnapshot`]
@@ -452,10 +454,10 @@ impl PlanesService {
 
     /// Compact roster of live planes.
     #[tool(
-        description = "List live planes as [{ plane_id, plane_index, controller_kind, \
-                       position:[x,y,z], altitude, airspeed, fuel_remaining }]. Returns a \
-                       not-connected error (distinct from an empty list) while the client is \
-                       not yet connected to the server."
+        description = "List live planes as { planes: [{ plane_id, plane_index, \
+                       controller_kind, position:[x,y,z], altitude, airspeed, fuel_remaining }] }. \
+                       Returns a not-connected error (distinct from an empty list) while the \
+                       client is not yet connected to the server."
     )]
     async fn list_planes(&self) -> CallToolResult {
         let snap = self.read_snapshot();
@@ -776,7 +778,7 @@ mod tests {
     #[test]
     fn list_planes_value_shapes_each_summary() {
         let value = list_planes_value(&connected_snapshot());
-        let arr = value.as_array().expect("array");
+        let arr = value["planes"].as_array().expect("array");
         assert_eq!(arr.len(), 1);
         let p = &arr[0];
         assert_eq!(p["plane_id"], json!(7));
@@ -831,7 +833,7 @@ mod tests {
         let result = service_with(connected_snapshot()).list_planes().await;
         assert_eq!(result.is_error, Some(false));
         let planes = result.structured_content.expect("structured");
-        assert_eq!(planes.as_array().expect("array").len(), 1);
+        assert_eq!(planes["planes"].as_array().expect("array").len(), 1);
     }
 
     #[tokio::test]
