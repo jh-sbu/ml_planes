@@ -72,5 +72,5 @@
     min_altitude:       10.0,   // [m] crash if below
     max_altitude_error:  500.0, // [m] diverged if |alt - target| exceeds this
     min_airspeed:        60.0,  // [m/s] stall/speed-collapse floor
-    max_episode_steps:  3600,   // 60s @ 60Hz — worst-case 180deg turn at the 110 m/s floor is ~30s
+    max_episode_steps:  3840,   // 60s @ 64Hz — worst-case 180deg turn at the 110 m/s floor is ~30s
 )

@@ -153,7 +153,9 @@ mod tests {
     fn level_hold_env_exposes_demonstration_hooks() {
         let mut env = LevelHoldEnv::new(1000.0, 100.0, jet_cfg());
         env.reset();
-        assert!((env.dt() - 1.0 / 60.0).abs() < 1e-6);
+        // The PID expert is discretized at the env's dt, so demonstrations are now
+        // generated at the same rate the gains were tuned at (`tune` drives observe_state).
+        assert_eq!(env.dt(), crate::plane::PHYSICS_DT);
         let state = env.current_state();
         assert!(state.altitude.is_finite());
         // Expert must produce finite control inputs for the current state.

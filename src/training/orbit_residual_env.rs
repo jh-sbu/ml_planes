@@ -19,7 +19,9 @@ use crate::controllers::orbit::{
     OrbitController, OrbitDirection, OrbitObservationTerms, ORBIT_OBS_DIM,
 };
 use crate::controllers::FlightController;
-use crate::plane::{ControlInputs, ControllerContext, FlightState, PlaneConfig, PlaneId};
+use crate::plane::{
+    ControlInputs, ControllerContext, FlightState, PlaneConfig, PlaneId, PHYSICS_DT,
+};
 use crate::training::flight_env::{integrate_state, roll_angle, Lcg};
 
 use crate::training::reward_config::OrbitRewardConfig;
@@ -86,7 +88,7 @@ impl ResidualOrbitEnv {
             target_radius_range: 2500.0..=4000.0,
             reward_cfg,
             cfg,
-            dt: 1.0 / 60.0,
+            dt: PHYSICS_DT,
             state: placeholder_state,
             direction: OrbitDirection::CounterClockwise,
             orbit_controller,
@@ -356,6 +358,15 @@ fn level_attitude_for_heading(head_x: f32, head_z: f32) -> Quat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The self-contained Euler integrator must step at the same rate as the live
+    /// Rapier sim. When it did not (60 Hz here vs 64 Hz live), `evaluate_policy`
+    /// numbers stopped predicting live behavior and nothing caught it.
+    #[test]
+    fn env_dt_is_the_shared_physics_dt() {
+        let env = ResidualOrbitEnv::new(1000.0, 100.0, 1000.0, jet_cfg());
+        assert_eq!(env.dt, PHYSICS_DT);
+    }
 
     fn jet_cfg() -> PlaneConfig {
         PlaneConfig {

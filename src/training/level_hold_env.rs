@@ -27,7 +27,7 @@ use bevy::math::{Quat, Vec3};
 
 use crate::aerodynamics::density_ratio;
 use crate::controllers::{FlightController, LevelHoldController};
-use crate::plane::{ControlInputs, FlightState, PlaneConfig};
+use crate::plane::{ControlInputs, FlightState, PlaneConfig, PHYSICS_DT};
 use crate::training::flight_env::{
     direct_action_to_inputs, integrate_state, pitch_angle, roll_angle, Lcg,
 };
@@ -157,7 +157,7 @@ impl LevelHoldEnv {
             airspeed_spawn_offset_range: -20.0..=20.0,
             reward_cfg,
             cfg,
-            dt: 1.0 / 60.0,
+            dt: PHYSICS_DT,
             state: FlightState::default(),
             episode_step: 0,
             rng: Lcg::new(42),
@@ -369,6 +369,15 @@ impl DemonstrationEnv for LevelHoldEnv {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The self-contained Euler integrator must step at the same rate as the live
+    /// Rapier sim. When it did not (60 Hz here vs 64 Hz live), `evaluate_policy`
+    /// numbers stopped predicting live behavior and nothing caught it.
+    #[test]
+    fn env_dt_is_the_shared_physics_dt() {
+        let env = LevelHoldEnv::new(1000.0, 80.0, jet_cfg());
+        assert_eq!(env.dt, PHYSICS_DT);
+    }
 
     fn jet_cfg() -> PlaneConfig {
         PlaneConfig {

@@ -29,5 +29,5 @@
     // Termination conditions
     min_altitude:       10.0,    // [m] crash if below
     max_altitude_error: 500.0,   // [m] diverged if |alt - target| exceeds this
-    max_episode_steps:  3000,
+    max_episode_steps:  3200,
 )

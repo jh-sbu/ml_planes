@@ -44,5 +44,5 @@
     alive_bonus:        0.01,
     min_altitude:       10.0,
     max_altitude_error: 500.0,
-    max_episode_steps:  3000,
+    max_episode_steps:  3200,
 )

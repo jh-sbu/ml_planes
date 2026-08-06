@@ -51,7 +51,7 @@ impl Default for LevelHoldRewardConfig {
             alive_bonus: 0.01,
             min_altitude: 10.0,
             max_altitude_error: 500.0,
-            max_episode_steps: 3_000,
+            max_episode_steps: 3_200,
         }
     }
 }
@@ -152,7 +152,7 @@ impl Default for HeadingHoldRewardConfig {
             min_altitude: 10.0,
             max_altitude_error: 500.0,
             min_airspeed: 60.0,
-            max_episode_steps: 3_600,
+            max_episode_steps: 3_840,
         }
     }
 }
@@ -285,7 +285,7 @@ impl Default for OrbitRewardConfig {
             max_altitude_error: 700.0,
             max_radial_error: 1000.0,
             min_airspeed: 20.0,
-            max_episode_steps: 3_600,
+            max_episode_steps: 3_840,
             residual_scale: 0.3,
         }
     }

@@ -526,9 +526,21 @@ Training environments (`LevelHoldEnv`, `OrbitEnv`, `ResidualOrbitEnv`, `WuOrbitE
 - Aerodynamics: shared `compute_aero_forces()` from `aerodynamics/`
 - Result: deterministic rollouts, fast vectorized training, no ECS overhead
 - `VecEnv` wraps any `TrainingEnv` to run N parallel episodes (seeds offset via `offset_rng_seed()`)
-- Integration step is **60 Hz** (`dt = 1/60 s`) by design — this is the self-contained Euler
-  integrator and is intentionally distinct from the 64 Hz Rapier fixed schedule used by the
-  live sim (`main.rs`), the `observe_state` example, and the Bevy/Rapier tests.
+- Integration step is **64 Hz**, read from the shared `ml_planes::plane::PHYSICS_DT` — the *same*
+  constant the live sim's Rapier fixed schedule, Bevy's `Time<Fixed>`, and the replicon server
+  tick use. The Euler integrator and Rapier are still different integrators, but they no longer
+  run at different rates.
+  **This used to be 60 Hz "by design", and that was a mistake.** `evaluate_policy` drives the
+  training envs and never touches Rapier, so a 60 Hz env meant the accept gate was structurally
+  unable to see how a policy behaves in the sim it actually flies in. A heading-hold checkpoint
+  accepted at `mean_tail_abs_altitude_m = 0.333` measured **1.47 m** live; re-running the eval
+  pinned to the live operating point isolated ~0.8 m of that to an out-of-distribution airspeed
+  and the rest to the timestep. Changing `PHYSICS_HZ` now moves both sides at once, and
+  `tests/core/physics_timestep.rs` guards the one clock nothing sets explicitly (`Time<Fixed>`).
+  A consequence worth knowing: at 64 Hz a fixed step budget buys less wall-clock, so
+  `max_episode_steps` was rescaled to keep episode *duration* constant (3000 → 3200 level-hold,
+  3600 → 3840 elsewhere). `gamma` is per-step, so no reward term needed re-deriving, but the
+  maximum achievable return shifted ~6.7% — `mean_return` is not comparable across the change.
 - **Level-hold observation contract:** `LevelHoldEnv` and `RlLevelHoldController` must agree
   bit-for-bit on the 13-dim observation vector; rather than keep two copies in sync by hand,
   both call the single free function `training::level_hold_env::level_hold_observation()`. Any
@@ -1040,7 +1052,7 @@ so it also re-runs the core sim suite and compile-checks the local-sim/`wasm` bi
 - Every plane is a full 6-DOF Rapier `RigidBody` — no simplified kinematics.
 - `FlightController` is always `Box<dyn FlightController>` per entity — never hard-wired to a concrete type.
 - `PlaneConfig` is loaded at runtime via Bevy's asset server — no compile-time plane data.
-- All physics runs at Rapier's fixed timestep (64 Hz, `dt = 1/64 s`, set via `TimestepMode::Fixed` + `RapierPhysicsPlugin::in_fixed_schedule()`). In the client/server split the authoritative sim runs in the **server** (`ml_planes_server`, `src/bin/server.rs`); the `net` client (`main.rs`) runs no physics and renders interpolated replicated state. The headless `observe_state` example and `tests/common/mod.rs` mirror this exact 64 Hz fixed-schedule setup.
+- All physics runs at Rapier's fixed timestep (64 Hz, `dt = 1/64 s`, set via `TimestepMode::Fixed` + `RapierPhysicsPlugin::in_fixed_schedule()`). In the client/server split the authoritative sim runs in the **server** (`ml_planes_server`, `src/bin/server.rs`); the `net` client (`main.rs`) runs no physics and renders interpolated replicated state. The headless `observe_state` example and `tests/common/mod.rs` mirror this exact 64 Hz fixed-schedule setup. **`ml_planes::plane::PHYSICS_DT` is the single source** — Rapier's timestep, Bevy's `Time<Fixed>` (which drives the replicon server tick), *and* the self-contained training Euler integrator (`training/flight_env.rs`) all read it, so training can never again validate against a different plant than the one it flies in. Never reintroduce a bare `1.0 / 64.0` literal.
 - The ground is a flat infinite collider acting as a death plane — no terrain, no landing.
 
 ---

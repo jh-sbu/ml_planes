@@ -61,7 +61,7 @@ use bevy::math::{Quat, Vec3};
 use crate::controllers::heading_hold::heading_error;
 use crate::controllers::targets::ControllerTargets;
 use crate::controllers::{FlightController, HeadingHoldController};
-use crate::plane::{ControlInputs, FlightState, PlaneConfig};
+use crate::plane::{ControlInputs, FlightState, PlaneConfig, PHYSICS_DT};
 use crate::training::flight_env::{direct_action_to_inputs, integrate_state, roll_angle, Lcg};
 use crate::training::level_hold_env::{level_hold_observation, LEVEL_HOLD_OBS_DIM};
 use crate::training::reward_config::HeadingHoldRewardConfig;
@@ -186,7 +186,7 @@ impl HeadingHoldEnv {
             airspeed_spawn_offset_range: -20.0..=20.0,
             reward_cfg,
             cfg,
-            dt: 1.0 / 60.0,
+            dt: PHYSICS_DT,
             state: FlightState::default(),
             episode_step: 0,
             rng: Lcg::new(42),
@@ -430,6 +430,39 @@ impl DemonstrationEnv for HeadingHoldEnv {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The self-contained Euler integrator must step at the same rate as the live
+    /// Rapier sim. When it did not (60 Hz here vs 64 Hz live), `evaluate_policy`
+    /// numbers stopped predicting live behavior and nothing caught it.
+    #[test]
+    fn env_dt_is_the_shared_physics_dt() {
+        let env = HeadingHoldEnv::new(0.0, 1000.0, 120.0, jet_cfg());
+        assert_eq!(env.dt, PHYSICS_DT);
+    }
+
+    /// The alternate constructors route through `new()` today, but nothing pinned
+    /// that they preserve dt — and `with_reward_config` is what every training run
+    /// actually calls, so a regression there would ship silently.
+    #[test]
+    fn env_dt_survives_alternate_constructors() {
+        let with_reward = HeadingHoldEnv::with_reward_config(
+            0.0,
+            1000.0,
+            120.0,
+            jet_cfg(),
+            HeadingHoldRewardConfig::default(),
+        );
+        assert_eq!(with_reward.dt, PHYSICS_DT);
+
+        let with_ranges = HeadingHoldEnv::with_target_ranges(
+            -std::f32::consts::PI..=std::f32::consts::PI,
+            500.0..=5000.0,
+            DEFAULT_TARGET_AIRSPEED_MIN..=DEFAULT_TARGET_AIRSPEED_MAX,
+            jet_cfg(),
+            HeadingHoldRewardConfig::default(),
+        );
+        assert_eq!(with_ranges.dt, PHYSICS_DT);
+    }
 
     fn jet_cfg() -> PlaneConfig {
         PlaneConfig {

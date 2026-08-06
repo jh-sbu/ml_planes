@@ -134,7 +134,7 @@ impl Default for WuOrbitRewardConfig {
             max_altitude_error: 500.0,
             max_radial_error: 1500.0,
             min_airspeed: 30.0,
-            max_episode_steps: 3_600,
+            max_episode_steps: 3_840,
             terminal_failure_penalty: -50.0,
             stage2_threshold: 0.3,
             stage3_threshold: 0.55,
