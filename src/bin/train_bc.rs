@@ -31,7 +31,7 @@
 //!                               PID expert tracks is resampled from this range every demo episode
 //!                               (default: 500:5000). A bare VALUE pins a fixed target.
 //!   --target-speed-range <MIN:MAX|VALUE>  level_hold/heading_hold only: target airspeed [m/s]
-//!                               (default: 90:140 for level_hold, 110:140 for heading_hold).
+//!                               (default: 90:140 for both level_hold and heading_hold).
 //!   --target-heading-range <MIN:MAX|VALUE>  heading_hold only: target heading change [degrees]
 //!                               the PID expert tracks (default: -180:180).
 

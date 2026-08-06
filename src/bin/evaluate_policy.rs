@@ -29,7 +29,7 @@
 //!                           altitude [m] range to evaluate across (default: 500:5000). Use the
 //!                           same range the policy was trained with for a comparable report.
 //!   --target-speed-range <MIN:MAX|VALUE>  level_hold/heading_hold only: target airspeed [m/s]
-//!                           range (default: 90:140 for level_hold, 110:140 for heading_hold).
+//!                           range (default: 90:140 for both level_hold and heading_hold).
 //!   --target-heading-range <MIN:MAX|VALUE>  heading_hold only: target heading change [degrees]
 //!                           range to evaluate across (default: -180:180).
 

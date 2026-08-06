@@ -88,14 +88,28 @@ const VVEL_RANGE: f32 = 2.0;
 pub const DEFAULT_TARGET_HEADING_DEG_MIN: f32 = -180.0;
 pub const DEFAULT_TARGET_HEADING_DEG_MAX: f32 = 180.0;
 
-/// Default randomized-target airspeed envelope [m/s] for this task, tighter
-/// than level-hold's 90:140 floor: at the 5000 m / 90 m/s / full-fuel corner
-/// the generic jet needs CL≈1.15 of `cl_max=1.4` just for 1 g, leaving too
-/// little margin to sustain the bank a 180° turn requires. `110:140` keeps
-/// every sampled corner able to complete the sampled turn within
-/// `max_episode_steps`. `--target-speed-range 90:140` remains available for
-/// anyone who wants the harder corner.
-pub const DEFAULT_TARGET_AIRSPEED_MIN: f32 = 110.0;
+/// Default randomized-target airspeed envelope [m/s] — deliberately identical to
+/// level-hold's `90:140`, pinned by `default_airspeed_envelope_matches_level_hold`.
+///
+/// This used to be `110:140`, on the argument that at the 5000 m / 90 m/s / full-fuel
+/// corner the generic jet needs CL≈1.15 of `cl_max=1.4` just for 1 g, leaving little
+/// margin to sustain the bank a 180° turn requires. That squeeze is real and is now an
+/// **accepted cost**: the tighter floor meant anything flown below 110 m/s was out of
+/// distribution, and the live sim routinely runs planes at 100. An `RlHeadingHold`
+/// checkpoint accepted at `mean_tail_abs_altitude_m = 0.333` measured 1.47 m live; the
+/// same policy re-evaluated at 1000 m / 100 m/s in the *training* physics already showed
+/// 1.142 m, so most of that gap was this envelope, not the transfer.
+///
+/// Two consequences to train around rather than design around:
+///   - The bleed margin to `min_airspeed` (60 m/s) narrows from 50 to 30 m/s, so early
+///     training fails more often. That is the correct signal, not a regression. Use a BC
+///     warm start (`--bc-steps`) so the policy inherits the PID expert's speed
+///     management, and stage via `--target-speed-range 110:140` then `--init-from` at
+///     `90:140` if a cold run struggles.
+///   - Spawn no longer starts near that floor — see [`MIN_SPAWN_AIRSPEED_MARGIN`].
+///
+/// `--target-speed-range 110:140` remains available for the easier envelope.
+pub const DEFAULT_TARGET_AIRSPEED_MIN: f32 = 90.0;
 pub const DEFAULT_TARGET_AIRSPEED_MAX: f32 = 140.0;
 
 const MIN_SPAWN_ALTITUDE_MARGIN: f32 = 50.0;
@@ -625,12 +639,56 @@ mod tests {
         }
     }
 
+    /// heading_hold no longer carries a tighter airspeed floor than level_hold. The
+    /// bank-authority squeeze at the 5000 m / 90 m/s / full-fuel corner is a known and
+    /// accepted cost — see `DEFAULT_TARGET_AIRSPEED_MIN`'s doc. Asserted against
+    /// level_hold's constants rather than a literal so this states the *intent* and
+    /// survives a future edit to either env.
+    #[test]
+    fn default_airspeed_envelope_matches_level_hold() {
+        use crate::training::level_hold_env;
+        assert_eq!(
+            DEFAULT_TARGET_AIRSPEED_MIN,
+            level_hold_env::DEFAULT_TARGET_AIRSPEED_MIN
+        );
+        assert_eq!(
+            DEFAULT_TARGET_AIRSPEED_MAX,
+            level_hold_env::DEFAULT_TARGET_AIRSPEED_MAX
+        );
+    }
+
+    /// The behavioral half: the default envelope must actually reach the sub-100 m/s
+    /// operating points that were out-of-distribution before. Deterministic — `Lcg`
+    /// with the fixed seed 42 set in `new()`.
+    #[test]
+    fn default_envelope_samples_below_the_old_110_floor() {
+        let mut env = HeadingHoldEnv::with_target_ranges(
+            DEFAULT_TARGET_HEADING_DEG_MIN.to_radians()
+                ..=DEFAULT_TARGET_HEADING_DEG_MAX.to_radians(),
+            crate::training::level_hold_env::DEFAULT_TARGET_ALT_MIN
+                ..=crate::training::level_hold_env::DEFAULT_TARGET_ALT_MAX,
+            DEFAULT_TARGET_AIRSPEED_MIN..=DEFAULT_TARGET_AIRSPEED_MAX,
+            jet_cfg(),
+            HeadingHoldRewardConfig::default(),
+        );
+        let mut saw_slow = false;
+        for _ in 0..200 {
+            env.reset();
+            saw_slow |= env.target_airspeed < 100.0;
+        }
+        assert!(
+            saw_slow,
+            "default envelope never sampled below 100 m/s — the operating point that \
+             measured 1.47 m altitude error live is still out of distribution"
+        );
+    }
+
     #[test]
     fn reset_samples_targets_within_range() {
         let mut env = HeadingHoldEnv::with_target_ranges(
             -std::f32::consts::PI..=std::f32::consts::PI,
             500.0..=5000.0,
-            110.0..=140.0,
+            DEFAULT_TARGET_AIRSPEED_MIN..=DEFAULT_TARGET_AIRSPEED_MAX,
             jet_cfg(),
             HeadingHoldRewardConfig::default(),
         );
@@ -647,7 +705,8 @@ mod tests {
                 env.target_altitude
             );
             assert!(
-                (110.0..=140.0).contains(&env.target_airspeed),
+                (DEFAULT_TARGET_AIRSPEED_MIN..=DEFAULT_TARGET_AIRSPEED_MAX)
+                    .contains(&env.target_airspeed),
                 "target_airspeed {} out of range",
                 env.target_airspeed
             );
@@ -659,7 +718,7 @@ mod tests {
         let mut env = HeadingHoldEnv::with_target_ranges(
             -std::f32::consts::PI..=std::f32::consts::PI,
             500.0..=5000.0,
-            110.0..=140.0,
+            DEFAULT_TARGET_AIRSPEED_MIN..=DEFAULT_TARGET_AIRSPEED_MAX,
             jet_cfg(),
             HeadingHoldRewardConfig::default(),
         );
@@ -739,7 +798,7 @@ mod tests {
         let mut env = HeadingHoldEnv::with_target_ranges(
             0.0..=0.0,
             1000.0..=1000.0,
-            110.0..=110.0,
+            DEFAULT_TARGET_AIRSPEED_MIN..=DEFAULT_TARGET_AIRSPEED_MIN,
             jet_cfg(),
             HeadingHoldRewardConfig::default(),
         );
@@ -778,7 +837,7 @@ mod tests {
         let mut env = HeadingHoldEnv::with_target_ranges(
             -std::f32::consts::PI..=std::f32::consts::PI,
             500.0..=5000.0,
-            110.0..=140.0,
+            DEFAULT_TARGET_AIRSPEED_MIN..=DEFAULT_TARGET_AIRSPEED_MAX,
             jet_cfg(),
             HeadingHoldRewardConfig::default(),
         );

@@ -45,9 +45,8 @@
 //!                             resampled from this range every episode (default: 500:5000). A
 //!                             bare VALUE pins a single fixed target instead (old behavior).
 //!   --target-speed-range <MIN:MAX|VALUE>  level_hold/heading_hold only: target airspeed [m/s],
-//!                             same MIN:MAX|VALUE form (default: 90:140 for level_hold, 110:140
-//!                             for heading_hold — see `heading_hold_env` module doc for why the
-//!                             heading task needs a tighter floor).
+//!                             same MIN:MAX|VALUE form (default: 90:140 for both level_hold and
+//!                             heading_hold).
 //!   --target-heading-range <MIN:MAX|VALUE>  heading_hold only: target heading change
 //!                             [**degrees**] resampled every episode (default: -180:180). A bare
 //!                             VALUE pins a single fixed heading change. Spawns always start on

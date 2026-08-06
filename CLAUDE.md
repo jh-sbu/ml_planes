@@ -103,7 +103,7 @@ src/
 | `OrbitController` | struct | 3-level cascade PID orbit around a fixed world-frame point |
 | `HeadingHoldController` | struct | Holds a configurable heading via an inner level-hold cascade |
 | `RlLevelHoldController` | struct | Burn `ActorCritic` policy for level hold (obs dim=13); `inference`/`training`-gated. Target altitude/airspeed are randomized per-episode in training (`LevelHoldEnv::with_target_ranges`, default 500–5000 m / 90–140 m/s) so one policy generalizes across the envelope; obs appends `density_ratio(altitude)` and raw airspeed so the network can actually distinguish operating points |
-| `RlHeadingHoldController` | struct | Burn `ActorCritic` policy for heading hold (obs dim=16); `inference`/`training`-gated. Obs = the 13-dim `level_hold_observation` prefix + `[sin(heading_err)/0.5, cos(heading_err), world-vertical turn_rate/0.2]` (`heading_hold_observation`); target heading/altitude/airspeed randomized per-episode via `HeadingHoldEnv::with_target_ranges` (default heading ±180°, airspeed 110–140 m/s — tighter than level-hold's 90 m/s floor, since the worst envelope corner can't sustain the bank a 180° turn needs). Takes an `RlHeadingHoldConfig { target_heading, target_altitude, target_airspeed }` (mirrors `RlOrbitConfig`); reports through the shared `ControllerTargets::HeadingHold` variant, same as the PID controller |
+| `RlHeadingHoldController` | struct | Burn `ActorCritic` policy for heading hold (obs dim=16); `inference`/`training`-gated. Obs = the 13-dim `level_hold_observation` prefix + `[sin(heading_err)/0.5, cos(heading_err), world-vertical turn_rate/0.2]` (`heading_hold_observation`); target heading/altitude/airspeed randomized per-episode via `HeadingHoldEnv::with_target_ranges` (default heading ±180°, airspeed 90–140 m/s — same envelope as level hold; the tighter 110 floor was dropped because it made everyday 100 m/s flight out-of-distribution, accepting the bank-authority squeeze at the slow corner). Takes an `RlHeadingHoldConfig { target_heading, target_altitude, target_airspeed }` (mirrors `RlOrbitConfig`); reports through the shared `ControllerTargets::HeadingHold` variant, same as the PID controller |
 | `RlOrbitController` | struct | Burn `ActorCritic` policy for orbit (obs dim=14); `inference`/`training`-gated |
 | `RlOrbitResidualController` | struct | Burn `ActorCritic` policy emitting residual deltas added to the PID orbit baseline (obs dim=14); paired with `ResidualOrbitEnv` |
 | `RlLstmOrbitController` | struct | Recurrent `LstmActorCritic` orbit policy (Wu et al. FC-LSTM-FC); carries `LstmHiddenState` across steps; paired with `WuOrbitEnv` |
@@ -731,7 +731,7 @@ that ships a non-default target) `tests/core/scenario.rs`.
 
 ## 4. Maneuver Roadmap
 
-1. **Level flight hold** — COMPLETE. Cascade PID: altitude outer → pitch inner, airspeed, roll, yaw. RL policy trained (`RlLevelHoldController`, obs dim=13) over a randomized 500–5000 m / 90–140 m/s target envelope, configurable via `--target-alt-range`/`--target-speed-range` on `train_ppo`/`train_bc`/`evaluate_policy`. **Heading hold** (outer heading PID over the level-hold cascade, `HeadingHoldController`) is likewise COMPLETE, with an RL variant (`RlHeadingHoldController`, obs dim=16) added over a randomized ±180° target-heading-change / 500–5000 m / 110–140 m/s envelope, configurable via `--target-heading-range`/`--target-alt-range`/`--target-speed-range`. `models/heading_hold/smoke_heading_hold.mpk` is a **pipeline smoke checkpoint only** (100k steps, ±30° training range) — not flight-quality; run `train-evaluate-optimize` for a production policy.
+1. **Level flight hold** — COMPLETE. Cascade PID: altitude outer → pitch inner, airspeed, roll, yaw. RL policy trained (`RlLevelHoldController`, obs dim=13) over a randomized 500–5000 m / 90–140 m/s target envelope, configurable via `--target-alt-range`/`--target-speed-range` on `train_ppo`/`train_bc`/`evaluate_policy`. **Heading hold** (outer heading PID over the level-hold cascade, `HeadingHoldController`) is likewise COMPLETE, with an RL variant (`RlHeadingHoldController`, obs dim=16) added over a randomized ±180° target-heading-change / 500–5000 m / 90–140 m/s envelope, configurable via `--target-heading-range`/`--target-alt-range`/`--target-speed-range`. `models/heading_hold/smoke_heading_hold.mpk` is a **pipeline smoke checkpoint only** (100k steps, ±30° training range) — not flight-quality; run `train-evaluate-optimize` for a production policy.
 2. **Ascent** — COMPLETE. Climbs to target altitude then hands off to level hold.
 3. **Formation flight (wingman)** — COMPLETE. Follows leader at fixed body-frame offset (`WingmanController`).
 4. **Circular orbit** — COMPLETE. 3-level cascade PID around world-frame point. Three RL variants: `RlOrbitController` (direct, obs dim=14), `RlOrbitResidualController` (residual over PID), and `RlLstmOrbitController` (recurrent, Wu-curriculum). Policies also reachable via behavior-cloning warm start.
@@ -802,9 +802,10 @@ path = "src/bin/mcp.rs"
 > what it does and does not guarantee. For `level_hold`/`heading_hold`, `train_ppo`, `train_bc`,
 > and `evaluate_policy` all accept `--target-alt-range <MIN:MAX|VALUE>` / `--target-speed-range
 > <MIN:MAX|VALUE>` to set the per-episode target-altitude/airspeed envelope the policy is
-> trained/evaluated across (default `500:5000` / `90:140` for `level_hold`, `500:5000` / `110:140`
-> for `heading_hold` — the tighter airspeed floor keeps every sampled corner able to sustain the
-> bank a large heading change requires); a bare `VALUE` pins a single fixed target, reproducing
+> trained/evaluated across (default `500:5000` / `90:140` for **both** `level_hold` and
+> `heading_hold` — heading_hold's floor used to be a tighter `110`, dropped because it made
+> everyday 100 m/s flight out-of-distribution; pass `--target-speed-range 110:140` to recover the
+> easier envelope); a bare `VALUE` pins a single fixed target, reproducing
 > the pre-randomization behavior. `heading_hold` additionally accepts `--target-heading-range
 > <MIN:MAX|VALUE>` in **degrees** (default `-180:180`) for the per-episode target heading *change*
 > (spawns always start on ground track 0, so the sampled value is the required turn). All three
