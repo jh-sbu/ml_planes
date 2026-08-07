@@ -229,31 +229,58 @@ loaded) jet:
 
 **`heading_hold` task** (added after the fuel-model rework, so it was never affected by the
 history above — its 16-dim observation was current from the start). The current production
-checkpoint is **`models/heading_hold/skill_heading_hold_goal3_alpha_guard.mpk`**, the first one
-retrained after the 2026-08-06 physics/envelope changes (64 Hz training integrator, 90 m/s
-airspeed floor) that left the earlier `skill_heading_hold_goal{,2}_*` checkpoints behaviorally
-stale. 1000-episode eval at the full envelope: `success_rate 0.995`,
-`mean_tail_abs_heading_rad 0.00856` (0.49°), `mean_tail_abs_altitude_m 1.431`,
-`mean_tail_abs_speed_mps 0.323`; live Rapier rollouts at four nominal operating points track to
-0.97–1.58 m / 0.37–0.39 m/s / 0.31–0.51°. Reward/PPO profiles:
-`assets/training/heading_hold_stall_safe.{reward,ppo}.ron` (pass both explicitly; neither is the
-task default). `smoke_heading_hold.mpk` remains as the pipeline smoke test only (100k steps,
-`--target-heading-range -30:30`, and the pre-2026-08 `terminal_failure_penalty: -50.0`); it is
-not flight-quality and its returns aren't comparable to anything trained since.
+checkpoint is **`models/heading_hold/skill_heading_hold_goal4_coordinated.mpk`**, also copied to
+**`models/heading_hold/current_best.mpk`** — trained **from scratch** (BC warm start, no
+`--init-from` off any prior checkpoint) on 2026-08-07. 1000-episode eval at the full envelope:
+`success_rate 1.000`, `mean_tail_abs_heading_rad 0.01019` (0.584°),
+`mean_tail_abs_altitude_m 1.161`, `mean_tail_abs_speed_mps 0.161`, and
+**`mean_tail_abs_beta_rad 0.00035` (0.020°)**; live Rapier rollouts at three nominal operating
+points track to 0.51–1.39 m / 0.14–0.28 m/s / 0.18–0.51° / β 0.008–0.030°. Reward/PPO profiles:
+`assets/training/heading_hold_coordinated.{reward,ppo}.ron` (pass both explicitly; neither is
+the task default). It supersedes `skill_heading_hold_goal3_alpha_guard.mpk`, which remains
+valid but **crabs** — see below. `smoke_heading_hold.mpk` remains as the pipeline smoke test
+only (100k steps, `--target-heading-range -30:30`, and the pre-2026-08
+`terminal_failure_penalty: -50.0`); it is not flight-quality and its returns aren't comparable
+to anything trained since.
+
+**The sideslip crab, and why the reward has to charge for it.** Every heading_hold checkpoint
+before `goal4_coordinated` held a large *steady-state* sideslip — `goal3_alpha_guard` sits at
+`mean_tail_abs_beta_rad 0.184` (10.5°), reproduced live at 8.0–9.6° at four operating points.
+This is trained-in, not a transfer gap. The aero model has **no side force** (`CY ≡ 0`, a stated
+simplification), so a crab costs the airframe nothing but a trim rudder deflection to balance
+the `cn_beta` weathercock moment — and at the historical `beta_scale: 0.5, beta_weight: 0.15`
+(slope 0.3/rad) a 10° crab cost the same per step as a 1° heading error, i.e. effectively
+nothing. Raising **`beta_weight` 0.15 → 0.75** is the entire fix and it is not delicate: a batch
+varying only that term gave tail β 0.42° at 0.75 and 0.18° at 3.0, but 3.0 wrecked heading
+tracking (29° tail error) by fighting the rudder against every turn. The PID expert, which
+closes β → rudder explicitly, reaches 0.000075 rad, so there is no plant-level tension — the
+term just has to be worth more than zero. `examples/heading_hold_expert_baseline.rs` reports
+`mean_tail_abs_beta_rad` so that classical reference is measurable. **Any new heading_hold
+profile should carry `beta_weight ≥ 0.5`**; β is observed (obs[6]) and reported by
+`MetricFamily::HeadingHold`, but no acceptance criterion mentions it, so it goes unnoticed.
 
 **Known envelope limit (heading_hold).** At the joint corner of ≥5000 m *and* ≤90 m/s *and* a
 large commanded turn, the generic jet has almost no maneuvering margin — loaded (7000 kg) level
 flight there already needs CL ≈ 1.15 of `cl_max` 1.4, capping sustained level turns near 35°
-bank — and every checkpoint to date, RL or PID, degrades badly there. Live rollouts of the
-current policy still depart at 5000 m / 90 m/s / 120° turn. This is an airframe-margin corner,
-not a tracking-quality one: the PID expert loses ~111 m of altitude at that same point versus
-~1.4 m envelope-wide (measure it with `examples/heading_hold_expert_baseline.rs`, which rolls
-`HeadingHoldEnv::make_expert()` through the same env, tail window, and success definition
-`evaluate_policy` uses). **Do not chase it by loosening `max_altitude_error`** — that hides the
-failure in the accept gate instead of fixing it. The reward's `alpha_soft_limit` /
-`alpha_excess_weight` guard (see `heading_hold_stall_safe.reward.ron`) is what keeps the policy
-off `cl_max` elsewhere in the envelope; `compute_aero_forces` merely clamps CL, so without that
-term nothing tells a policy that it is mushing.
+bank — and every checkpoint to date, RL or PID, degrades there. This is an airframe-margin
+corner, not a tracking-quality one: the PID expert loses ~115 m of altitude at that same point
+versus ~8.8 m envelope-wide (measure it with `examples/heading_hold_expert_baseline.rs`, which
+rolls `HeadingHoldEnv::make_expert()` through the same env, tail window, and success definition
+`evaluate_policy` uses). `goal4_coordinated` improved it substantially but did not solve it:
+corner-pinned eval (`--target-alt-range 5000 --target-speed-range 90`) gives `success_rate
+1.000` / 7.53 m altitude, against `goal3_alpha_guard`'s 0.865 / 5.27 m — survival is now
+perfect where it used to fail one episode in seven, but altitude error stays well above the
+~1.2 m it holds envelope-wide. **`alt_error_scale` (60 → 30) was the only lever that moved it**
+(corner altitude 9.77 → 6.05 m in one pass, at the *low* LR 3e-5 — the same change at 1e-4 gave
+only 9.14 m). Things that did **not** work, each an 8-wide batch: tightening `alpha_soft_limit`
+below 0.25 (0.22 and 0.20 collapsed envelope-wide `success_rate` to 0.66 and 0.50 — the guard's
+current value is a floor, not a starting point), `bank_soft_limit` 45°, loosening
+`speed_error_scale` to 15 to let the policy trade speed for altitude, and de-prioritizing
+heading (`heading_error_weight` → 1.0). **Do not chase it by loosening `max_altitude_error`** —
+that hides the failure in the accept gate instead of fixing it. The reward's `alpha_soft_limit`
+/ `alpha_excess_weight` guard is what keeps the policy off `cl_max` elsewhere in the envelope;
+`compute_aero_forces` merely clamps CL, so without that term nothing tells a policy that it is
+mushing.
 
 ### Action Spaces
 
@@ -748,7 +775,7 @@ that ships a non-default target) `tests/core/scenario.rs`.
 
 ## 4. Maneuver Roadmap
 
-1. **Level flight hold** — COMPLETE. Cascade PID: altitude outer → pitch inner, airspeed, roll, yaw. RL policy trained (`RlLevelHoldController`, obs dim=13) over a randomized 500–5000 m / 90–140 m/s target envelope, configurable via `--target-alt-range`/`--target-speed-range` on `train_ppo`/`train_bc`/`evaluate_policy`. **Heading hold** (outer heading PID over the level-hold cascade, `HeadingHoldController`) is likewise COMPLETE, with an RL variant (`RlHeadingHoldController`, obs dim=16) added over a randomized ±180° target-heading-change / 500–5000 m / 90–140 m/s envelope, configurable via `--target-heading-range`/`--target-alt-range`/`--target-speed-range`. Production checkpoint: `models/heading_hold/skill_heading_hold_goal3_alpha_guard.mpk` (0.49° / 1.43 m / 0.32 m/s tail error at `success_rate` 0.995 over 1000 episodes) with `assets/training/heading_hold_stall_safe.{reward,ppo}.ron`; see the heading_hold checkpoint notes in §2 for its one known envelope limit. `smoke_heading_hold.mpk` is a pipeline smoke checkpoint only.
+1. **Level flight hold** — COMPLETE. Cascade PID: altitude outer → pitch inner, airspeed, roll, yaw. RL policy trained (`RlLevelHoldController`, obs dim=13) over a randomized 500–5000 m / 90–140 m/s target envelope, configurable via `--target-alt-range`/`--target-speed-range` on `train_ppo`/`train_bc`/`evaluate_policy`. **Heading hold** (outer heading PID over the level-hold cascade, `HeadingHoldController`) is likewise COMPLETE, with an RL variant (`RlHeadingHoldController`, obs dim=16) added over a randomized ±180° target-heading-change / 500–5000 m / 90–140 m/s envelope, configurable via `--target-heading-range`/`--target-alt-range`/`--target-speed-range`. Production checkpoint: `models/heading_hold/skill_heading_hold_goal4_coordinated.mpk` (= `current_best.mpk`; 0.584° / 1.161 m / 0.161 m/s / **0.020° sideslip** tail error at `success_rate` 1.000 over 1000 episodes, trained from scratch) with `assets/training/heading_hold_coordinated.{reward,ppo}.ron`; see the heading_hold checkpoint notes in §2 for the sideslip-crab fix and the one known envelope limit. `smoke_heading_hold.mpk` is a pipeline smoke checkpoint only.
 2. **Ascent** — COMPLETE. Climbs to target altitude then hands off to level hold.
 3. **Formation flight (wingman)** — COMPLETE. Follows leader at fixed body-frame offset (`WingmanController`).
 4. **Circular orbit** — COMPLETE. 3-level cascade PID around world-frame point. Three RL variants: `RlOrbitController` (direct, obs dim=14), `RlOrbitResidualController` (residual over PID), and `RlLstmOrbitController` (recurrent, Wu-curriculum). Policies also reachable via behavior-cloning warm start.

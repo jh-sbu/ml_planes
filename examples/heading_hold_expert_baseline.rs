@@ -80,6 +80,7 @@ fn main() {
 
     let (mut successes, mut tail_n) = (0usize, 0u64);
     let (mut tail_alt, mut tail_spd, mut tail_hdg) = (0.0f64, 0.0f64, 0.0f64);
+    let mut tail_beta = 0.0f64;
 
     for _ in 0..episodes {
         env.reset();
@@ -102,6 +103,7 @@ fn main() {
                 tail_alt += (obs[0] * 200.0).abs() as f64;
                 tail_spd += (obs[1] * 50.0).abs() as f64;
                 tail_hdg += (obs[13] * 0.5).atan2(obs[14]).abs() as f64;
+                tail_beta += (obs[6] * 0.5).abs() as f64;
                 tail_n += 1;
             }
         }
@@ -128,6 +130,9 @@ fn main() {
     println!("mean_tail_abs_heading_rad,{:.6}", tail_hdg / n);
     println!("mean_tail_abs_altitude_m,{:.3}", tail_alt / n);
     println!("mean_tail_abs_speed_mps,{:.3}", tail_spd / n);
+    // Sideslip: the classical reference for "does this controller crab?" — the PID
+    // expert closes β → rudder, so its tail β is what a coordinated policy can reach.
+    println!("mean_tail_abs_beta_rad,{:.6}", tail_beta / n);
 }
 
 /// Mirrors `assets/planes/generic_jet.plane.ron` (same helper `evaluate_policy` uses).

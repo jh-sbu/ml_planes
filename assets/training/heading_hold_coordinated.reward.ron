@@ -1,0 +1,121 @@
+// Heading-hold profile behind models/heading_hold/skill_heading_hold_goal4_coordinated.mpk
+// (also copied to models/heading_hold/current_best.mpk) — the first heading_hold checkpoint
+// trained FROM SCRATCH since the 2026-08-06 physics/envelope changes, and the first one that
+// does not crab. NOT the task default; pass explicitly via --reward-config.
+//
+// # What this profile fixes: the sideslip crab
+//
+// Every prior heading_hold checkpoint held a large steady-state sideslip — the accepted
+// `skill_heading_hold_goal3_alpha_guard` sits at `mean_tail_abs_beta_rad = 0.184` (10.5 deg),
+// confirmed live at 8.0-9.6 deg at four operating points. That is a *trained-in* degenerate
+// mode, not a transfer artifact: the aero model has no side force (CY = 0), so sideslip costs
+// the airframe nothing but a trim rudder deflection, and nothing in the reward charged for it
+// either. At the old `beta_scale: 0.5, beta_weight: 0.15` the beta slope is 0.3/rad, so a
+// 10 deg crab cost the same per step as a 1 deg heading error — free, in practice.
+//
+//     beta_weight: 0.15 -> 0.75   (slope 0.3/rad -> 1.5/rad)
+//
+// is the whole fix, and it is not a delicate one: a batch varying only this term gave
+// beta = 0.42 deg at 0.75 and 0.18 deg at 3.00, but 3.00 wrecked heading tracking (29 deg
+// tail error) by fighting the rudder against every turn. 0.5-0.75 is the usable band; the
+// PID expert (which closes beta -> rudder explicitly) reaches 0.000075 rad, so there is no
+// plant-level tension here at all — the term just has to be worth more than zero.
+// `examples/heading_hold_expert_baseline.rs` now reports `mean_tail_abs_beta_rad` so that
+// classical reference is measurable.
+//
+// # Other deltas from heading_hold_stall_safe.reward.ron (its nearest sibling)
+//
+//     alt_error_scale:  60.0 -> 30.0    tightens altitude, and is the single lever that
+//                                       moved the low-speed/high-altitude corner (below)
+//     beta_weight:      0.15 -> 0.75    the anti-crab fix above
+//
+// heading_error_weight (1.5), speed_error_scale (7.0), the bank guard and the alpha guard are
+// all unchanged — the alpha guard in particular is still load-bearing and still opted in.
+//
+// # 1000-episode eval at the full 500:5000 m / 90:140 m/s / -180:180 deg envelope
+//
+//   success_rate = 1.000, mean_tail_abs_heading_rad = 0.010194 (0.584 deg),
+//   mean_tail_abs_altitude_m = 1.161, mean_tail_abs_speed_mps = 0.161,
+//   mean_tail_abs_beta_rad = 0.00035 (0.020 deg)   <- vs 0.184 rad for the prior checkpoint
+//
+// Live Rapier rollouts (1000 m/100 m/s/+90 deg, 3000/120/180, 800/140/+45):
+//   altitude 0.51-1.39 m, airspeed 0.14-0.28 m/s, heading 0.18-0.51 deg, beta 0.008-0.030 deg.
+//
+// # Training recipe (from scratch — no --init-from at stage 1)
+//
+// All stages at --target-heading-range -180:180, --target-speed-range 90:140,
+// --target-alt-range 500:5000, entropy_coef 0.0 throughout (see the .ppo.ron header).
+//
+//   1. BC warm start + PPO, lr 3e-4, 3M steps, beta_weight 0.75, alt_error_scale 60,
+//      speed_error_scale 10, heading_error_weight 1.2  (--bc-steps 300000)
+//   2. lr 1e-4, 4M, heading_error_weight -> 1.5 (terminal_failure_penalty -> -1250)
+//   3. lr 3e-5, 4M, speed_error_scale -> 7.0
+//   4. lr 1e-4, 6M    | pure volume at the *same* reward — this is what took heading
+//   5. lr 1e-4, 14M   | tail error from 1.4 deg to 0.86 deg. See the .ppo.ron header.
+//   6. lr 3e-5, 8M,  alt_error_scale -> 30.0   (corner pass)
+//   7. lr 3e-5, 14M, same reward as 6          (this profile)
+//
+// ~53M steps total. Full logs/configs: target/skill-runs/heading_hold-goal-20260807/.
+//
+// # Known limit: the 5000 m / 90 m/s corner is improved but not solved
+//
+// Corner-pinned eval (--target-alt-range 5000 --target-speed-range 90, 200 episodes):
+// success_rate 1.000, heading 1.59 deg, altitude 7.53 m. That is a real improvement on the
+// prior checkpoint (success 0.865, altitude 5.27 m at a *lower* survival rate) and ~15x
+// better than the PID expert, which loses 114.7 m of altitude at the same point — this
+// remains an airframe-margin corner, not a tracking-quality one. `alt_error_scale` 60 -> 30
+// was the only lever that moved it (corner altitude 9.77 -> 6.05 m in one pass); tightening
+// `alpha_soft_limit` below 0.25 backfired hard (success collapsed to 0.50-0.66). As in
+// heading_hold_stall_safe.reward.ron: do NOT chase this by loosening max_altitude_error.
+//
+// Deliberately has NO |roll| penalty term: bank is the control authority for turning here.
+(
+    // Heading error term [rad]: -(|heading_error| / heading_error_scale) * heading_error_weight
+    heading_error_scale:  0.5,
+    heading_error_weight: 1.5,
+
+    // Altitude error term — tightened from the sibling profile's 60.0; the corner lever.
+    alt_error_scale:      30.0,
+    alt_error_weight:     1.0,
+
+    // Airspeed error term — tighter speed tracking stabilizes the turn dynamics heading
+    // precision depends on (see heading_hold_ultra_tight_tracking.reward.ron's header).
+    speed_error_scale:    7.0,
+    speed_error_weight:   0.5,
+
+    // Sideslip angle term [rad] — 5x the historical 0.15. THE anti-crab term; see header.
+    beta_scale:           0.5,
+    beta_weight:          0.75,
+
+    // Roll-RATE term [rad/s] — discourages aileron chatter without penalizing a held bank
+    roll_rate_scale:      1.0,
+    roll_rate_weight:     0.10,
+
+    // Bank-excess envelope guard (matches the PID heading loop's own +-60 deg clamp, so the
+    // BC expert never incurs it).
+    bank_soft_limit:      1.0471975512,  // FRAC_PI_3 = 60 deg
+    bank_excess_scale:    0.35,
+    bank_excess_weight:   1.0,
+
+    // Angle-of-attack margin guard — ON (see heading_hold_stall_safe.reward.ron for why it
+    // exists). 0.25 rad = 14.3 deg, ~2.3 deg of margin to the airframe's 0.289 rad stall
+    // alpha. Do not tighten below this: 0.22 and 0.20 both collapsed envelope-wide success.
+    alpha_soft_limit:     0.25,
+    alpha_excess_scale:   0.05,
+    alpha_excess_weight:  1.0,
+
+    // Constant per-step bonus while alive
+    alive_bonus:          0.01,
+
+    // Re-derived for heading_error_weight=1.5 per the discounted-worst-case argument in
+    // heading_hold.reward.ron: at gamma=0.99 the horizon is 100 steps and the worst-case
+    // per-step heading term is -(pi/0.5)*1.5 ~= -9.42, discounting to ~= -942; -1250.0 keeps
+    // the ~1.33x margin.
+    terminal_failure_penalty: -1250.0,
+
+    // Termination conditions
+    min_altitude:       10.0,   // [m] crash if below
+    max_altitude_error:  500.0, // [m] diverged if |alt - target| exceeds this
+    min_airspeed:        60.0,  // [m/s] stall/speed-collapse floor
+    max_episode_steps:  3840,   // 60 s @ 64 Hz
+)
