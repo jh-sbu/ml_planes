@@ -38,6 +38,13 @@
     cn_r: -0.12,
     cn_delta_r: -0.10,
 
+    // Side force — each fin-driven cy_* is the opposite sign of its cn_* partner above.
+    // Modest fin/fuselage side area on a clean small-cabin airframe.
+    cy_beta: -0.75,         // restoring; keeps its NED sign (+Y is not mirrored)
+    cy_p: 0.05,             // POSITIVE here — roll rate is mirrored vs NED, so this one flips
+    cy_r: 0.25,
+    cy_delta_r: 0.16,
+
     // --- Engine ---
     thrust_max: 28000.0,    // [N] at throttle = 1.0 (2 × ~14 kN)
 

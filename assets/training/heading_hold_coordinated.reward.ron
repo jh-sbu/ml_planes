@@ -3,24 +3,36 @@
 // trained FROM SCRATCH since the 2026-08-06 physics/envelope changes, and the first one that
 // does not crab. NOT the task default; pass explicitly via --reward-config.
 //
-// # What this profile fixes: the sideslip crab
+// # SUPERSEDED RATIONALE (2026-08-10): the plant now charges for a crab itself.
+//
+// The aero model gained a real side force (cy_beta/cy_p/cy_r/cy_delta_r) and now resolves
+// drag along the full 3-D velocity vector, so sideslip is no longer a free degenerate
+// direction — the airframe pays for it directly. Everything below was measured under
+// CY = 0 and is HISTORICAL, not predictive: the 0.15/0.75/3.00 sweep, the 10.5 deg crab,
+// and the claim that nothing but the reward charges for beta. Whether beta_weight: 0.75 is
+// still right, or now double-charges against the physics, is an open question for the next
+// retrain. This profile keeps 0.75 pending evidence, and the checkpoint it trained is
+// behaviorally stale. Re-run examples/heading_hold_expert_baseline.rs to re-establish the
+// classical beta reference under the new physics before tuning this term.
+//
+// # What this profile fixed (pre-CY): the sideslip crab
 //
 // Every prior heading_hold checkpoint held a large steady-state sideslip — the accepted
 // `skill_heading_hold_goal3_alpha_guard` sits at `mean_tail_abs_beta_rad = 0.184` (10.5 deg),
 // confirmed live at 8.0-9.6 deg at four operating points. That is a *trained-in* degenerate
-// mode, not a transfer artifact: the aero model has no side force (CY = 0), so sideslip costs
+// mode, not a transfer artifact: the aero model had no side force (CY = 0), so sideslip cost
 // the airframe nothing but a trim rudder deflection, and nothing in the reward charged for it
 // either. At the old `beta_scale: 0.5, beta_weight: 0.15` the beta slope is 0.3/rad, so a
 // 10 deg crab cost the same per step as a 1 deg heading error — free, in practice.
 //
 //     beta_weight: 0.15 -> 0.75   (slope 0.3/rad -> 1.5/rad)
 //
-// is the whole fix, and it is not a delicate one: a batch varying only this term gave
+// was the whole fix, and it was not a delicate one: a batch varying only this term gave
 // beta = 0.42 deg at 0.75 and 0.18 deg at 3.00, but 3.00 wrecked heading tracking (29 deg
-// tail error) by fighting the rudder against every turn. 0.5-0.75 is the usable band; the
-// PID expert (which closes beta -> rudder explicitly) reaches 0.000075 rad, so there is no
-// plant-level tension here at all — the term just has to be worth more than zero.
-// `examples/heading_hold_expert_baseline.rs` now reports `mean_tail_abs_beta_rad` so that
+// tail error) by fighting the rudder against every turn. 0.5-0.75 was the usable band; the
+// PID expert (which closes beta -> rudder explicitly) reached 0.000075 rad, so there was no
+// plant-level tension at all — the term just had to be worth more than zero.
+// `examples/heading_hold_expert_baseline.rs` reports `mean_tail_abs_beta_rad` so that
 // classical reference is measurable.
 //
 // # Other deltas from heading_hold_stall_safe.reward.ron (its nearest sibling)
@@ -83,7 +95,9 @@
     speed_error_scale:    7.0,
     speed_error_weight:   0.5,
 
-    // Sideslip angle term [rad] — 5x the historical 0.15. THE anti-crab term; see header.
+    // Sideslip angle term [rad] — 5x the historical 0.15. Was THE anti-crab term back when
+    // CY = 0 made a crab free; the plant now charges for sideslip itself, so this value is
+    // unvalidated under the current physics. See the SUPERSEDED RATIONALE in the header.
     beta_scale:           0.5,
     beta_weight:          0.75,
 

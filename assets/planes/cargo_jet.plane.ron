@@ -38,6 +38,13 @@
     cn_r: -0.12,
     cn_delta_r: -0.10,
 
+    // Side force — each fin-driven cy_* is the opposite sign of its cn_* partner above.
+    // Largest |cy_beta| of the fleet: deep slab-sided freight fuselage plus a tall T-tail fin.
+    cy_beta: -0.90,         // restoring; keeps its NED sign (+Y is not mirrored)
+    cy_p: 0.06,             // POSITIVE here — roll rate is mirrored vs NED, so this one flips
+    cy_r: 0.30,             // long tail arm on a large span
+    cy_delta_r: 0.15,       // big rudder, but normalized by a very large wing area
+
     // --- Engine ---
     thrust_max: 720000.0,   // [N] at throttle = 1.0 (4 × ~180 kN)
 

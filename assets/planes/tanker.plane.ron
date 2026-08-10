@@ -39,6 +39,13 @@
     cn_r: -0.12,
     cn_delta_r: -0.10,
 
+    // Side force — each fin-driven cy_* is the opposite sign of its cn_* partner above.
+    // Long tube fuselage and tall fin, slightly slimmer than the cargo jet.
+    cy_beta: -0.85,         // restoring; keeps its NED sign (+Y is not mirrored)
+    cy_p: 0.06,             // POSITIVE here — roll rate is mirrored vs NED, so this one flips
+    cy_r: 0.28,             // long tail arm on a large span
+    cy_delta_r: 0.15,
+
     // --- Engine ---
     thrust_max: 384000.0,   // [N] at throttle = 1.0 (4 × ~96 kN)
 

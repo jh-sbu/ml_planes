@@ -88,7 +88,7 @@ src/
 
 | Type | Kind | Description |
 |---|---|---|
-| `PlaneConfig` | RON asset | Geometry, mass/inertia, aero coefficients, engine params, **`powerplant`**, control limits |
+| `PlaneConfig` | RON asset | Geometry, mass/inertia, aero coefficients (longitudinal, lateral-directional, **and the four `cy_*` side-force derivatives**), engine params, **`powerplant`**, control limits. Every field except `powerplant` is **required** — see the `.plane.ron` schema note below |
 | `Powerplant` | enum (in `PlaneConfig`) | `JetFuel { capacity_kg, tsfc, fuel_type }` (burns mass, lightens, flames out) or `Electric { capacity, consumption }` (constant mass). Helpers: `capacity()`, `contributes_mass()`, `effective_mass(empty, remaining)`, `burn_rate(thrust)`. `#[serde(default)]` ⇒ generic-jet default |
 | `FuelType` | enum | `JetA`/`Jp8`/`Jp5` + `properties()` (density, specific energy) + `label()`. For HUD/display; kerosene grades are ~identical so the grade does **not** enter the burn math |
 | `FlightPlan` | RON asset | Ordered legs (`Waypoint`/`Orbit`) + L1 period/damping; loaded from `assets/plans/*.plan.ron` via the Bevy asset loader |
@@ -152,24 +152,53 @@ the self-contained training integrator, so both see the same altitude physics.
 |---|---|
 | Lift | `L = q̄·S·(CL0 + CLα·α + CLδe·δe)` |
 | Drag | `D = q̄·S·(CD0 + CDi·CL²)` |
+| Side force | `Y = q̄·S·(CYβ·β + CYp·(p·b/2V) + CYr·(r·b/2V) + CYδr·δr)` |
 | Pitching moment | `M = q̄·S·c̄·(Cm0 + Cmα·α + Cmq·(q·c̄/2V) + Cmδe·δe)` |
 | Roll / Yaw | Lateral-directional coefficients + stability derivatives (see `PlaneConfig`) |
 
 All coefficients are defined per-asset in `.plane.ron` files. No compile-time aero data.
 
+**`.plane.ron` schema requirements.** Field names must exactly match `PlaneConfig`
+(`plane/config.rs`), and **every field except `powerplant` is required** — `powerplant` is the
+only one carrying `#[serde(default)]`. Adding a field therefore invalidates every shipped asset,
+which is deliberate: an aero coefficient that silently defaults to zero is a plane quietly flying
+the wrong physics. (The four `cy_*` fields were added this way on 2026-08-10; a `.plane.ron`
+missing them fails to load rather than reverting to the old zero-side-force behavior.) The
+lateral block groups as roll (`cl_*`) → yaw (`cn_*`) → side force (`cy_*`); `tests/core/plane_assets.rs`
+parses all five shipped airframes and pins the sign of every sign-sensitive derivative, so a new
+airframe with a transcribed-wrong coefficient fails there rather than in flight.
+
+Lift and drag are resolved into body axes from the **full 3-D** velocity direction
+`v̂ = (cosα·cosβ, sinβ, −sinα·cosβ)`: drag opposes `v̂` outright, lift stays normal to it in the
+plane of symmetry. Side force is a **body-axis** buildup applied directly along +Y (not rotated
+with the wind frame). At β = 0 the whole assembly collapses term-for-term to the older α-only
+rotation, so trimmed flight is unchanged and only sideslipping flight sees the difference —
+pinned by `aerodynamics::model::tests::zero_sideslip_matches_alpha_only_rotation`.
+
 **Stated simplifications** (accepted scope — full list in the `aerodynamics/model.rs` header):
-no side force (CY ≡ 0; sideslip makes moments, not forces); lift/drag rotated wind→body by α
-only (β not in the force rotation); thrust body-fixed along +X; gyroscopic ω×(Iω) omitted on
-*both* sides (Rapier's `gyroscopic_forces_enabled` defaults off, matching `integrate_state`);
-dynamics use g = 9.81 while the ISA density model uses 9.80665 internally. Fuel-burn ordering
-differs by one tick at flameout only: the live sim burns before applying forces
-(`consume_fuel` → `apply_aerodynamic_forces`), training burns after.
+side force is a body-axis buildup rather than a wind-axis `Y` rotated through the full 3-axis
+transform, and there is no `cy_delta_a`; no sideslip drag (`CD` depends on `CL` only, so a crab
+costs the resolved `−D·sinβ` but no explicit `CD_β²`); thrust body-fixed along +X; gyroscopic
+ω×(Iω) omitted on *both* sides (Rapier's `gyroscopic_forces_enabled` defaults off, matching
+`integrate_state`); dynamics use g = 9.81 while the ISA density model uses 9.80665 internally.
+Fuel-burn ordering differs by one tick at flameout only: the live sim burns before applying
+forces (`consume_fuel` → `apply_aerodynamic_forces`), training burns after.
 
 **Sign conventions:** the body frame (+X fwd, +Y right, +Z up) mirrors NED about the roll and
 pitch axes — positive roll torque = +Y wing **up**, positive pitch torque = nose **down**.
 Derivatives copied from NED references must flip: `cm_alpha` and `cl_beta` are **positive**
 here (stable), `cl_r` **negative**. Dampings (`cl_p`, `cm_q`, `cn_r`) and `cn_beta` keep their
 usual signs. `tests/core/plane_assets.rs` pins these for every shipped airframe.
+
+The **Y axis is not mirrored**, so a *force* along +Y keeps its NED sign: `cy_beta` is
+**negative** (restoring), `cy_r` and `cy_delta_r` **positive** — all three unchanged from
+standard references. The exception is **`cy_p`, which flips to positive**, because roll *rate*
+is mirrored (positive `p` = +Y wing up here), so the fin — above the CG — swings −Y and makes a
++Y force. `cy_p` is neither a damping nor a roll/pitch-mirrored moment derivative, so neither
+half of the rule above covers it; it is the easiest coefficient in the schema to get wrong.
+Because the fin is aft of the CG, each fin-driven side force makes the **opposite-signed** yaw
+moment (`sign(cy_beta) = -sign(cn_beta)`, and likewise for `cy_r`/`cn_r`, `cy_delta_r`/
+`cn_delta_r`) — that pairing is asserted per-airframe and is the best check on new numbers.
 
 ### Fuel & Charge (Powerplant)
 
@@ -227,6 +256,18 @@ loaded) jet:
 # then re-tune PID gains for the heavier jet via the `tune` skill (writes generic_jet.tuning.ron).
 ```
 
+> **2026-08-10 — the side-force (CY) change invalidates every checkpoint behaviorally.** The aero
+> model gained a real lateral force (`cy_beta`/`cy_p`/`cy_r`/`cy_delta_r`) and now resolves drag
+> along the full 3-D velocity. Observation dimensions are **unchanged**, so all 295 `.mpk` files
+> under `models/` still *load* — and nothing in the test suite will tell you they are stale. They
+> are stale anyway, in the same sense as the 2026-07 audit above: **retrain before production
+> use, and treat every metric quoted in this file for a pre-2026-08-10 checkpoint as pre-CY.**
+> The checkpoints are **deliberately retained, not deleted** — archive-vs-keep is an open user
+> decision. PID gains (`*.tuning.ron`) were also tuned against the zero-CY plant and want a
+> `tune` pass; the shipped gains still pass every closed-loop test, so this is quality, not
+> breakage. Trimmed wings-level flight (β = 0) is bit-for-bit unchanged — only sideslipping
+> flight moved, which is the entire point.
+
 **`heading_hold` task** (added after the fuel-model rework, so it was never affected by the
 history above — its 16-dim observation was current from the start). The current production
 checkpoint is **`models/heading_hold/skill_heading_hold_goal4_coordinated.mpk`**, also copied to
@@ -243,20 +284,30 @@ only (100k steps, `--target-heading-range -30:30`, and the pre-2026-08
 `terminal_failure_penalty: -50.0`); it is not flight-quality and its returns aren't comparable
 to anything trained since.
 
-**The sideslip crab, and why the reward has to charge for it.** Every heading_hold checkpoint
-before `goal4_coordinated` held a large *steady-state* sideslip — `goal3_alpha_guard` sits at
-`mean_tail_abs_beta_rad 0.184` (10.5°), reproduced live at 8.0–9.6° at four operating points.
-This is trained-in, not a transfer gap. The aero model has **no side force** (`CY ≡ 0`, a stated
-simplification), so a crab costs the airframe nothing but a trim rudder deflection to balance
-the `cn_beta` weathercock moment — and at the historical `beta_scale: 0.5, beta_weight: 0.15`
-(slope 0.3/rad) a 10° crab cost the same per step as a 1° heading error, i.e. effectively
-nothing. Raising **`beta_weight` 0.15 → 0.75** is the entire fix and it is not delicate: a batch
-varying only that term gave tail β 0.42° at 0.75 and 0.18° at 3.0, but 3.0 wrecked heading
-tracking (29° tail error) by fighting the rudder against every turn. The PID expert, which
-closes β → rudder explicitly, reaches 0.000075 rad, so there is no plant-level tension — the
-term just has to be worth more than zero. `examples/heading_hold_expert_baseline.rs` reports
-`mean_tail_abs_beta_rad` so that classical reference is measurable. **Any new heading_hold
-profile should carry `beta_weight ≥ 0.5`**; β is observed (obs[6]) and reported by
+**The sideslip crab — a plant defect that was patched in the reward, now fixed at the source.**
+Every heading_hold checkpoint before `goal4_coordinated` held a large *steady-state* sideslip —
+`goal3_alpha_guard` sits at `mean_tail_abs_beta_rad 0.184` (10.5°), reproduced live at 8.0–9.6°
+at four operating points. This was trained-in, not a transfer gap, and the root cause was the
+**aero model, not the reward**: with `CY ≡ 0` a crab cost the airframe nothing but a trim rudder
+deflection to balance the `cn_beta` weathercock moment, making sideslip a *free degenerate
+direction* the optimizer was happy to wander into. At the historical `beta_scale: 0.5,
+beta_weight: 0.15` (slope 0.3/rad) a 10° crab cost the same per step as a 1° heading error, i.e.
+effectively nothing. Raising **`beta_weight` 0.15 → 0.75** was the fix available at the time and
+it was not delicate: a batch varying only that term gave tail β 0.42° at 0.75 and 0.18° at 3.0,
+but 3.0 wrecked heading tracking (29° tail error) by fighting the rudder against every turn.
+
+**As of 2026-08-10 the plant itself charges for a crab** (see the side-force note above):
+sideslip now generates a real restoring lateral force plus the resolved `−D·sinβ` drag
+component. That removes the free direction the workaround existed to price. **Every number in
+the paragraph above was measured under `CY ≡ 0` and is therefore historical, not predictive** —
+including the 0.15/0.75/3.0 sweep. Whether `beta_weight: 0.75` is still the right value, or
+whether it now double-charges against the physics, is an **open question for the next retrain**;
+the shipped profiles keep 0.75 pending evidence. Until that evidence exists, keep **`beta_weight
+≥ 0.5`** on any new heading_hold profile — an under-priced β term is the failure mode with a
+track record here. The PID expert, which closes β → rudder explicitly, reached 0.000075 rad
+pre-CY, so there was never plant-level tension; `examples/heading_hold_expert_baseline.rs`
+reports `mean_tail_abs_beta_rad`, and re-running it is the cheapest way to re-establish that
+classical reference under the new physics. β is observed (obs[6]) and reported by
 `MetricFamily::HeadingHold`, but no acceptance criterion mentions it, so it goes unnoticed.
 
 **Known envelope limit (heading_hold).** At the joint corner of ≥5000 m *and* ≤90 m/s *and* a
@@ -775,7 +826,7 @@ that ships a non-default target) `tests/core/scenario.rs`.
 
 ## 4. Maneuver Roadmap
 
-1. **Level flight hold** — COMPLETE. Cascade PID: altitude outer → pitch inner, airspeed, roll, yaw. RL policy trained (`RlLevelHoldController`, obs dim=13) over a randomized 500–5000 m / 90–140 m/s target envelope, configurable via `--target-alt-range`/`--target-speed-range` on `train_ppo`/`train_bc`/`evaluate_policy`. **Heading hold** (outer heading PID over the level-hold cascade, `HeadingHoldController`) is likewise COMPLETE, with an RL variant (`RlHeadingHoldController`, obs dim=16) added over a randomized ±180° target-heading-change / 500–5000 m / 90–140 m/s envelope, configurable via `--target-heading-range`/`--target-alt-range`/`--target-speed-range`. Production checkpoint: `models/heading_hold/skill_heading_hold_goal4_coordinated.mpk` (= `current_best.mpk`; 0.584° / 1.161 m / 0.161 m/s / **0.020° sideslip** tail error at `success_rate` 1.000 over 1000 episodes, trained from scratch) with `assets/training/heading_hold_coordinated.{reward,ppo}.ron`; see the heading_hold checkpoint notes in §2 for the sideslip-crab fix and the one known envelope limit. `smoke_heading_hold.mpk` is a pipeline smoke checkpoint only.
+1. **Level flight hold** — COMPLETE. Cascade PID: altitude outer → pitch inner, airspeed, roll, yaw. RL policy trained (`RlLevelHoldController`, obs dim=13) over a randomized 500–5000 m / 90–140 m/s target envelope, configurable via `--target-alt-range`/`--target-speed-range` on `train_ppo`/`train_bc`/`evaluate_policy`. **Heading hold** (outer heading PID over the level-hold cascade, `HeadingHoldController`) is likewise COMPLETE, with an RL variant (`RlHeadingHoldController`, obs dim=16) added over a randomized ±180° target-heading-change / 500–5000 m / 90–140 m/s envelope, configurable via `--target-heading-range`/`--target-alt-range`/`--target-speed-range`. Production checkpoint: `models/heading_hold/skill_heading_hold_goal4_coordinated.mpk` (= `current_best.mpk`; 0.584° / 1.161 m / 0.161 m/s / **0.020° sideslip** tail error at `success_rate` 1.000 over 1000 episodes, trained from scratch) with `assets/training/heading_hold_coordinated.{reward,ppo}.ron` — **all of those numbers are pre-CY** (measured before the 2026-08-10 side-force change) and the checkpoint is behaviorally stale pending a retrain; see the heading_hold checkpoint notes in §2 for the sideslip-crab history and the one known envelope limit. `smoke_heading_hold.mpk` is a pipeline smoke checkpoint only.
 2. **Ascent** — COMPLETE. Climbs to target altitude then hands off to level hold.
 3. **Formation flight (wingman)** — COMPLETE. Follows leader at fixed body-frame offset (`WingmanController`).
 4. **Circular orbit** — COMPLETE. 3-level cascade PID around world-frame point. Three RL variants: `RlOrbitController` (direct, obs dim=14), `RlOrbitResidualController` (residual over PID), and `RlLstmOrbitController` (recurrent, Wu-curriculum). Policies also reachable via behavior-cloning warm start.

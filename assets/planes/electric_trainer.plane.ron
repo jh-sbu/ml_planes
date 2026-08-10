@@ -36,6 +36,13 @@
     cn_r: -0.12,
     cn_delta_r: -0.10,
 
+    // Side force — each fin-driven cy_* is the opposite sign of its cn_* partner above.
+    // Smallest |cy_beta| of the fleet (light-trainer class): little fuselage side area to push on.
+    cy_beta: -0.50,         // restoring; keeps its NED sign (+Y is not mirrored)
+    cy_p: 0.04,             // POSITIVE here — roll rate is mirrored vs NED, so this one flips
+    cy_r: 0.20,             // short tail arm
+    cy_delta_r: 0.18,       // proportionally large rudder on a small wing
+
     // --- Engine ---
     thrust_max: 8000.0,     // [N] at throttle = 1.0 (electric motor)
 

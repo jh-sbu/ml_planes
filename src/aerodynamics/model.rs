@@ -3,11 +3,14 @@
 //!
 //! # Stated simplifications (accepted scope, not bugs)
 //!
-//! - **No side force**: sideslip produces moments (`cl_beta`, `cn_beta`) but zero
-//!   force — there is no CY derivative. Lift/drag are rotated wind→body by `alpha`
-//!   only; `beta` does not enter the force rotation, so drag acts in the body x-z
-//!   plane rather than along the full 3-D velocity. Fine for the small-beta regime
-//!   the controllers fly.
+//! - **Side force is a body-axis buildup**: `CY = cy_beta·β + cy_p·(pb/2V) +
+//!   cy_r·(rb/2V) + cy_delta_r·δr` is applied straight along body +Y rather than as a
+//!   wind-axis `Y` rotated through the full 3-axis wind→body transform. Lift likewise
+//!   stays normal to the wind in the plane of symmetry (no `beta` dependence), and
+//!   there is no `cy_delta_a`. Drag *is* resolved along the full 3-D velocity vector.
+//! - **No sideslip drag**: `CD` depends on `CL` only, so a crab costs the resolved
+//!   `−D·sin β` component but carries no explicit `CD_β²` penalty. Real airframes pay
+//!   noticeably more than that at large `beta`.
 //! - **Thrust is body-fixed along +X** (see `compute_aero_forces`); no thrust
 //!   incidence or offset moments.
 //! - **No gyroscopic coupling**: the training integrator omits the ω×(Iω) Euler
@@ -26,6 +29,25 @@
 //! dampings (`cl_p`, `cm_q`, `cn_r`) oppose their own rate and keep the usual
 //! negative sign; the yaw sense (positive = nose toward +Y) matches NED, so
 //! `cn_beta` stays positive. Guarded by `tests/core/plane_assets.rs`.
+//!
+//! **The Y axis itself is *not* mirrored**, so a *force* along +Y keeps its NED sign.
+//! A side-force derivative therefore flips only if the quantity it multiplies has a
+//! mirrored sense — which is true of roll rate `p` and of nothing else here:
+//!
+//! | Derivative | Sign | vs NED | Why |
+//! |---|---|---|---|
+//! | `cy_beta` | negative | same | β>0 (wind from +Y) pushes the airframe −Y |
+//! | `cy_r` | positive | same | r>0 swings the aft fin −Y → local β<0 → force +Y |
+//! | `cy_delta_r` | positive | same | rudder pushes the tail +Y, yawing the nose −Y |
+//! | `cy_p` | **positive** | **FLIPPED** | p>0 is +Y wing *up* here, so the fin (above the CG) swings −Y → force +Y |
+//!
+//! `cy_p` is the trap: it is neither a damping (which would keep its sign) nor one of
+//! the roll/pitch-mirrored moment derivatives the paragraph above covers.
+//!
+//! Because the fin sits aft of the CG, each fin-driven side force produces the
+//! **opposite-signed** yaw moment. That pairing — `sign(cy_beta) = -sign(cn_beta)`,
+//! `sign(cy_r) = -sign(cn_r)`, `sign(cy_delta_r) = -sign(cn_delta_r)` — is the most
+//! reliable check on a new airframe's numbers, and is asserted for every shipped asset.
 
 use crate::aerodynamics::atmosphere::{air_density, density_ratio};
 use crate::plane::{ControlInputs, FlightState, PlaneConfig};
@@ -98,20 +120,35 @@ pub fn compute_aero_forces(
     // consumable (flameout). Shared with the per-tick fuel-burn accounting.
     let thrust = engine_thrust(state, inputs, cfg);
 
-    // Rotate lift/drag from wind axes (aligned with velocity) to body axes using
-    // alpha. For small alpha this is approximately (-drag, 0, lift), but at large
-    // alpha (steep dive) the correction is critical: without it, negative CL at
-    // large negative alpha produces a downward force that grows as V² and causes
-    // finite-time blow-up to infinity → NaN. Thrust is body-fixed along +X (the
-    // engine turns with the airframe) and must NOT be rotated with the wind frame.
-    let fx_wind = -drag;
-    let fz_wind = lift;
+    // --- Side force coefficient ---
+    // CY is a body-axis coefficient: it is applied directly along +Y and is NOT rotated
+    // with the wind frame. `cy_p` carries the flipped sign (see the module header).
+    let cy = cfg.cy_beta * beta
+        + cfg.cy_p * (p * b / (2.0 * v))
+        + cfg.cy_r * (r * b / (2.0 * v))
+        + cfg.cy_delta_r * delta_r;
+
+    // Resolve the wind-axis forces into body axes. The unit velocity vector in body
+    // axes is (cos α·cos β, sin β, −sin α·cos β), matching how `FlightState` defines
+    // alpha = atan2(-v_body.z, v_body.x) and beta = asin(v_body.y / V).
+    //
+    // Drag opposes that full 3-D vector. The alpha rotation is what keeps the model
+    // stable at large alpha (steep dive): without it, negative CL at large negative
+    // alpha produces a downward force that grows as V² and blows up to NaN. The beta
+    // terms vanish identically at beta = 0 (cos β = 1, sin β = 0), so trimmed flight
+    // reduces exactly to the older alpha-only rotation.
+    //
+    // Lift stays normal to the wind in the aircraft's plane of symmetry, so it has no
+    // beta dependence. Thrust is body-fixed along +X (the engine turns with the
+    // airframe) and must NOT be rotated with the wind frame.
     let (sin_a, cos_a) = alpha.sin_cos();
-    let force_body = Vec3::new(
-        thrust + fx_wind * cos_a + fz_wind * sin_a,
-        0.0,
-        -fx_wind * sin_a + fz_wind * cos_a,
-    );
+    let (sin_b, cos_b) = beta.sin_cos();
+
+    let drag_body = Vec3::new(-drag * cos_a * cos_b, -drag * sin_b, drag * sin_a * cos_b);
+    let lift_body = Vec3::new(lift * sin_a, 0.0, lift * cos_a);
+    let side_body = Vec3::new(0.0, q_bar * cfg.wing_area * cy, 0.0);
+
+    let force_body = Vec3::new(thrust, 0.0, 0.0) + drag_body + lift_body + side_body;
 
     // --- Moment coefficients ---
     let cm =
@@ -167,6 +204,10 @@ mod tests {
             cn_beta: 0.10,
             cn_r: -0.12,
             cn_delta_r: -0.10,
+            cy_beta: -0.80,
+            cy_p: 0.05,
+            cy_r: 0.25,
+            cy_delta_r: 0.18,
             thrust_max: 60000.0,
             powerplant: Default::default(),
             aileron_limit: 0.4363,
@@ -342,6 +383,143 @@ mod tests {
             forces.torque_body.x > 0.0,
             "dihedral roll torque={:.1} should be positive (windward wing up) for beta=+0.1",
             forces.torque_body.x
+        );
+    }
+
+    #[test]
+    fn sideslip_produces_restoring_side_force() {
+        // beta > 0 means the relative wind comes from +Y, so the fin and fuselage are
+        // pushed toward -Y. The Y axis is NOT mirrored vs NED (only roll and pitch are),
+        // so cy_beta keeps its standard NEGATIVE sign and the force must be negative.
+        let cfg = jet_config();
+        let mut state = zero_state();
+        state.airspeed = 100.0;
+        state.beta = 0.1;
+
+        let forces = compute_aero_forces(&state, &zero_inputs(), &cfg);
+        assert!(
+            forces.force_body.y < 0.0,
+            "side force={:.1} should be negative (restoring) for beta=+0.1",
+            forces.force_body.y
+        );
+    }
+
+    #[test]
+    fn rudder_produces_side_force_and_opposite_yaw() {
+        // The fin is aft of the CG, so its side force and the yaw moment it generates
+        // always have opposite signs: positive rudder pushes the tail toward +Y, which
+        // swings the nose toward -Y. cy_delta_r > 0 pairs with cn_delta_r < 0.
+        let cfg = jet_config();
+        let mut state = zero_state();
+        state.airspeed = 100.0;
+        let mut inputs = zero_inputs();
+        inputs.rudder = 1.0;
+
+        let forces = compute_aero_forces(&state, &inputs, &cfg);
+        assert!(
+            forces.force_body.y > 0.0,
+            "rudder side force={:.1} should be positive for rudder=+1",
+            forces.force_body.y
+        );
+        assert!(
+            forces.torque_body.z < 0.0,
+            "rudder yaw moment={:.1} should be negative (opposite the side force)",
+            forces.torque_body.z
+        );
+    }
+
+    #[test]
+    fn yaw_rate_produces_side_force() {
+        // Yaw rate r > 0 swings the nose toward +Y, so the aft fin swings toward -Y and
+        // sees a negative local sideslip → positive side force. Yaw sense matches NED,
+        // so cy_r keeps its standard POSITIVE sign.
+        let cfg = jet_config();
+        let mut state = zero_state();
+        state.airspeed = 100.0;
+        state.angular_velocity = Vec3::new(0.0, 0.0, 0.5); // r = 0.5 rad/s
+
+        let forces = compute_aero_forces(&state, &zero_inputs(), &cfg);
+        assert!(
+            forces.force_body.y > 0.0,
+            "yaw-rate side force={:.1} should be positive for r=+0.5",
+            forces.force_body.y
+        );
+    }
+
+    #[test]
+    fn roll_rate_produces_side_force() {
+        // The sign trap. Positive roll rate here raises the +Y wing (the mirror of NED),
+        // so the fin — which sits ABOVE the CG — swings toward -Y, sees a negative local
+        // sideslip, and generates a POSITIVE side force. cy_p is therefore the one side-
+        // force derivative whose sign is flipped relative to NED references.
+        let cfg = jet_config();
+        let mut state = zero_state();
+        state.airspeed = 100.0;
+        state.angular_velocity = Vec3::new(0.5, 0.0, 0.0); // p = 0.5 rad/s
+
+        let forces = compute_aero_forces(&state, &zero_inputs(), &cfg);
+        assert!(
+            forces.force_body.y > 0.0,
+            "roll-rate side force={:.1} should be positive for p=+0.5 (sign flipped vs NED)",
+            forces.force_body.y
+        );
+    }
+
+    #[test]
+    fn drag_resolves_along_full_velocity() {
+        // Drag opposes the FULL 3-D velocity vector, not just its projection into the
+        // body x-z plane. With every cy_* zeroed the only remaining lateral force is the
+        // -D*sin(beta) component of drag, which must still push against the sideslip.
+        let mut cfg = jet_config();
+        cfg.cy_beta = 0.0;
+        cfg.cy_p = 0.0;
+        cfg.cy_r = 0.0;
+        cfg.cy_delta_r = 0.0;
+        let mut state = zero_state();
+        state.airspeed = 100.0;
+        state.beta = 0.2;
+
+        let forces = compute_aero_forces(&state, &zero_inputs(), &cfg);
+        assert!(
+            forces.force_body.y < 0.0,
+            "drag-only side force={:.1} should be negative for beta=+0.2",
+            forces.force_body.y
+        );
+    }
+
+    #[test]
+    fn zero_sideslip_matches_alpha_only_rotation() {
+        // Regression guard on the reduction: at beta = 0 the full 3-D resolution must
+        // collapse term-for-term to the original alpha-only rotation, so none of the
+        // pre-existing longitudinal expectations move.
+        let cfg = jet_config();
+        let mut state = zero_state();
+        state.airspeed = 100.0;
+        state.alpha = 0.1;
+        state.beta = 0.0;
+        let inputs = zero_inputs();
+
+        let forces = compute_aero_forces(&state, &inputs, &cfg);
+
+        let q_bar = 0.5 * air_density(state.altitude) * state.airspeed * state.airspeed;
+        let cl = (cfg.cl0 + cfg.cl_alpha * state.alpha).clamp(-cfg.cl_max, cfg.cl_max);
+        let lift = q_bar * cfg.wing_area * cl;
+        let drag = q_bar * cfg.wing_area * (cfg.cd0 + cfg.cd_induced * cl * cl);
+        let (sin_a, cos_a) = state.alpha.sin_cos();
+
+        assert!(
+            (forces.force_body.x - (-drag * cos_a + lift * sin_a)).abs() < 1.0,
+            "Fx={:.3} should match the alpha-only rotation",
+            forces.force_body.x
+        );
+        assert!(
+            (forces.force_body.z - (drag * sin_a + lift * cos_a)).abs() < 1.0,
+            "Fz={:.3} should match the alpha-only rotation",
+            forces.force_body.z
+        );
+        assert_eq!(
+            forces.force_body.y, 0.0,
+            "no side force at zero sideslip, zero rates, zero rudder"
         );
     }
 

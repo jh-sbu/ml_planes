@@ -96,15 +96,21 @@ asset, with air density and thrust scaled by altitude (ISA atmosphere model):
 |---|---|
 | Lift | `L = q·S·(CL0 + CLα·α + CLδe·δe)` |
 | Drag | `D = q·S·(CD0 + CDi·CL²)` |
+| Side force | `Y = q·S·(CYβ·β + CYp·(p·b/2V) + CYr·(r·b/2V) + CYδr·δr)` |
 | Pitching moment | `M = q·S·c̄·(Cm0 + Cmα·α + Cmq·(q·c̄/2V) + Cmδe·δe)` |
 | Roll / Yaw | Lateral-directional coefficients + stability derivatives |
+
+Lift and drag are resolved into body axes from the full 3-D velocity direction, so a
+sideslipping plane feels drag along its true flight path; side force is applied along the
+body lateral axis. Sideslip therefore costs real energy rather than being free.
 
 ## Plane Assets & Scenarios
 
 All aerodynamic data lives in `.plane.ron` files under `assets/planes/` (e.g.
 `generic_jet`, `business_jet`, `cargo_jet`, `tanker`, `electric_trainer`), each paired
 with a `.tuning.ron` PID gain pool. The asset loader parses these at runtime — no
-compile-time plane data. Each plane also declares a `powerplant` (jet fuel or electric
+compile-time plane data. Every coefficient is required: a `.plane.ron` missing one fails
+to load rather than silently defaulting it to zero. Each plane also declares a `powerplant` (jet fuel or electric
 charge) that burns down over a flight and lightens (jets) or holds constant (electric)
 mass.
 

@@ -58,9 +58,11 @@
 
  CL = clamp(cl0 + cl_alpha·α + cl_delta_e·δe, -cl_max, cl_max)
  CD = cd0 + cd_induced·CL²
- lift  = q̄·S·CL                     → force_body.
- drag  = q̄·S·CD                     → force_body.x (negative, opposing motion
- thrust = inputs.throttle · thrust_max → force_body.x (positive)
+ CY = cy_beta·β + cy_p·(p·b/2V) + cy_r·(r·b/2V) + cy_delta_r·δr
+ lift  = q̄·S·CL                     → normal to the wind, in the plane of symmetry
+ drag  = q̄·S·CD                     → opposes the FULL 3-D velocity vector
+ side  = q̄·S·CY                     → force_body.y (body-axis, not rotated)
+ thrust = inputs.throttle · thrust_max → force_body.x (positive, body-fixed)
 
  Cm = cm0 + cm_alpha·α + cm_q·(q·c̄/2V) + cm_delta_e·δ
  Cl = cl_beta·β + cl_p·(p·b/2V) + cl_r·(r·b/2V) + cl_delta_a·δa
@@ -72,7 +74,11 @@
 
  Guard: return zero forces when V < 1e-3 to avoid division by zero.
 
- Note: PlaneConfig currently lacks cy_beta; side force is zero for now. Add later if needed.
+ Note: side force was deferred at M2 ("PlaneConfig currently lacks cy_beta; side force is
+ zero for now") and CLOSED on 2026-08-10 — PlaneConfig gained cy_beta/cy_p/cy_r/cy_delta_r
+ and drag is now resolved along the full 3-D velocity. cy_p's sign is FLIPPED vs NED (roll
+ rate is mirrored in this frame); see the model.rs header. At β = 0 the force assembly
+ reduces exactly to the older α-only rotation.
 
  Tests (inline in model.rs — most critical tests in project):
  - zero_airspeed_returns_zero — no NaN/panic
@@ -82,6 +88,12 @@
  - elevator_up_increases_lift_and_nose_up_pitch
  - cl_clamped_at_cl_max
  - cm_q_damping_sign — positive q → negative Cm contribution (cm_q = -8.0)
+ - sideslip_produces_restoring_side_force — β > 0 → negative Fy
+ - rudder_produces_side_force_and_opposite_yaw — fin aft of CG pairs +Fy with -Cn
+ - yaw_rate_produces_side_force / roll_rate_produces_side_force — rate derivative signs
+ - drag_resolves_along_full_velocity — cy_* zeroed, β > 0 still gives negative Fy
+ - zero_sideslip_matches_alpha_only_rotation — the β = 0 reduction guard
+ (plus tests/core/plane_assets.rs: per-airframe cy_* signs + the cy/cn pairing)
 
  ---
  Milestone 3 — controllers/ trait + PID + Manual [COMPLETE]

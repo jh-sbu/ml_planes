@@ -35,6 +35,13 @@
     cn_r: -0.12,            // yaw damping
     cn_delta_r: -0.10,      // dCn/dδr (rudder effectiveness)
 
+    // Side force. The fin sits aft of the CG, so each fin-driven cy_* is the OPPOSITE
+    // sign of its cn_* partner above (pinned by tests/core/plane_assets.rs).
+    cy_beta: -0.80,         // dCY/dβ — negative = restoring; keeps its NED sign (+Y is not mirrored)
+    cy_p: 0.05,             // dCY/d(pb/2V) — POSITIVE here: roll rate is mirrored vs NED, so this one flips
+    cy_r: 0.25,             // dCY/d(rb/2V) — yaw rate is not mirrored, so this keeps its NED sign
+    cy_delta_r: 0.18,       // dCY/dδr (rudder side force) — pushes the tail +Y as it yaws the nose -Y
+
     // --- Engine ---
     thrust_max: 60000.0,    // [N] at throttle = 1.0
 

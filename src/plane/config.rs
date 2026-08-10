@@ -147,6 +147,15 @@ pub struct PlaneConfig {
     pub cn_beta: f32,
     pub cn_r: f32,
     pub cn_delta_r: f32,
+    // Lateral force (side force). Deliberately NOT `#[serde(default)]`, unlike
+    // `powerplant` below: a `.plane.ron` missing these must fail to load loudly rather
+    // than silently fly with zero side force — the exact defect these fields exist to
+    // remove. See the sign-convention notes in `aerodynamics/model.rs`; `cy_p` is the
+    // one derivative whose sign is FLIPPED relative to NED references.
+    pub cy_beta: f32,
+    pub cy_p: f32,
+    pub cy_r: f32,
+    pub cy_delta_r: f32,
     // Engine
     pub thrust_max: f32, // [N]
     // Powerplant / consumable. `#[serde(default)]` lets older `.plane.ron` files (and
@@ -210,6 +219,7 @@ mod tests {
             cm0: -0.02, cm_alpha: 0.6, cm_q: -14.0, cm_delta_e: -1.2,
             cl_beta: 0.08, cl_p: -0.45, cl_r: -0.12, cl_delta_a: 0.18,
             cn_beta: 0.10, cn_r: -0.12, cn_delta_r: -0.10,
+            cy_beta: -0.80, cy_p: 0.05, cy_r: 0.25, cy_delta_r: 0.18,
             thrust_max: 60000.0,
             powerplant: JetFuel(capacity_kg: 2000.0, tsfc: 2.0e-5, fuel_type: JetA),
             aileron_limit: 0.4363, elevator_limit: 0.3491, rudder_limit: 0.2618,
@@ -235,6 +245,7 @@ mod tests {
             cm0: -0.02, cm_alpha: 0.6, cm_q: -14.0, cm_delta_e: -1.2,
             cl_beta: 0.08, cl_p: -0.45, cl_r: -0.12, cl_delta_a: 0.18,
             cn_beta: 0.10, cn_r: -0.12, cn_delta_r: -0.10,
+            cy_beta: -0.80, cy_p: 0.05, cy_r: 0.25, cy_delta_r: 0.18,
             thrust_max: 60000.0,
             aileron_limit: 0.4363, elevator_limit: 0.3491, rudder_limit: 0.2618,
         )"#;
