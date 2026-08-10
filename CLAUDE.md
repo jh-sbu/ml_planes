@@ -236,8 +236,10 @@ per-plane `fuel_fraction` (0–1) in the scenario to fly a partial tank.
 family 13→14, via `FlightState::fuel_fraction_obs` / `FUEL_OBS_SCALE`). This **invalidated all
 prior checkpoints** — a 13/10-dim `.mpk` loads but panics at the matmul on the new obs (guarded
 by `rl_inference::loaded_orbit_policy_runs_forward_pass`). Current valid (but **short, smoke-only**)
-checkpoints live at `models/<task>/fuel_smoke_<task>.mpk` (the orbit one is also the
-`ppo_orbit_1.mpk` test fixture). Pre-existing `models/**` checkpoints from before this change are
+checkpoints lived at `models/<task>/fuel_smoke_<task>.mpk` (the orbit one doubling as the
+`ppo_orbit_1.mpk` test fixture) — **all deleted 2026-08-10, see the `models/` note below**;
+this paragraph is dimension-history, not a guide to files you can open. Pre-existing `models/**`
+checkpoints from before this change were
 dimensionally stale — retrain before use. **The 2026-07 flight-model audit fixes (lateral
 derivative sign flips `cl_beta`/`cl_r` + body-fixed thrust) changed the physics again: all
 checkpoints still *load* (obs dims unchanged) but are behaviorally stale — retrain before
@@ -246,9 +248,10 @@ production use.** **A subsequent change grew the level-hold observation again, 1
 500–5000 m / 90–140 m/s target envelope — see roadmap item 1 — can actually distinguish
 operating points instead of only seeing normalized error terms); `models/level_hold/` was
 retrained under the new 13-dim observation post-fuel-model (`ppo_level_hold.mpk` /
-`ppo_level_hold_1.mpk` — checked as of 2026-08-04, both dimensionally current). To restore
-production quality for the other tasks, retrain each task and re-tune the (now heavier, 7000 kg
-loaded) jet:
+`ppo_level_hold_1.mpk` — checked as of 2026-08-04, both dimensionally current, **both since
+deleted**). `models/level_hold/` and `models/orbit/` are now empty directories. To restore
+production quality for **every** task — there is no longer a usable checkpoint for any of them —
+retrain each task and re-tune the (now heavier, 7000 kg loaded) jet:
 
 ```
 # per task ∈ {level_hold, orbit, residual_orbit, lstm_orbit}: use the train-evaluate-optimize skill,
@@ -256,33 +259,73 @@ loaded) jet:
 # then re-tune PID gains for the heavier jet via the `tune` skill (writes generic_jet.tuning.ron).
 ```
 
-> **2026-08-10 — the side-force (CY) change invalidates every checkpoint behaviorally.** The aero
-> model gained a real lateral force (`cy_beta`/`cy_p`/`cy_r`/`cy_delta_r`) and now resolves drag
-> along the full 3-D velocity. Observation dimensions are **unchanged**, so all 295 `.mpk` files
-> under `models/` still *load* — and nothing in the test suite will tell you they are stale. They
-> are stale anyway, in the same sense as the 2026-07 audit above: **retrain before production
-> use, and treat every metric quoted in this file for a pre-2026-08-10 checkpoint as pre-CY.**
-> The checkpoints are **deliberately retained, not deleted** — archive-vs-keep is an open user
-> decision. PID gains (`*.tuning.ron`) were also tuned against the zero-CY plant and want a
-> `tune` pass; the shipped gains still pass every closed-loop test, so this is quality, not
-> breakage. Trimmed wings-level flight (β = 0) is bit-for-bit unchanged — only sideslipping
-> flight moved, which is the entire point.
+> **2026-08-10 — the side-force (CY) change invalidated every checkpoint behaviorally, and all
+> of them have since been deleted.** The aero model gained a real lateral force
+> (`cy_beta`/`cy_p`/`cy_r`/`cy_delta_r`) and now resolves drag along the full 3-D velocity.
+> Observation dimensions were **unchanged**, so all 295 `.mpk` files under `models/` still
+> *loaded* — and nothing in the test suite would have told you they were stale. They were stale
+> anyway, in the same sense as the 2026-07 audit above. Rather than keep 295 silently-wrong
+> checkpoints around, **the user deleted them all on 2026-08-10** (resolving the archive-vs-keep
+> question that this note previously left open). PID gains (`*.tuning.ron`) were also tuned
+> against the zero-CY plant and want a `tune` pass; the shipped gains still pass every
+> closed-loop test, so this is quality, not breakage. Trimmed wings-level flight (β = 0) is
+> bit-for-bit unchanged — only sideslipping flight moved, which is the entire point.
+
+> **`models/` is empty except for one post-CY smoke checkpoint — read this before trusting any
+> checkpoint reference in this file.** As of 2026-08-10 the only `.mpk` on disk is
+> **`models/heading_hold/smoke_heading_hold.mpk`** (100k steps, `--target-heading-range -30:30`,
+> `--seed 42`, stock `heading_hold.{reward,ppo}.ron`, trained post-CY). It is a **pipeline smoke
+> test only** — `success_rate 0.120`, tail heading error 1.29 rad (73.8°), tail altitude 236 m
+> over 50 episodes. It proves train → save → load → forward-pass works under the current 16-dim
+> observation and post-CY physics; it is **not** a controller and must not be used as one.
+> Every *other* checkpoint filename mentioned anywhere in this file (`current_best.mpk`,
+> `skill_heading_hold_goal*.mpk`, `ppo_level_hold*.mpk`, `ppo_orbit_1.mpk`,
+> `fuel_smoke_*.mpk`, `hh_s3g_verylowlr_bigbatch.mpk`, the `skill_level_hold_*` stems quoted in
+> `assets/training/*.reward.ron` headers, …) **no longer exists on disk.** Those references are
+> retained deliberately as a record of what was measured and how it was reached — the reward/PPO
+> profiles that produced them are still shipped in `assets/training/`, so the results are
+> reproducible by retraining — but they are **history, not artifacts you can load**. `/models` is
+> **gitignored** (see `.gitignore`), so none of them are recoverable from git either.
+>
+> **Consequence — RL planes silently vanish from scenarios.** `assets/scenarios/default.scenario.ron`
+> and `stress_100.scenario.ron` name `models/orbit/ppo_orbit_1.mpk` and
+> `models/level_hold/ppo_level_hold.mpk`. A missing `.mpk` makes `build_controller` fail, and
+> `spawn_resolved_scenario` **skips that plane** (by design — see `environment/scenario_spawn.rs`)
+> along with any wingman leading off it. So those scenarios now spawn a reduced roster rather than
+> erroring: `stress_100` in particular is no longer a 100-plane stress test. This is the intended
+> missing-asset behavior, not a regression, but don't read a short roster as a spawner bug.
+>
+> **Consequence — `tests/rl/` does not compile.** `tests/rl/rl_inference.rs` and
+> `tests/rl/rl_sim_control.rs` embed fixtures with `include_bytes!("…/models/orbit/ppo_orbit_1.mpk")`
+> and `…/models/level_hold/ppo_level_hold.mpk`. `include_bytes!` is a **compile-time** read, so
+> those deleted files are now a hard `error: couldn't read …: No such file or directory`, not a
+> skipped test — this breaks the `--features inference` leg of `just test-all` (and `just
+> test-training`). Because `/models` is gitignored, **a fresh clone has always had this
+> problem**; the deletion only surfaced it on this machine. Fixing it means removing the
+> `include_bytes!` dependency on untracked files — e.g. generate the fixture at test time from
+> `ActorCritic::new` (the `save_stale_model` helper already in both files is the pattern), or
+> check a small purpose-built fixture into a tracked directory. **Do not "fix" it by retraining
+> a checkpoint to the old path** — that just re-hides an untracked build dependency.
 
 **`heading_hold` task** (added after the fuel-model rework, so it was never affected by the
-history above — its 16-dim observation was current from the start). The current production
-checkpoint is **`models/heading_hold/skill_heading_hold_goal4_coordinated.mpk`**, also copied to
-**`models/heading_hold/current_best.mpk`** — trained **from scratch** (BC warm start, no
-`--init-from` off any prior checkpoint) on 2026-08-07. 1000-episode eval at the full envelope:
-`success_rate 1.000`, `mean_tail_abs_heading_rad 0.01019` (0.584°),
+history above — its 16-dim observation was current from the start). **There is currently no
+production checkpoint for this task — the directory holds only the smoke checkpoint.** The
+last one was `models/heading_hold/skill_heading_hold_goal4_coordinated.mpk` (also copied to
+`current_best.mpk`), trained **from scratch** (BC warm start, no `--init-from` off any prior
+checkpoint) on 2026-08-07 and **deleted 2026-08-10** as pre-CY. Its 1000-episode eval at the
+full envelope — `success_rate 1.000`, `mean_tail_abs_heading_rad 0.01019` (0.584°),
 `mean_tail_abs_altitude_m 1.161`, `mean_tail_abs_speed_mps 0.161`, and
-**`mean_tail_abs_beta_rad 0.00035` (0.020°)**; live Rapier rollouts at three nominal operating
-points track to 0.51–1.39 m / 0.14–0.28 m/s / 0.18–0.51° / β 0.008–0.030°. Reward/PPO profiles:
-`assets/training/heading_hold_coordinated.{reward,ppo}.ron` (pass both explicitly; neither is
-the task default). It supersedes `skill_heading_hold_goal3_alpha_guard.mpk`, which remains
-valid but **crabs** — see below. `smoke_heading_hold.mpk` remains as the pipeline smoke test
-only (100k steps, `--target-heading-range -30:30`, and the pre-2026-08
-`terminal_failure_penalty: -50.0`); it is not flight-quality and its returns aren't comparable
-to anything trained since.
+**`mean_tail_abs_beta_rad 0.00035` (0.020°)**, with live Rapier rollouts at three nominal
+operating points tracking to 0.51–1.39 m / 0.14–0.28 m/s / 0.18–0.51° / β 0.008–0.030° — is
+**the quality bar a retrain should aim to match**, measured under the old zero-CY plant. The
+recipe is still shipped: `assets/training/heading_hold_coordinated.{reward,ppo}.ron` (pass both
+explicitly; neither is the task default), from scratch with a BC warm start. It superseded
+`skill_heading_hold_goal3_alpha_guard.mpk` (also deleted), which was **crabbing** — see below.
+`models/heading_hold/smoke_heading_hold.mpk` is the current smoke checkpoint, retrained post-CY
+on 2026-08-10 (100k steps, `--target-heading-range -30:30`, `--seed 42`, stock
+`heading_hold.{reward,ppo}.ron` — so, unlike the deleted original, **not** carrying the
+pre-2026-08 `terminal_failure_penalty: -50.0`); it is not flight-quality and its returns aren't
+comparable to anything trained at full length.
 
 **The sideslip crab — a plant defect that was patched in the reward, now fixed at the source.**
 Every heading_hold checkpoint before `goal4_coordinated` held a large *steady-state* sideslip —
@@ -318,10 +361,12 @@ corner, not a tracking-quality one: the PID expert loses ~115 m of altitude at t
 versus ~8.8 m envelope-wide (measure it with `examples/heading_hold_expert_baseline.rs`, which
 rolls `HeadingHoldEnv::make_expert()` through the same env, tail window, and success definition
 `evaluate_policy` uses). `goal4_coordinated` improved it substantially but did not solve it:
-corner-pinned eval (`--target-alt-range 5000 --target-speed-range 90`) gives `success_rate
-1.000` / 7.53 m altitude, against `goal3_alpha_guard`'s 0.865 / 5.27 m — survival is now
-perfect where it used to fail one episode in seven, but altitude error stays well above the
-~1.2 m it holds envelope-wide. **`alt_error_scale` (60 → 30) was the only lever that moved it**
+corner-pinned eval (`--target-alt-range 5000 --target-speed-range 90`) gave `success_rate
+1.000` / 7.53 m altitude, against `goal3_alpha_guard`'s 0.865 / 5.27 m — survival was made
+perfect where it used to fail one episode in seven, but altitude error stayed well above the
+~1.2 m it held envelope-wide. (Both checkpoints were deleted on 2026-08-10 and these are
+recorded pre-CY results, not numbers you can re-measure without retraining; the levers below
+are the transferable part.) **`alt_error_scale` (60 → 30) was the only lever that moved it**
 (corner altitude 9.77 → 6.05 m in one pass, at the *low* LR 3e-5 — the same change at 1e-4 gave
 only 9.14 m). Things that did **not** work, each an 8-wide batch: tightening `alpha_soft_limit`
 below 0.25 (0.22 and 0.20 collapsed envelope-wide `success_rate` to 0.66 and 0.50 — the guard's
@@ -826,7 +871,7 @@ that ships a non-default target) `tests/core/scenario.rs`.
 
 ## 4. Maneuver Roadmap
 
-1. **Level flight hold** — COMPLETE. Cascade PID: altitude outer → pitch inner, airspeed, roll, yaw. RL policy trained (`RlLevelHoldController`, obs dim=13) over a randomized 500–5000 m / 90–140 m/s target envelope, configurable via `--target-alt-range`/`--target-speed-range` on `train_ppo`/`train_bc`/`evaluate_policy`. **Heading hold** (outer heading PID over the level-hold cascade, `HeadingHoldController`) is likewise COMPLETE, with an RL variant (`RlHeadingHoldController`, obs dim=16) added over a randomized ±180° target-heading-change / 500–5000 m / 90–140 m/s envelope, configurable via `--target-heading-range`/`--target-alt-range`/`--target-speed-range`. Production checkpoint: `models/heading_hold/skill_heading_hold_goal4_coordinated.mpk` (= `current_best.mpk`; 0.584° / 1.161 m / 0.161 m/s / **0.020° sideslip** tail error at `success_rate` 1.000 over 1000 episodes, trained from scratch) with `assets/training/heading_hold_coordinated.{reward,ppo}.ron` — **all of those numbers are pre-CY** (measured before the 2026-08-10 side-force change) and the checkpoint is behaviorally stale pending a retrain; see the heading_hold checkpoint notes in §2 for the sideslip-crab history and the one known envelope limit. `smoke_heading_hold.mpk` is a pipeline smoke checkpoint only.
+1. **Level flight hold** — COMPLETE. Cascade PID: altitude outer → pitch inner, airspeed, roll, yaw. RL policy trained (`RlLevelHoldController`, obs dim=13) over a randomized 500–5000 m / 90–140 m/s target envelope, configurable via `--target-alt-range`/`--target-speed-range` on `train_ppo`/`train_bc`/`evaluate_policy`. **Heading hold** (outer heading PID over the level-hold cascade, `HeadingHoldController`) is likewise COMPLETE, with an RL variant (`RlHeadingHoldController`, obs dim=16) added over a randomized ±180° target-heading-change / 500–5000 m / 90–140 m/s envelope, configurable via `--target-heading-range`/`--target-alt-range`/`--target-speed-range`. **No production checkpoint currently exists for either task** — every `.mpk` under `models/` was deleted on 2026-08-10 as pre-CY (see the `models/` note in §2), leaving only `models/heading_hold/smoke_heading_hold.mpk`, a 100k-step pipeline smoke checkpoint that is not a controller. The task is COMPLETE in the sense that the env, observation, reward profiles, and training pipeline are all in place and were demonstrated to reach 0.584° / 1.161 m / 0.161 m/s / **0.020° sideslip** tail error at `success_rate` 1.000 over 1000 episodes (`skill_heading_hold_goal4_coordinated.mpk`, trained from scratch with `assets/training/heading_hold_coordinated.{reward,ppo}.ron`) — **but those numbers are pre-CY** and reproducing them under the current plant requires a retrain. See the heading_hold checkpoint notes in §2 for the sideslip-crab history and the one known envelope limit.
 2. **Ascent** — COMPLETE. Climbs to target altitude then hands off to level hold.
 3. **Formation flight (wingman)** — COMPLETE. Follows leader at fixed body-frame offset (`WingmanController`).
 4. **Circular orbit** — COMPLETE. 3-level cascade PID around world-frame point. Three RL variants: `RlOrbitController` (direct, obs dim=14), `RlOrbitResidualController` (residual over PID), and `RlLstmOrbitController` (recurrent, Wu-curriculum). Policies also reachable via behavior-cloning warm start.
@@ -1043,6 +1088,18 @@ the binary + a module filter, e.g. `cargo test --no-default-features --test core
 - `mcp_e2e` — MCP end-to-end over real UDP: boots an `ml_planes_server` child, inspect + spawn/remove round-trip (`mcp`+`server`-gated, `#[ignore]`; run with `--features "mcp server" --test net -- --ignored mcp_e2e`)
 
 **`tests/rl/` (`inference`/`training`; the whole binary compiles out without an RL backend):**
+
+> ⚠️ **This binary currently does not compile.** `rl_inference` and `rl_sim_control` pull their
+> fixtures in with `include_bytes!` from `models/orbit/ppo_orbit_1.mpk` and
+> `models/level_hold/ppo_level_hold.mpk`, both deleted on 2026-08-10 (see the `models/` note in
+> §2). `include_bytes!` resolves at **compile time**, so this is a hard
+> `error: couldn't read …: No such file or directory`, not a skipped test, and it takes down the
+> whole `--features inference` leg of `just test-all`. `/models` is gitignored, so a fresh clone
+> has always hit this. The fix is to stop depending on untracked files — build the fixture in the
+> test from `ActorCritic::new` (the `save_stale_model` helper already in both files is the
+> pattern), or commit a small fixture to a tracked path — **not** to retrain a checkpoint back
+> into the old location.
+
 - `rl_inference` — RL controller load + deterministic inference (`inference`/`training`-gated),
   incl. the level-hold and heading-hold obs-matches-env and stale-dimension guards, and each RL
   controller's `targets()` round trip through its shared `ControllerTargets` variant
@@ -1081,7 +1138,9 @@ so it also re-runs the core sim suite and compile-checks the local-sim/`wasm` bi
   `just test-visual` cover the training- and `visual`-gated suites separately. Feature combos
   outside the justfile are **not supported test configurations** — a green ad-hoc run (e.g. bare
   `--features mcp`, where the sim tests compile out) is not coverage. Run the full matrix before
-  committing when net/mcp/RL code was touched.
+  committing when net/mcp/RL code was touched. **As of 2026-08-10 the RL-inference leg of
+  `test-all` fails to compile** (deleted `include_bytes!` checkpoint fixtures — see the warning
+  above `tests/rl/`); core and net parity are unaffected.
 - **Run `just test-visual` after any UI/camera work.** `src/ui/**` and `src/camera/**` are
   `visual`-gated, so `test-all` does not compile them at all — a green `test-all` says **nothing**
   about the UI tests, and a broken one is invisible until someone runs `test-visual`. It is kept
