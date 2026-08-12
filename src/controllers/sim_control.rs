@@ -364,8 +364,22 @@ fn selected_or_default_model_path(
 }
 
 #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
+/// Whether a `SelectedModel` stem is a legitimate path inside `models/<dir>/`.
+///
+/// The stem arrives from a client (`SetModelCommand`) and reaches burn's
+/// `File::open`, so a bare `starts_with` is not enough: `models/orbit/../../..`
+/// satisfies the prefix while walking straight back out. Rejects any `..` /
+/// absolute / backslash component, matching `sanitize_asset_path`'s contract.
 fn model_path_matches_dir(path: &str, dir: &str) -> bool {
-    path.starts_with(&format!("models/{dir}/"))
+    if !path.starts_with(&format!("models/{dir}/")) {
+        return false;
+    }
+    if path.contains('\0') || path.contains('\\') {
+        return false;
+    }
+    std::path::Path::new(path)
+        .components()
+        .all(|c| matches!(c, std::path::Component::Normal(_)))
 }
 
 #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
@@ -961,6 +975,28 @@ mod tests {
         // Non-RL kinds are never handled here.
         assert!(!rl_kind_needs_load_on_change(Orbit, true, false));
         assert!(!rl_kind_needs_load_on_change(LevelHold, false, false));
+    }
+
+    #[test]
+    fn model_path_guard_accepts_legitimate_stem() {
+        assert!(model_path_matches_dir("models/orbit/ppo_orbit_1", "orbit"));
+        assert!(!model_path_matches_dir("models/level_hold/ppo_x", "orbit"));
+    }
+
+    #[test]
+    fn model_path_guard_rejects_traversal() {
+        // A bare `starts_with` prefix check lets `..` walk straight out of
+        // `models/<dir>/`, which then reaches burn's `File::open`.
+        for path in [
+            "models/orbit/../../../etc/passwd",
+            "models/orbit/../../secrets",
+            "models/orbit/sub/../../../../etc/shadow",
+        ] {
+            assert!(
+                !model_path_matches_dir(path, "orbit"),
+                "traversal must not satisfy the model-dir guard: {path}"
+            );
+        }
     }
 
     #[test]

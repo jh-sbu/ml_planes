@@ -12,6 +12,7 @@ use ml_planes::controllers::{
 use ml_planes::environment::{spawn_plane, LifecyclePlugin, RemovePlaneCommand, SpawnPlaneCommand};
 use ml_planes::plane::{
     FlightState, NextPlaneId, PlaneConfig, PlaneConfigHandle, PlaneIndex, PlaneTuningHandle,
+    PlaneTuningPath,
 };
 use ml_planes::training::SpawnSpec;
 
@@ -197,6 +198,52 @@ fn spawn_command_skips_tuning_without_sibling() {
             .get::<SelectedTuningProfile>()
             .is_none(),
         "no tuning sibling → no selected profile"
+    );
+}
+
+/// A traversal `config_path` must not escape `assets/`. The existing contract is
+/// that a bad path still spawns (never panics) on the generic-jet fallback, so
+/// this asserts the fallback *and* that no tuning components were derived from
+/// the attacker-supplied path (`PlaneTuningPath` is replicated to clients).
+#[test]
+fn spawn_command_rejects_traversal_config_path() {
+    let mut app = build_headless_app_with(|app| {
+        app.add_plugins(LifecyclePlugin);
+    });
+    app.update();
+
+    app.world_mut().trigger(SpawnPlaneCommand {
+        spec: SpawnSpec {
+            position: Some(Vec3::new(0.0, 1000.0, 0.0)),
+            velocity: Some(Vec3::new(120.0, 0.0, 0.0)),
+            ..Default::default()
+        },
+        kind: ControllerKind::LevelHold,
+        // Resolves back to a real airframe, so this fails before the fix rather
+        // than passing by accident on an unparseable target.
+        config_path: "planes/../planes/cargo_jet.plane.ron".to_string(),
+    });
+    app.update();
+
+    let world = app.world_mut();
+    let entity = {
+        let mut q = world.query_filtered::<Entity, With<PlaneIndex>>();
+        q.iter(world).next().expect("a plane still spawns")
+    };
+    // The plane falls back to the generic jet, so it legitimately carries the
+    // *default's* tuning. What must never happen is tuning derived from the
+    // caller-supplied path — `PlaneTuningPath` is replicated, so that would be
+    // a file-existence oracle that crosses the wire.
+    let tuning = world.entity(entity).get::<PlaneTuningPath>();
+    assert_ne!(
+        tuning.map(|p| p.0.as_str()),
+        Some("planes/../planes/cargo_jet.tuning.ron"),
+        "tuning must not be derived from a traversal path"
+    );
+    assert_ne!(
+        tuning.map(|p| p.0.as_str()),
+        Some("planes/cargo_jet.tuning.ron"),
+        "`..` must not be resolved into the traversal's target airframe"
     );
 }
 

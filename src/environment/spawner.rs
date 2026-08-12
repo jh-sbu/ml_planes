@@ -147,7 +147,15 @@ pub fn spawn_plane_with_id(
     // Body-frame angular velocity → world frame for Rapier.
     let angvel_world = attitude.mul_vec3(state.angular_velocity);
 
-    let handle: Handle<PlaneConfig> = asset_server.load(config_path.to_string());
+    // Validate before handing the path to Bevy. `FileAssetReader` does a bare
+    // `root_path.join(path)`, so an absolute path escapes the asset root
+    // outright here — a wider hole than the `fs::read` sink, whose `"assets/"`
+    // concat at least neutralizes a leading `/`. A rejected path falls back to
+    // the generic jet, matching `load_spawn_config`, so the body's seeded
+    // mass/inertia and its async aero coefficients stay consistent.
+    let safe_config_path =
+        sanitize_asset_path(config_path).unwrap_or_else(|| DEFAULT_PLANE_CONFIG.to_string());
+    let handle: Handle<PlaneConfig> = asset_server.load(safe_config_path.clone());
 
     let entity = commands
         .spawn((
@@ -196,7 +204,7 @@ pub fn spawn_plane_with_id(
     // Attach the per-config tuning pool so the visual `apply_initial_tuning`
     // system applies the airframe's PID gains once the asset loads. Skipped when
     // the config ships no `.tuning.ron` sibling, leaving `build()` defaults.
-    if let Some(tuning_path) = tuning_path_for_config(config_path) {
+    if let Some(tuning_path) = tuning_path_for_config(&safe_config_path) {
         let tuning_handle: Handle<PlaneTuning> = asset_server.load(tuning_path.clone());
         commands.entity(entity).insert((
             PlaneTuningHandle(tuning_handle),
@@ -238,24 +246,106 @@ pub fn spawn_plane_with_id(
 /// silently flies on `LevelHoldController` defaults. Returns `None` when no
 /// sibling exists so callers skip the handle gracefully.
 pub fn tuning_path_for_config(config_path: &str) -> Option<String> {
-    let tuning_path = format!("{}.tuning.ron", config_path.strip_suffix(".plane.ron")?);
+    // Validate before the `.exists()` probe: the resulting `PlaneTuningPath` is
+    // a *replicated* component, so probing an unvalidated path would hand a
+    // client a file-existence oracle that crosses the wire.
+    let safe_path = sanitize_asset_path(config_path)?;
+    let tuning_path = format!("{}.tuning.ron", safe_path.strip_suffix(".plane.ron")?);
     std::path::Path::new(&format!("assets/{tuning_path}"))
         .exists()
         .then_some(tuning_path)
 }
 
+/// Asset-relative `.plane.ron` used whenever a caller-supplied path is rejected.
+pub const DEFAULT_PLANE_CONFIG: &str = "planes/generic_jet.plane.ron";
+
+/// Upper bound on a `.plane.ron` read. The file is a few dozen coefficients;
+/// this is generous. Bounding the read keeps a hostile path from turning a spawn
+/// into a memory blow-up or a hang on a character device.
+const MAX_PLANE_CONFIG_BYTES: u64 = 256 * 1024;
+
+/// Validate a caller-supplied asset path, returning the canonical
+/// `assets/`-relative form or `None` if it is not one.
+///
+/// **Security boundary.** `config_path` reaches here straight off the wire —
+/// `SpawnPlaneNetCommand` (and the MCP `spawn_plane` tool) carry an unvalidated
+/// `String` that ends up in both `fs::read("assets/" + p)` and
+/// `AssetServer::load(p)`. Neither sink normalizes: Bevy's `FileAssetReader`
+/// does a bare `root_path.join(path)`, so an *absolute* path escapes the asset
+/// root entirely there, and `..` escapes both.
+///
+/// Rejects rather than sanitizes. Silently rewriting a hostile path into a
+/// "safe" one is its own bug class, and every legitimate caller already passes a
+/// clean relative path. Deliberately **no `canonicalize`**: it touches the
+/// filesystem, fails on paths that do not exist yet, and would make this
+/// function its own file-existence oracle. A pure lexical check is enough.
+pub fn sanitize_asset_path(path: &str) -> Option<String> {
+    // Screened before component parsing: `:` and `#` are how Bevy's `AssetPath`
+    // selects an asset *source* (`remote://…`) and a sub-asset label, a
+    // namespace escape the plain `fs::read` sink does not even have. A
+    // backslash is a separator on Windows, so a `/`-only component walk would
+    // let `..\..\` through.
+    if path.is_empty()
+        || path.contains('\0')
+        || path.contains('\\')
+        || path.contains(':')
+        || path.contains('#')
+    {
+        return None;
+    }
+
+    let mut parts: Vec<&str> = Vec::new();
+    for component in std::path::Path::new(path).components() {
+        match component {
+            std::path::Component::Normal(s) => parts.push(s.to_str()?),
+            // ParentDir / CurDir / RootDir / Prefix are all rejected outright.
+            _ => return None,
+        }
+    }
+
+    // Callers pass paths relative to `assets/`, so a redundant leading
+    // `assets/` is ambiguous rather than harmless — keep one canonical form.
+    if parts.is_empty() || parts[0] == "assets" {
+        return None;
+    }
+    Some(parts.join("/"))
+}
+
 pub fn load_spawn_config(config_path: &str) -> PlaneConfig {
-    let disk_path = format!("assets/{config_path}");
-    match std::fs::read(&disk_path) {
-        Ok(bytes) => match ron::de::from_bytes::<PlaneConfig>(&bytes) {
-            Ok(cfg) => cfg,
-            Err(e) => {
-                eprintln!("spawn config '{disk_path}' parse failed ({e}); using generic jet");
-                generic_jet_spawn_config()
-            }
-        },
-        Err(e) => {
-            eprintln!("spawn config '{disk_path}' read failed ({e}); using generic jet");
+    use std::io::Read;
+
+    let Some(safe_path) = sanitize_asset_path(config_path) else {
+        eprintln!("spawn config rejected (not an assets-relative path); using generic jet");
+        return generic_jet_spawn_config();
+    };
+    let disk_path = format!("assets/{safe_path}");
+
+    // Error text is deliberately *not* echoed. `ron`'s parse errors embed the
+    // offending token from the file being read (`Expected struct PlaneConfig but
+    // found <token>`), which turned this log line into a content-disclosure
+    // channel for whatever path a client supplied.
+    let Ok(file) = std::fs::File::open(&disk_path) else {
+        eprintln!("spawn config '{disk_path}' read failed; using generic jet");
+        return generic_jet_spawn_config();
+    };
+
+    // `take` bounds the read itself, so this also terminates on a fifo or a
+    // character device, which no up-front size check would catch.
+    let mut bytes = Vec::new();
+    if file
+        .take(MAX_PLANE_CONFIG_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .is_err()
+        || bytes.len() as u64 > MAX_PLANE_CONFIG_BYTES
+    {
+        eprintln!("spawn config '{disk_path}' read failed or too large; using generic jet");
+        return generic_jet_spawn_config();
+    }
+
+    match ron::de::from_bytes::<PlaneConfig>(&bytes) {
+        Ok(cfg) => cfg,
+        Err(_) => {
+            eprintln!("spawn config '{disk_path}' parse failed; using generic jet");
             generic_jet_spawn_config()
         }
     }
@@ -326,6 +416,103 @@ mod tests {
             tuning_path_for_config("planes/no_such_airframe.plane.ron"),
             None,
             "a config without a tuning sibling yields no tuning path"
+        );
+    }
+
+    #[test]
+    fn sanitize_accepts_a_clean_relative_path() {
+        assert_eq!(
+            sanitize_asset_path("planes/generic_jet.plane.ron"),
+            Some("planes/generic_jet.plane.ron".to_string()),
+            "an ordinary asset-relative path round-trips unchanged"
+        );
+    }
+
+    #[test]
+    fn sanitize_rejects_parent_dir_traversal() {
+        // The reported vulnerability: `assets/` + this escapes the asset root.
+        for path in [
+            "../../../../etc/hostname",
+            "planes/../../../etc/passwd",
+            "planes/../../etc/x.plane.ron",
+            "..",
+        ] {
+            assert_eq!(
+                sanitize_asset_path(path),
+                None,
+                "`..` must be rejected outright, not normalized away: {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn sanitize_rejects_absolute_paths() {
+        // `load_spawn_config`'s string concat neutralizes a leading `/`, but
+        // `AssetServer::load` -> `root_path.join("/etc/passwd")` does not.
+        for path in ["/etc/passwd", "/planes/generic_jet.plane.ron"] {
+            assert_eq!(
+                sanitize_asset_path(path),
+                None,
+                "absolute paths escape the asset root via Path::join: {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn sanitize_rejects_backslash_and_nul() {
+        // A `/`-only component walk would let a Windows-style traversal through.
+        assert_eq!(sanitize_asset_path(r"..\..\etc\passwd"), None);
+        assert_eq!(sanitize_asset_path("planes\\x.plane.ron"), None);
+        assert_eq!(sanitize_asset_path("planes/x\0.plane.ron"), None);
+    }
+
+    #[test]
+    fn sanitize_rejects_bevy_asset_path_metacharacters() {
+        // `AssetPath` parses `source://` and `#label`, a namespace escape the
+        // plain `fs::read` sink does not have.
+        assert_eq!(sanitize_asset_path("remote://planes/x.plane.ron"), None);
+        assert_eq!(sanitize_asset_path("planes/x.plane.ron#label"), None);
+    }
+
+    #[test]
+    fn sanitize_rejects_redundant_assets_prefix_and_cur_dir() {
+        // One canonical form: callers pass paths relative to `assets/`.
+        assert_eq!(sanitize_asset_path("assets/planes/x.plane.ron"), None);
+        assert_eq!(sanitize_asset_path("./planes/x.plane.ron"), None);
+        assert_eq!(sanitize_asset_path(""), None);
+    }
+
+    /// A traversal path that currently *succeeds*, so this fails loudly before
+    /// the fix rather than passing by accident. `planes/../planes/cargo_jet…`
+    /// resolves back to a real 128000 kg airframe, proving `..` is honored; the
+    /// same mechanism with more `../` reaches outside `assets/` entirely.
+    const TRAVERSAL_TO_REAL_FILE: &str = "planes/../planes/cargo_jet.plane.ron";
+
+    #[test]
+    fn load_spawn_config_falls_back_on_traversal_path() {
+        // Must not resolve `..` at all; falls back like a missing file.
+        let cfg = load_spawn_config(TRAVERSAL_TO_REAL_FILE);
+        assert_eq!(
+            cfg.mass,
+            generic_jet_spawn_config().mass,
+            "a `..` path must not be resolved, even back into assets/"
+        );
+    }
+
+    #[test]
+    fn load_spawn_config_falls_back_on_escaping_path() {
+        let cfg = load_spawn_config("../../../../etc/hostname");
+        assert_eq!(cfg.mass, generic_jet_spawn_config().mass);
+    }
+
+    #[test]
+    fn tuning_path_is_none_for_traversal_path() {
+        // `tuning_path_for_config`'s `.exists()` probe feeds the *replicated*
+        // `PlaneTuningPath`, so an unvalidated path is an over-the-wire oracle.
+        assert_eq!(
+            tuning_path_for_config(TRAVERSAL_TO_REAL_FILE),
+            None,
+            "a traversal path must not be probed on disk"
         );
     }
 }

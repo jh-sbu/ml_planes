@@ -33,7 +33,7 @@ use crate::training::SpawnSpec;
 #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
 use crate::controllers::SelectedModel;
 
-use super::spawner::{load_spawn_config, spawn_plane_with_id};
+use super::spawner::{load_spawn_config, sanitize_asset_path, spawn_plane_with_id};
 
 /// Outcome of [`spawn_resolved_scenario`].
 #[derive(Debug, Default)]
@@ -53,11 +53,18 @@ const DEFAULT_CONFIG: &str = "planes/generic_jet.plane.ron";
 /// `assets/planes/cargo_jet.plane.ron`, or `None` → generic jet) into the
 /// Bevy asset-relative path `spawn_plane`/`load_spawn_config` expect (relative to
 /// `assets/`, e.g. `planes/cargo_jet.plane.ron`).
+///
+/// The `assets/` strip is cosmetic, not validating — without the
+/// `sanitize_asset_path` check a scenario's `assets/../../etc/x` would become
+/// `../../etc/x` and be read by `load_spawn_config`. Scenario files are local,
+/// so this is a config footgun rather than a remote hole, but it reaches the
+/// same sink; a rejected path falls back to the generic jet.
 fn asset_relative_config(config: &Option<String>) -> String {
-    match config {
-        Some(p) => p.strip_prefix("assets/").unwrap_or(p).to_string(),
-        None => DEFAULT_CONFIG.to_string(),
-    }
+    let stripped = match config {
+        Some(p) => p.strip_prefix("assets/").unwrap_or(p),
+        None => return DEFAULT_CONFIG.to_string(),
+    };
+    sanitize_asset_path(stripped).unwrap_or_else(|| DEFAULT_CONFIG.to_string())
 }
 
 /// Spawn every plane in `scenario` into the live world. Returns the spawned
@@ -193,12 +200,27 @@ pub fn spawn_resolved_scenario(
         // the `apply_flight_plan` system re-installs the real L1Controller from
         // this handle once the `.plan.ron` asset loads. The plan path uses the
         // observe_state convention (`assets/...`); make it Bevy asset-relative.
+        // Validated for the same reason as the config path above: this reaches
+        // `AssetServer::load`, whose bare `root_path.join` lets an absolute path
+        // leave the asset root. A rejected plan simply attaches no handle, so
+        // the plane keeps its PID-orbit fallback rather than flying a plan the
+        // scenario could not name safely.
         if let ControllerSpec::FlightPlan { plan } = &plane.spec {
-            let asset_path = plan.strip_prefix("assets/").unwrap_or(plan).to_string();
-            let handle: Handle<FlightPlan> = asset_server.load(asset_path);
-            commands
-                .entity(spawned.entity)
-                .insert(FlightPlanHandle(handle));
+            let stripped = plan.strip_prefix("assets/").unwrap_or(plan);
+            match sanitize_asset_path(stripped) {
+                Some(asset_path) => {
+                    let handle: Handle<FlightPlan> = asset_server.load(asset_path);
+                    commands
+                        .entity(spawned.entity)
+                        .insert(FlightPlanHandle(handle));
+                }
+                None => {
+                    result.skipped.push(format!(
+                        "'{}' flight plan rejected: not an assets-relative path",
+                        plane.name
+                    ));
+                }
+            }
         }
         #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
         if let Some(stem) = plane.spec.rl_model_stem() {
@@ -234,5 +256,22 @@ mod tests {
     #[test]
     fn asset_relative_config_defaults_to_generic_jet() {
         assert_eq!(asset_relative_config(&None), DEFAULT_CONFIG);
+    }
+
+    #[test]
+    fn asset_relative_config_rejects_traversal() {
+        // The `assets/` strip is cosmetic: without validation this yields
+        // `../../etc/x`, which `load_spawn_config` would happily read.
+        for path in [
+            "assets/../../etc/x.plane.ron",
+            "../../etc/x.plane.ron",
+            "/etc/passwd",
+        ] {
+            assert_eq!(
+                asset_relative_config(&Some(path.to_string())),
+                DEFAULT_CONFIG,
+                "a scenario must not point outside assets/: {path}"
+            );
+        }
     }
 }

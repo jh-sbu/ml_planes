@@ -23,7 +23,7 @@ use ml_planes::net::{
     ManualInputCommand, NetProtocolPlugin, RemovePlaneNetCommand, ServerScenario, ServerSimPlugin,
     SetControllerTargetsCommand, SetSimSpeedCommand, SpawnPlaneNetCommand, SwitchControllerCommand,
 };
-use ml_planes::plane::{ControlInputs, PlaneId};
+use ml_planes::plane::{ControlInputs, PlaneId, PlaneTuningPath};
 use ml_planes::sim_speed::SimSpeed;
 use ml_planes::training::SpawnSpec;
 
@@ -372,6 +372,58 @@ fn spawn_and_remove_commands_take_effect() {
         planes(&mut app).len(),
         before,
         "RemovePlaneNetCommand should despawn the plane again"
+    );
+}
+
+/// Regression test for the reported path traversal: `SpawnPlaneNetCommand`
+/// carries a client-supplied `config_path` straight to `fs::read("assets/" + p)`
+/// and `AssetServer::load`. A traversal path must never leave `assets/`; the
+/// plane still spawns (existing contract) on the generic-jet fallback.
+#[test]
+fn spawn_command_with_traversal_path_does_not_escape_assets() {
+    let mut app = build_server_app();
+    settle(&mut app);
+
+    let before = planes(&mut app).len();
+
+    app.world_mut().trigger(FromClient {
+        client_id: ClientId::Server,
+        message: SpawnPlaneNetCommand {
+            // Resolves back to a real airframe that ships a `.tuning.ron`
+            // sibling, so this fails before the fix rather than passing by
+            // accident on an unparseable target.
+            config_path: "planes/../planes/cargo_jet.plane.ron".to_string(),
+            kind: ControllerKind::LevelHold,
+            spec: SpawnSpec {
+                position: Some(Vec3::new(0.0, 1000.0, 0.0)),
+                velocity: Some(Vec3::new(100.0, 0.0, 0.0)),
+                ..Default::default()
+            },
+        },
+    });
+    settle(&mut app);
+
+    let after = planes(&mut app);
+    assert_eq!(
+        after.len(),
+        before + 1,
+        "a rejected path still spawns a plane on the fallback config"
+    );
+    let (new_entity, _) = *after.last().unwrap();
+    // The plane falls back to the generic jet, so carrying the *default's*
+    // tuning is correct. `PlaneTuningPath` is replicated to clients, so what
+    // must never happen is a path derived from the client's own string — that
+    // is a file-existence oracle crossing the wire.
+    let tuning = app.world().get::<PlaneTuningPath>(new_entity);
+    assert_ne!(
+        tuning.map(|p| p.0.as_str()),
+        Some("planes/../planes/cargo_jet.tuning.ron"),
+        "tuning must not be derived from a client-supplied traversal path"
+    );
+    assert_ne!(
+        tuning.map(|p| p.0.as_str()),
+        Some("planes/cargo_jet.tuning.ron"),
+        "`..` must not be resolved into the traversal's target airframe"
     );
 }
 

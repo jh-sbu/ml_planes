@@ -1075,6 +1075,25 @@ so it also re-runs the core sim suite and compile-checks the local-sim/`wasm` bi
 - `PlaneConfig` is loaded at runtime via Bevy's asset server — no compile-time plane data.
 - All physics runs at Rapier's fixed timestep (64 Hz, `dt = 1/64 s`, set via `TimestepMode::Fixed` + `RapierPhysicsPlugin::in_fixed_schedule()`). In the client/server split the authoritative sim runs in the **server** (`ml_planes_server`, `src/bin/server.rs`); the `net` client (`main.rs`) runs no physics and renders interpolated replicated state. The headless `observe_state` example and `tests/common/mod.rs` mirror this exact 64 Hz fixed-schedule setup. **`ml_planes::plane::PHYSICS_DT` is the single source** — Rapier's timestep, Bevy's `Time<Fixed>` (which drives the replicon server tick), *and* the self-contained training Euler integrator (`training/flight_env.rs`) all read it, so training can never again validate against a different plant than the one it flies in. Never reintroduce a bare `1.0 / 64.0` literal.
 - The ground is a flat infinite collider acting as a death plane — no terrain, no landing.
+- **Every caller-supplied path must pass `environment::spawner::sanitize_asset_path` before it
+  reaches the filesystem.** There is no authentication, so `SpawnPlaneNetCommand.config_path`
+  (and the MCP `spawn_plane` tool's) is an arbitrary string from any peer that can reach the UDP
+  port. It lands in *two* sinks — `load_spawn_config`'s `fs::read("assets/" + p)` and
+  `spawn_plane_with_id`'s `AssetServer::load(p)` — and **neither normalizes**: Bevy's
+  `FileAssetReader` does a bare `root_path.join(path)`, so an absolute path escapes the asset
+  root outright there, while `..` escapes both. The validator rejects (never rewrites) `..`,
+  absolute paths, backslashes, NUL, and Bevy's `source://` / `#label` metacharacters; a rejected
+  path falls back to the generic jet rather than panicking. Validate at the **sink**, not at the
+  command handler, so a future caller cannot reintroduce the hole. `model_path_matches_dir`
+  (`controllers/sim_control.rs`) carries the same component walk for `SetModelCommand`, and
+  `scenario_spawn::asset_relative_config` for scenario-supplied paths — note its
+  `strip_prefix("assets/")` is cosmetic, not validating.
+- **Never interpolate a `ron` parse error into a log for a caller-supplied path.** `ron`'s errors
+  embed the offending token from the file (`Expected struct PlaneConfig but found <token>`),
+  which made `load_spawn_config`'s log a content-disclosure channel for any file on disk. This
+  matters more than it looks: `src/bin/server.rs` runs `MinimalPlugins` with **no `LogPlugin`**,
+  so `warn!`/`error!` are silently dropped there and the `eprintln!`s are the only lines that
+  reach stderr at all.
 
 ---
 

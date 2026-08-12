@@ -74,7 +74,9 @@ fn manual_input_command_roundtrips() {
 #[test]
 fn spawn_plane_net_command_roundtrips() {
     assert_ron_roundtrip(&SpawnPlaneNetCommand {
-        config_path: "assets/planes/generic_jet.plane.ron".to_string(),
+        // Asset-relative (no `assets/` prefix), matching every runtime call site
+        // and what `sanitize_asset_path` accepts.
+        config_path: "planes/generic_jet.plane.ron".to_string(),
         kind: ControllerKind::LevelHold,
         spec: SpawnSpec {
             position: Some(Vec3::new(0.0, 500.0, 0.0)),
