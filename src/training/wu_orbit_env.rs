@@ -38,18 +38,14 @@ use crate::training::flight_env::{
 };
 use crate::training::reward_config::load_reward_config;
 use crate::training::wu_orbit_reward::{r_ps, r_rs, r_tt, CurriculumStage, WuOrbitRewardConfig};
-use crate::training::{CurriculumEnv, Observation, SpawnSpec, StepInfo, TrainingEnv};
+use crate::training::{
+    CurriculumEnv, Observation, SpawnSpec, StepInfo, StepOutcome, TerminationReason, TrainingEnv,
+};
 
 const TWO_PI: f32 = std::f32::consts::PI * 2.0;
 const HEADING_PERTURB_RANGE: f32 = 25.0 * std::f32::consts::PI / 180.0;
 const ANG_VEL_RANGE: f32 = 5.0 * std::f32::consts::PI / 180.0;
 const VVEL_RANGE: f32 = 2.0;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TerminationReason {
-    Failure,
-    Timeout,
-}
 
 #[derive(Clone)]
 pub struct WuOrbitEnv {
@@ -337,7 +333,7 @@ impl TrainingEnv for WuOrbitEnv {
         (obs, spawn_spec)
     }
 
-    fn step(&mut self, action: &[f32]) -> (Observation, f32, bool, StepInfo) {
+    fn step(&mut self, action: &[f32]) -> StepOutcome {
         let inputs = direct_action_to_inputs(action);
         integrate_state(&mut self.state, &inputs, &self.cfg, self.dt);
         self.episode_step += 1;
@@ -364,12 +360,16 @@ impl TrainingEnv for WuOrbitEnv {
         }
         self.prev_alt_err = self.state.altitude - self.target_altitude;
         self.prev_heading_err = terms.guidance_heading_error;
-        let done = termination.is_some();
         let info = StepInfo {
             episode_step: self.episode_step,
             ..Default::default()
         };
-        (obs, reward, done, info)
+        StepOutcome {
+            obs,
+            reward,
+            end: termination,
+            info,
+        }
     }
 
     fn observation_dim(&self) -> usize {
@@ -501,7 +501,8 @@ mod tests {
         assert_eq!(obs.len(), ORBIT_OBS_DIM);
         assert!(obs.iter().all(|v| v.is_finite()), "reset obs: {obs:?}");
 
-        let (obs, reward, _done, info) = env.step(&[0.0, 0.0, 0.0, 0.0]);
+        let out = env.step(&[0.0, 0.0, 0.0, 0.0]);
+        let (obs, reward, info) = (out.obs, out.reward, out.info);
         assert!(obs.iter().all(|v| v.is_finite()), "step obs: {obs:?}");
         assert!(reward.is_finite(), "reward not finite: {reward}");
         assert_eq!(info.episode_step, 1);
@@ -567,7 +568,8 @@ mod tests {
         env.state.position.y = 5.0;
         env.state.altitude = 5.0;
 
-        let (_obs, reward, done, _) = env.step(&[0.0, 0.0, 0.0, 0.0]);
+        let out = env.step(&[0.0, 0.0, 0.0, 0.0]);
+        let (reward, done) = (out.reward, out.done());
         assert!(done, "should be done");
         assert!(
             reward < 0.0,

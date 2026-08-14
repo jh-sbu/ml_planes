@@ -196,6 +196,15 @@ where
         let mut episode_returns: Vec<f32> = Vec::with_capacity(8 * n);
         let mut episode_lengths: Vec<u32> = Vec::with_capacity(8 * n);
 
+        // Steps whose episode was cut short by the time limit rather than by a
+        // failure. Their value target must bootstrap `V(s')` at the terminal
+        // observation, so we stash `(env index, index within that env's buffer)`
+        // plus the observation itself and resolve them all in the one batched
+        // value pass below. Usually empty or near-empty: with 3200-step episodes
+        // and a 2048-step rollout this fires well under once per update.
+        let mut truncated: Vec<(usize, usize)> = Vec::new();
+        let mut truncated_obs: Vec<Observation> = Vec::new();
+
         for _ in 0..steps_per_env {
             // Batch [n, obs_dim] obs tensor — one inference call for all envs.
             // Pre-sized `extend` avoids the incremental regrowth `flat_map(..).collect()`
@@ -233,23 +242,33 @@ where
                 })
                 .collect();
 
-            let (next_obs, rewards, dones) = self.envs.step_batch(&actions);
+            let mut outcomes = self.envs.step_batch(&actions);
 
-            for i in 0..n {
+            for (i, outcome) in outcomes.iter_mut().enumerate() {
+                let done = outcome.done();
+                if outcome.truncated() {
+                    // The env does not auto-reset, so `outcome.obs` is the genuine
+                    // terminal observation. Grab it before the reset below replaces
+                    // it with the next episode's first observation.
+                    truncated.push((i, env_buffers[i].len()));
+                    truncated_obs.push(outcome.obs.clone());
+                }
                 env_buffers[i].push(RolloutStep {
-                    // `obs_batch` is unconditionally overwritten by `next_obs` right
-                    // after this loop, so `obs_batch[i]` is dead after this read —
-                    // move it out instead of cloning it.
+                    // `obs_batch` is unconditionally overwritten by the outcome
+                    // observations right after this loop, so `obs_batch[i]` is dead
+                    // after this read — move it out instead of cloning it.
                     obs: std::mem::take(&mut obs_batch[i]),
                     action: actions[i],
                     log_prob: log_prob_data[i],
-                    reward: rewards[i],
+                    reward: outcome.reward,
                     value: value_data[i],
-                    done: dones[i],
+                    done,
+                    // Filled in after the rollout loop for truncated steps only.
+                    bootstrap_value: None,
                 });
-                self.ep_returns[i] += rewards[i];
+                self.ep_returns[i] += outcome.reward;
                 self.ep_lengths[i] += 1;
-                if dones[i] {
+                if done {
                     episode_returns.push(self.ep_returns[i]);
                     episode_lengths.push(self.ep_lengths[i]);
                     self.ep_returns[i] = 0.0;
@@ -257,30 +276,46 @@ where
                 }
             }
 
-            obs_batch = next_obs;
-            for i in 0..n {
-                if dones[i] {
-                    obs_batch[i] = self.envs.reset_at(i);
-                }
-            }
+            obs_batch = outcomes
+                .into_iter()
+                .enumerate()
+                .map(|(i, outcome)| {
+                    if outcome.done() {
+                        self.envs.reset_at(i)
+                    } else {
+                        outcome.obs
+                    }
+                })
+                .collect();
         }
 
-        // Bootstrap: one batched inference for all N last observations.
-        let mut last_flat: Vec<f32> = Vec::with_capacity(n * self.obs_dim);
-        for o in &obs_batch {
+        // Bootstrap: one batched inference covering both the N per-env last
+        // observations and every truncated step's terminal observation. Folding the
+        // truncated rows into the same pass keeps this at one forward call
+        // regardless of how many episodes timed out during the rollout.
+        let bootstrap_rows = n + truncated_obs.len();
+        let mut last_flat: Vec<f32> = Vec::with_capacity(bootstrap_rows * self.obs_dim);
+        for o in obs_batch.iter().chain(truncated_obs.iter()) {
             last_flat.extend_from_slice(o);
         }
         let last_obs_t = Tensor::<B::InnerBackend, 2>::from_data(
-            TensorData::new(last_flat, vec![n, self.obs_dim]),
+            TensorData::new(last_flat, vec![bootstrap_rows, self.obs_dim]),
             &inner_device,
         );
-        let last_values = inference_model
+        let bootstrap_values = inference_model
             .value
             .forward(last_obs_t)
             .squeeze_dims::<1>(&[1])
             .into_data()
             .to_vec::<f32>()
             .expect("last values");
+        let (last_values, truncated_values) = bootstrap_values.split_at(n);
+
+        // A truncated step ended a *still-flying* episode, so it keeps `done = true`
+        // (the GAE carry must still reset) but bootstraps `V(s')` instead of 0.
+        for (&(env_i, step_i), &v) in truncated.iter().zip(truncated_values) {
+            env_buffers[env_i].steps[step_i].bootstrap_value = Some(v);
+        }
 
         // GAE per env so episode boundaries don't bleed across env indices.
         for (i, buf) in env_buffers.iter_mut().enumerate() {
@@ -644,6 +679,43 @@ mod tests {
         assert_eq!(trainer.rollout_steps, 512);
         assert_eq!(trainer.n_epochs, 10);
         assert_eq!(trainer.minibatch, 32);
+    }
+
+    #[test]
+    fn rollout_bootstraps_truncated_steps_only() {
+        // A short episode limit guarantees the rollout contains timeouts. Every
+        // step that ends an episode by timing out must carry a finite bootstrap
+        // value; every other step (still running, or a genuine failure) must not,
+        // because only the timeout case has a real continuation to bootstrap.
+        let mut env = LevelHoldEnv::new(1000.0, 100.0, jet_cfg());
+        env.max_episode_steps = 8;
+        let mut trainer = PpoTrainer::<B>::with_n_envs(env, 2, Default::default());
+        trainer.rollout_steps = 64;
+
+        let (buf, _mean_return, _mean_len) = trainer.collect_rollout();
+
+        let truncated: Vec<&RolloutStep> = buf
+            .steps
+            .iter()
+            .filter(|s| s.bootstrap_value.is_some())
+            .collect();
+        assert!(
+            !truncated.is_empty(),
+            "an 8-step episode limit over a 64-step rollout must produce timeouts"
+        );
+        assert!(
+            truncated
+                .iter()
+                .all(|s| s.done && s.bootstrap_value.unwrap().is_finite()),
+            "a bootstrapped step must be an episode end with a finite value"
+        );
+        assert!(
+            buf.steps
+                .iter()
+                .filter(|s| !s.done)
+                .all(|s| s.bootstrap_value.is_none()),
+            "a step that did not end an episode must never carry a bootstrap value"
+        );
     }
 
     #[test]

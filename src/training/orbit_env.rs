@@ -19,18 +19,14 @@ use crate::controllers::FlightController;
 use crate::plane::{ControlInputs, FlightState, PlaneConfig, PHYSICS_DT};
 use crate::training::flight_env::{direct_action_to_inputs, integrate_state, roll_angle, Lcg};
 use crate::training::reward_config::OrbitRewardConfig;
-use crate::training::{DemonstrationEnv, Observation, SpawnSpec, StepInfo, TrainingEnv};
+use crate::training::{
+    DemonstrationEnv, Observation, SpawnSpec, StepInfo, StepOutcome, TerminationReason, TrainingEnv,
+};
 
 const TWO_PI: f32 = std::f32::consts::PI * 2.0;
 const HEADING_PERTURB_RANGE: f32 = 25.0 * std::f32::consts::PI / 180.0;
 const ANG_VEL_RANGE: f32 = 5.0 * std::f32::consts::PI / 180.0;
 const VVEL_RANGE: f32 = 2.0;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TerminationReason {
-    Failure,
-    Timeout,
-}
 
 #[derive(Clone)]
 pub struct OrbitEnv {
@@ -290,7 +286,7 @@ impl TrainingEnv for OrbitEnv {
         (self.build_observation(), spawn_spec)
     }
 
-    fn step(&mut self, action: &[f32]) -> (Observation, f32, bool, StepInfo) {
+    fn step(&mut self, action: &[f32]) -> StepOutcome {
         let inputs = direct_action_to_inputs(action);
         integrate_state(&mut self.state, &inputs, &self.cfg, self.dt);
         self.episode_step += 1;
@@ -302,13 +298,17 @@ impl TrainingEnv for OrbitEnv {
         if termination == Some(TerminationReason::Failure) {
             reward += self.reward_cfg.terminal_failure_penalty;
         }
-        let done = termination.is_some();
         let info = StepInfo {
             episode_step: self.episode_step,
             ..Default::default()
         };
 
-        (obs, reward, done, info)
+        StepOutcome {
+            obs,
+            reward,
+            end: termination,
+            info,
+        }
     }
 
     fn observation_dim(&self) -> usize {
@@ -447,7 +447,8 @@ mod tests {
             "reset obs contains NaN/inf: {obs:?}"
         );
 
-        let (obs, reward, _done, info) = env.step(&[0.0, 0.0, 0.0, 0.0]);
+        let out = env.step(&[0.0, 0.0, 0.0, 0.0]);
+        let (obs, reward, info) = (out.obs, out.reward, out.info);
         assert_eq!(obs.len(), ORBIT_OBS_DIM);
         assert!(
             obs.iter().all(|v| v.is_finite()),
@@ -494,9 +495,14 @@ mod tests {
         env.state.position.y = 5.0;
         env.state.altitude = 5.0;
 
-        let (_obs, reward, done, _info) = env.step(&[0.0, 0.0, 0.0, 0.0]);
+        let out = env.step(&[0.0, 0.0, 0.0, 0.0]);
+        let reward = out.reward;
 
-        assert!(done, "low altitude should terminate");
+        assert_eq!(
+            out.end,
+            Some(TerminationReason::Failure),
+            "low altitude is a failure, not a timeout — it must not bootstrap"
+        );
         let terms = env.current_terms();
         let expected = env.compute_base_reward(&terms) + env.reward_cfg.terminal_failure_penalty;
         assert!(
@@ -511,9 +517,14 @@ mod tests {
         env.state = state_at(1000.0, Vec3::X);
         env.max_episode_steps = 1;
 
-        let (_obs, reward, done, _info) = env.step(&[0.0, 0.0, 0.0, 0.0]);
+        let out = env.step(&[0.0, 0.0, 0.0, 0.0]);
+        let reward = out.reward;
 
-        assert!(done, "max episode steps should terminate");
+        assert_eq!(
+            out.end,
+            Some(TerminationReason::Timeout),
+            "hitting max_episode_steps while flying is a truncation"
+        );
         let terms = env.current_terms();
         let expected = env.compute_base_reward(&terms);
         assert!(
@@ -537,9 +548,10 @@ mod tests {
 
         let mut done_step = None;
         for _ in 0..(n + 10) {
-            let (_obs, _reward, done, info) = env.step(&[0.0, 0.0, 0.0, 0.0]);
-            if done {
-                done_step = Some(info.episode_step);
+            let out = env.step(&[0.0, 0.0, 0.0, 0.0]);
+            if out.done() {
+                assert_eq!(out.end, Some(TerminationReason::Timeout));
+                done_step = Some(out.info.episode_step);
                 break;
             }
         }

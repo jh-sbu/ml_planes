@@ -96,7 +96,8 @@ src/
 | `ControlInputs` | ECS component | Aileron/elevator/rudder/throttle **or** rate commands (see Action Spaces) |
 | `FlightController` | trait | `fn update(&mut self, state: &FlightState, dt: f32) -> ControlInputs`, plus `telemetry()`/`targets()` (read-only status / editable setpoints, both default to publishing nothing) and `apply_targets()` (applies an edit, ignoring a mismatched variant) |
 | `PidController<T>` | generic struct | PID with integral wind-up clamp and output limits |
-| `TrainingEnv` | trait | `reset()`, `step(action) -> (obs, reward, done, info)` |
+| `TrainingEnv` | trait | `reset()`, `step(action) -> StepOutcome` |
+| `StepOutcome` / `TerminationReason` | struct / enum | `StepOutcome { obs, reward, end: Option<TerminationReason>, info }` with `done()`/`truncated()` helpers. `end` distinguishes `Failure` (absorbing — bootstrap 0) from `Timeout` (the time limit cut a still-flying episode short — bootstrap `gamma·V(s')`); see "Termination vs. truncation" below. `obs` is always the state reached by the step, including at an episode end — envs never auto-reset, which is what lets a trainer read the terminal observation before calling `reset()` |
 | `PlaneConfigHandle` | ECS component | Newtype wrapping `Handle<PlaneConfig>` — required because `Handle<T>` is not a `Component` in Bevy 0.18 |
 | `ControllerKind` | enum | Factory selector for all controller types; `build()` does bumpless integral seeding. `ALL` cycle list is feature-gated (RL variants only under `inference`/`training`) |
 | `ManualController` | struct | Passthrough — applies raw keyboard/stick inputs, no autopilot |
@@ -524,13 +525,32 @@ Training environments (`LevelHoldEnv`, `OrbitEnv`, `ResidualOrbitEnv`, `WuOrbitE
 - `training/flight_env.rs::integrate_state()` provides 6-DOF Euler integration
 - Aerodynamics: shared `compute_aero_forces()` from `aerodynamics/`
 - Result: deterministic rollouts, fast vectorized training, no ECS overhead
-- `VecEnv` wraps any `TrainingEnv` to run N parallel episodes (seeds offset via `offset_rng_seed()`)
+- `VecEnv` wraps any `TrainingEnv` to run N parallel episodes (seeds offset via `offset_rng_seed()`).
+  `step_batch` returns one `StepOutcome` per env and, unlike Gymnasium's vector envs, does **not**
+  auto-reset — the caller resets explicitly via `reset_at`. That is deliberate: it keeps the
+  terminal observation reachable for truncation bootstrapping (below)
 - Integration step is **64 Hz**, read from the shared `ml_planes::plane::PHYSICS_DT` — the *same*
   constant the live sim's Rapier fixed schedule, Bevy's `Time<Fixed>`, and the replicon server
   tick use. The Euler integrator and Rapier are still different integrators, but they no longer
   run at different rates. `tests/core/physics_timestep.rs` guards the `Time<Fixed>` clock. If the
   timestep changes, rescale episode step limits to preserve simulated duration and treat returns
   from the old timestep as incomparable because `gamma` is applied per step.
+- **Termination vs. truncation:** every env reports *why* an episode ended via
+  `StepOutcome.end`, and the PPO value target depends on the answer. A `Failure` (crash,
+  divergence, stall) is genuinely absorbing, so `RolloutStep.bootstrap_value` stays `None` and GAE
+  bootstraps 0. A `Timeout` cut a still-flying episode short at an arbitrary wall clock, so both
+  trainers evaluate `V(s')` at the terminal observation and store it in `bootstrap_value`, which
+  `compute_gae` uses instead of 0 (`ppo/buffer.rs`, `ppo/lstm_buffer.rs`). The GAE **carry reset**
+  stays keyed on `done` in both cases — a truncation is still a real episode boundary, only its
+  value target differs — as does `lstm_buffer`'s BPTT sequence cut, since the hidden state resets
+  either way. Collapsing the two back into one flag is a silent, hard-to-see regression: the
+  observation carries no time feature, so a mislabelled timeout teaches the critic that an
+  ordinary in-flight state is worth nothing. It is small at the shipped settings (3200–3840-step
+  episodes vs. `gamma: 0.99`'s ~100-step horizon ⇒ well under 1% of samples per update) and grows
+  quickly with shorter episodes or a longer horizon. Guarded by
+  `ppo::{buffer,lstm_buffer}::tests::gae_bootstraps_on_truncation`,
+  `gae_zero_bootstrap_on_failure`, and each trainer's `rollout_bootstraps_truncated_steps_only`.
+  `terminal_failure_penalty` remains `Failure`-only.
 - **Level-hold observation contract:** `LevelHoldEnv` and `RlLevelHoldController` must agree
   bit-for-bit on the 13-dim observation vector; rather than keep two copies in sync by hand,
   both call the single free function `training::level_hold_env::level_hold_observation()`. Any
@@ -905,7 +925,7 @@ app.add_plugins(EguiPlugin { enable_multipass_for_primary_context: false });
 
 **By component:**
 - **New controller** — Unit test the control law (given `FlightState` → assert `ControlInputs` values) before writing the `FlightController` impl. Add an integration test in `tests/` before wiring into `ControllerKind`.
-- **New `TrainingEnv`** — Test `reset()` initial state and `step()` reward/obs values before implementing `TrainingEnv`. Add a termination-condition test.
+- **New `TrainingEnv`** — Test `reset()` initial state and `step()` reward/obs values before implementing `TrainingEnv`. Add termination-condition tests for **both** endings — a failure must report `TerminationReason::Failure` and the step limit `Timeout` (see `level_hold_env::{episode_terminates_on_ground, running_out_of_steps_is_a_timeout}`); getting the second one wrong silently corrupts the PPO value target rather than failing loudly.
 - **Aerodynamic changes** — Test the force/torque equations with known inputs before editing `compute_aero_forces()`.
 - **New `ControllerKind` variant** — Test `build()` produces a non-panicking controller and that `name()` is non-empty before wiring into `main.rs`.
 

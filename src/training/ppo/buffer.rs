@@ -11,6 +11,16 @@ pub struct RolloutStep {
     pub reward: f32,
     pub value: f32,
     pub done: bool,
+    /// Set only on a **truncated** step (the episode hit its time limit while the
+    /// plane was still flying), holding `V(s_{t+1})` evaluated at the terminal
+    /// observation. `None` means either "episode still running" or "real terminal
+    /// state", both of which bootstrap 0.
+    ///
+    /// Without this, a timeout trains the critic toward a return of exactly `r_T`
+    /// when the correct target is `r_T + gamma * V(s_{t+1})` — and since the
+    /// observation carries no time feature, that mislabels a state indistinguishable
+    /// from any other in-flight state.
+    pub bootstrap_value: Option<f32>,
 }
 
 /// Buffer of rollout steps with pre-computed GAE advantages and TD-lambda returns.
@@ -64,7 +74,11 @@ impl RolloutBuffer {
 
         let mut gae = 0.0_f32;
         for t in (0..n).rev() {
-            let next_value = if self.steps[t].done {
+            let next_value = if let Some(v) = self.steps[t].bootstrap_value {
+                // Truncated: the episode was cut short by its time limit, not by a
+                // failure, so the continuation value is real and must be bootstrapped.
+                v
+            } else if self.steps[t].done {
                 0.0
             } else if t + 1 < n {
                 self.steps[t + 1].value
@@ -72,7 +86,9 @@ impl RolloutBuffer {
                 last_value
             };
             let delta = self.steps[t].reward + gamma * next_value - self.steps[t].value;
-            // done resets the carry so episodes don't bleed into each other.
+            // done resets the carry so episodes don't bleed into each other. This stays
+            // keyed on `done`, not on the bootstrap: a truncation is still a real episode
+            // boundary, only its value target differs.
             gae = delta + gamma * gae_lambda * if self.steps[t].done { 0.0 } else { gae };
             self.advantages[t] = gae;
             self.returns[t] = gae + self.steps[t].value;
@@ -128,6 +144,16 @@ mod tests {
             reward,
             value,
             done,
+            bootstrap_value: None,
+        }
+    }
+
+    /// A step that ended its episode by hitting the time limit, carrying the
+    /// value estimate of the state the episode was cut short at.
+    fn make_truncated_step(reward: f32, value: f32, bootstrap: f32) -> RolloutStep {
+        RolloutStep {
+            bootstrap_value: Some(bootstrap),
+            ..make_step(reward, value, true)
         }
     }
 
@@ -193,6 +219,63 @@ mod tests {
         assert!(
             (buf.advantages[0] - 2.0).abs() < 1e-5,
             "adv[0]={}",
+            buf.advantages[0]
+        );
+    }
+
+    #[test]
+    fn gae_bootstraps_on_truncation() {
+        // A single step whose episode ended only because it hit the time limit.
+        // The plane was still flying, so the value target must include the
+        // continuation `gamma * V(s')` rather than treating the state as absorbing.
+        let gamma = 0.99_f32;
+        let mut buf = RolloutBuffer::new();
+        buf.push(make_truncated_step(1.0, 0.5, 4.0));
+
+        buf.compute_gae(0.0, gamma, 0.95);
+
+        let expected = 1.0 + gamma * 4.0 - 0.5;
+        assert!(
+            (buf.advantages[0] - expected).abs() < 1e-5,
+            "truncated step must bootstrap V(s'): adv={} expected={expected}",
+            buf.advantages[0]
+        );
+    }
+
+    #[test]
+    fn gae_zero_bootstrap_on_failure() {
+        // Same shape, but the episode ended because the plane failed. That state
+        // really is absorbing, so no continuation value may leak in.
+        let mut buf = RolloutBuffer::new();
+        buf.push(make_step(1.0, 0.5, true));
+
+        buf.compute_gae(0.0, 0.99, 0.95);
+
+        let expected = 1.0 - 0.5;
+        assert!(
+            (buf.advantages[0] - expected).abs() < 1e-5,
+            "failure step must bootstrap 0: adv={} expected={expected}",
+            buf.advantages[0]
+        );
+    }
+
+    #[test]
+    fn truncation_still_resets_the_gae_carry() {
+        // Bootstrapping across a truncation must not also let the *next* episode's
+        // advantage carry bleed backwards — the episode boundary is real either way.
+        let gamma = 0.99_f32;
+        let lambda = 0.95_f32;
+        let mut buf = RolloutBuffer::new();
+        buf.push(make_truncated_step(1.0, 0.5, 4.0)); // t=0, end of episode 1
+        buf.push(make_step(100.0, 0.0, false)); // t=1, start of episode 2
+
+        buf.compute_gae(0.0, gamma, lambda);
+
+        // t=0 sees only its own delta, not episode 2's large reward.
+        let expected = 1.0 + gamma * 4.0 - 0.5;
+        assert!(
+            (buf.advantages[0] - expected).abs() < 1e-5,
+            "carry bled across a truncation: adv={} expected={expected}",
             buf.advantages[0]
         );
     }

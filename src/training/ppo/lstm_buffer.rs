@@ -22,6 +22,10 @@ pub struct LstmRolloutStep {
     pub reward: f32,
     pub value: f32,
     pub done: bool,
+    /// Set only on a **truncated** step (time limit reached while still flying),
+    /// holding `V(s_{t+1})` evaluated at the terminal observation *with the
+    /// pre-reset value hidden state*. See [`super::buffer::RolloutStep`].
+    pub bootstrap_value: Option<f32>,
 }
 
 /// A fixed-length sequence chunk ready for a minibatch BPTT update.
@@ -107,7 +111,11 @@ impl LstmRolloutBuffer {
             };
             let mut gae = 0.0_f32;
             for t in (start..end).rev() {
-                let next_value = if self.steps[t].done {
+                let next_value = if let Some(v) = self.steps[t].bootstrap_value {
+                    // Truncated by the time limit rather than a failure: the
+                    // continuation value is real and must be bootstrapped.
+                    v
+                } else if self.steps[t].done {
                     0.0
                 } else if t + 1 < end {
                     self.steps[t + 1].value
@@ -115,6 +123,8 @@ impl LstmRolloutBuffer {
                     last_val
                 };
                 let delta = self.steps[t].reward + gamma * next_value - self.steps[t].value;
+                // Carry reset stays keyed on `done` — a truncation is still a real
+                // episode boundary, only its value target differs.
                 gae = delta + gamma * lam * if self.steps[t].done { 0.0 } else { gae };
                 self.advantages[t] = gae;
                 self.returns[t] = gae + self.steps[t].value;
@@ -254,7 +264,77 @@ mod tests {
             reward,
             value,
             done,
+            bootstrap_value: None,
         }
+    }
+
+    /// A step that ended its episode by hitting the time limit, carrying the value
+    /// estimate of the state the episode was cut short at.
+    fn make_truncated_step(
+        obs_dim: usize,
+        reward: f32,
+        value: f32,
+        bootstrap: f32,
+    ) -> LstmRolloutStep {
+        LstmRolloutStep {
+            bootstrap_value: Some(bootstrap),
+            ..make_step(obs_dim, reward, value, true)
+        }
+    }
+
+    #[test]
+    fn gae_bootstraps_on_truncation() {
+        let gamma = 0.99_f32;
+        let mut buf = LstmRolloutBuffer::new(1, 1);
+        buf.push(make_truncated_step(13, 1.0, 0.5, 4.0));
+        buf.compute_gae(&[0.0], gamma, 0.95);
+
+        let expected = 1.0 + gamma * 4.0 - 0.5;
+        assert!(
+            (buf.advantages[0] - expected).abs() < 1e-5,
+            "truncated step must bootstrap V(s'): adv={} expected={expected}",
+            buf.advantages[0]
+        );
+    }
+
+    #[test]
+    fn gae_zero_bootstrap_on_failure() {
+        let mut buf = LstmRolloutBuffer::new(1, 1);
+        buf.push(make_step(13, 1.0, 0.5, true));
+        buf.compute_gae(&[0.0], 0.99, 0.95);
+
+        let expected = 1.0 - 0.5;
+        assert!(
+            (buf.advantages[0] - expected).abs() < 1e-5,
+            "failure step must bootstrap 0: adv={} expected={expected}",
+            buf.advantages[0]
+        );
+    }
+
+    #[test]
+    fn truncation_still_cuts_the_bptt_sequence() {
+        // The hidden state is reset at every episode boundary, so a truncation must
+        // still close its BPTT chunk even though it now bootstraps a value.
+        let obs_dim = 13;
+        let mut buf = LstmRolloutBuffer::new(1, 20);
+        for _ in 0..9 {
+            buf.push(make_step(obs_dim, 0.0, 0.0, false));
+        }
+        buf.push(make_truncated_step(obs_dim, 0.0, 0.0, 1.0)); // t=9 closes episode 1
+        for _ in 0..10 {
+            buf.push(make_step(obs_dim, 0.0, 0.0, false));
+        }
+        buf.advantages = vec![0.0; 20];
+        buf.returns = vec![0.0; 20];
+
+        let seqs = buf.chunk_sequences(32, obs_dim);
+        assert_eq!(
+            seqs.len(),
+            2,
+            "truncation at t=9 must split the rollout into two sequences"
+        );
+        let valid: usize = seqs[0].mask.iter().map(|&m| m as usize).sum();
+        assert_eq!(valid, 10, "first chunk ends at the truncated step");
     }
 
     #[test]
@@ -389,6 +469,7 @@ mod tests {
             reward: 0.0,
             value: 0.0,
             done,
+            bootstrap_value: None,
         }
     }
 

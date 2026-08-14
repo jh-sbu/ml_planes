@@ -445,11 +445,13 @@ where
 
         while !done && ep_len < max_steps {
             let action = policy.act(&obs);
-            let (next_obs, reward, next_done, _info) = env.step(&action);
-            obs = next_obs;
-            ep_return += reward;
+            let outcome = env.step(&action);
+            // The success criterion below is this loop's own `max_steps` cap, which
+            // is independent of the env's termination reason.
+            done = outcome.done();
+            obs = outcome.obs;
+            ep_return += outcome.reward;
             ep_len += 1;
-            done = next_done;
 
             task_metrics.step(&obs, ep_len > tail_start);
         }

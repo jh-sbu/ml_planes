@@ -96,9 +96,10 @@ fn main() {
                 inputs.aileron,
                 inputs.rudder,
             ];
-            let (obs, _r, next_done, _info) = env.step(&action);
+            let outcome = env.step(&action);
+            done = outcome.done();
+            let obs = outcome.obs;
             len += 1;
-            done = next_done;
             if len > tail_start {
                 tail_alt += (obs[0] * 200.0).abs() as f64;
                 tail_spd += (obs[1] * 50.0).abs() as f64;

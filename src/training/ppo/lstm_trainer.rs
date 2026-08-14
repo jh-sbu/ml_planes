@@ -190,6 +190,14 @@ where
         let mut seq_start_hidden: HashMap<usize, (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>)> =
             HashMap::new();
 
+        // Steps whose episode was cut short by the time limit rather than a failure.
+        // Unlike the feed-forward trainer, evaluating `V(s')` here needs the *value*
+        // LSTM state as it stood at the terminal step, so snapshot that alongside the
+        // terminal observation before the per-env reset wipes both.
+        let mut truncated: Vec<(usize, usize)> = Vec::new();
+        let mut truncated_obs: Vec<Observation> = Vec::new();
+        let mut truncated_hidden: Vec<LstmHiddenState> = Vec::new();
+
         for t in 0..steps_per_env {
             // Capture hidden states for sequence-start steps before inference.
             for i in 0..n {
@@ -255,18 +263,29 @@ where
                 })
                 .collect();
 
-            let (next_obs, rewards, dones) = self.envs.step_batch(&actions);
+            let mut outcomes = self.envs.step_batch(&actions);
+            let dones: Vec<bool> = outcomes.iter().map(|o| o.done()).collect();
 
-            for i in 0..n {
+            for (i, outcome) in outcomes.iter_mut().enumerate() {
+                if outcome.truncated() {
+                    // The env does not auto-reset, so `outcome.obs` is the genuine
+                    // terminal observation; `new_v_hidden[i]` is the value state that
+                    // produced it, before the reset below clears it.
+                    truncated.push((i, per_env[i].len()));
+                    truncated_obs.push(outcome.obs.clone());
+                    truncated_hidden.push(new_v_hidden[i].clone());
+                }
                 per_env[i].push(LstmRolloutStep {
                     obs: obs_batch[i].clone(),
                     action: actions[i],
                     log_prob: log_prob_data[i],
-                    reward: rewards[i],
+                    reward: outcome.reward,
                     value: value_data[i],
                     done: dones[i],
+                    // Filled in after the rollout loop for truncated steps only.
+                    bootstrap_value: None,
                 });
-                self.ep_returns[i] += rewards[i];
+                self.ep_returns[i] += outcome.reward;
                 self.ep_lengths[i] += 1;
                 if dones[i] {
                     episode_returns.push(self.ep_returns[i]);
@@ -276,7 +295,8 @@ where
                 }
             }
 
-            // Update hidden states; reset on done.
+            // Update hidden states; reset on done. A truncation resets the state just
+            // like a failure — the next episode starts fresh either way.
             for i in 0..n {
                 self.policy_hidden[i] = new_p_hidden[i].clone();
                 self.value_hidden[i] = new_v_hidden[i].clone();
@@ -295,11 +315,43 @@ where
                 }
             }
 
-            obs_batch = next_obs;
-            for i in 0..n {
-                if dones[i] {
-                    obs_batch[i] = self.envs.reset_at(i);
-                }
+            obs_batch = outcomes
+                .into_iter()
+                .enumerate()
+                .map(|(i, outcome)| {
+                    if dones[i] {
+                        self.envs.reset_at(i)
+                    } else {
+                        outcome.obs
+                    }
+                })
+                .collect();
+        }
+
+        // Resolve the truncated steps' bootstrap values in one batched recurrent
+        // forward pass, using each step's own saved value hidden state. Kept separate
+        // from the `last_values` pass below because that one carries the *current*
+        // per-env hidden states, which are different.
+        if !truncated.is_empty() {
+            let k = truncated_obs.len();
+            let mut flat: Vec<f32> = Vec::with_capacity(k * self.obs_dim);
+            for o in &truncated_obs {
+                flat.extend_from_slice(o);
+            }
+            let obs_t = Tensor::<B::InnerBackend, 2>::from_data(
+                TensorData::new(flat, vec![k, self.obs_dim]),
+                &inner_device,
+            );
+            let hidden =
+                LstmHiddenState::batch_to_burn::<B::InnerBackend>(&truncated_hidden, &inner_device);
+            let (values_t, _) = inference_model.value.forward_step(obs_t, Some(hidden));
+            let values = values_t
+                .squeeze_dims::<1>(&[1])
+                .into_data()
+                .to_vec::<f32>()
+                .expect("truncated bootstrap values");
+            for (&(env_i, step_i), &v) in truncated.iter().zip(values.iter()) {
+                per_env[env_i][step_i].bootstrap_value = Some(v);
             }
         }
 
@@ -668,6 +720,46 @@ mod tests {
         assert!(metrics.policy_loss.is_finite(), "policy loss NaN");
         assert!(metrics.value_loss.is_finite(), "value loss NaN");
         assert!(metrics.entropy.is_finite(), "entropy NaN");
+    }
+
+    #[test]
+    fn rollout_bootstraps_truncated_steps_only() {
+        // Recurrent counterpart of `PpoTrainer::rollout_bootstraps_truncated_steps_only`.
+        // The extra risk here is the hidden state: `V(s')` must be evaluated with the
+        // value LSTM state as it stood at the terminal step, not the post-reset zero
+        // state, so a finite value alone is the observable invariant we can assert.
+        let env = {
+            let mut e = WuOrbitEnv::new(1000.0, 100.0, 3000.0, jet_cfg());
+            e.max_episode_steps = 8;
+            e
+        };
+        let mut trainer = LstmPpoTrainer::<B, WuOrbitEnv>::with_n_envs(env, 2, Default::default());
+        trainer.rollout_steps = 64;
+
+        let (buf, _, _) = trainer.collect_rollout();
+
+        let bootstrapped: Vec<_> = buf
+            .steps
+            .iter()
+            .filter(|s| s.bootstrap_value.is_some())
+            .collect();
+        assert!(
+            !bootstrapped.is_empty(),
+            "an 8-step episode limit over a 64-step rollout must produce timeouts"
+        );
+        assert!(
+            bootstrapped
+                .iter()
+                .all(|s| s.done && s.bootstrap_value.unwrap().is_finite()),
+            "a bootstrapped step must be an episode end with a finite value"
+        );
+        assert!(
+            buf.steps
+                .iter()
+                .filter(|s| !s.done)
+                .all(|s| s.bootstrap_value.is_none()),
+            "a step that did not end an episode must never carry a bootstrap value"
+        );
     }
 
     #[test]

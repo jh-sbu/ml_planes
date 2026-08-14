@@ -34,11 +34,13 @@ where
 
         while !done && ep_len < max_steps {
             let action = policy(&obs);
-            let (next_obs, reward, next_done, _info) = env.step(&action);
-            obs = next_obs;
-            ep_return += reward;
+            let outcome = env.step(&action);
+            // Either termination reason ends the episode here; this loop's own
+            // `max_steps` cap is separate and drives the success criterion below.
+            done = outcome.done();
+            obs = outcome.obs;
+            ep_return += outcome.reward;
             ep_len += 1;
-            done = next_done;
         }
 
         if ep_len >= max_steps {
@@ -59,7 +61,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::training::{SpawnSpec, StepInfo};
+    use crate::training::{SpawnSpec, StepInfo, StepOutcome, TerminationReason};
 
     struct FixedLengthEnv {
         step: u32,
@@ -73,18 +75,18 @@ mod tests {
             (vec![0.0], SpawnSpec::default())
         }
 
-        fn step(&mut self, _action: &[f32]) -> (Observation, f32, bool, StepInfo) {
+        fn step(&mut self, _action: &[f32]) -> StepOutcome {
             self.step += 1;
-            let done = self.step >= self.episode_steps;
-            (
-                vec![self.step as f32],
-                self.reward_per_step,
-                done,
-                StepInfo {
+            StepOutcome {
+                obs: vec![self.step as f32],
+                reward: self.reward_per_step,
+                // This env only ever ends by running out of steps.
+                end: (self.step >= self.episode_steps).then_some(TerminationReason::Timeout),
+                info: StepInfo {
                     episode_step: self.step,
                     ..Default::default()
                 },
-            )
+            }
         }
 
         fn observation_dim(&self) -> usize {

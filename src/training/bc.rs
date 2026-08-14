@@ -69,7 +69,8 @@ pub fn collect_demonstrations<E: DemonstrationEnv>(env: &mut E, n_steps: usize) 
         data.obs.push(obs.clone());
         data.actions.push(action);
 
-        let (next_obs, _reward, done, _info) = env.step(&action);
+        let outcome = env.step(&action);
+        let (done, next_obs) = (outcome.done(), outcome.obs);
         if done {
             let (reset_obs, _) = env.reset();
             obs = reset_obs;

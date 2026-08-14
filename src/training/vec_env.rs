@@ -1,4 +1,4 @@
-use crate::training::{Observation, TrainingEnv};
+use crate::training::{Observation, StepOutcome, TrainingEnv};
 
 /// Wraps a pool of independent environments for batched rollout collection.
 ///
@@ -38,19 +38,19 @@ impl<E: TrainingEnv> VecEnv<E> {
         &self.envs[0]
     }
 
-    /// Step all N environments and return (obs[N], reward[N], done[N]).
-    pub fn step_batch(&mut self, actions: &[[f32; 4]]) -> (Vec<Observation>, Vec<f32>, Vec<bool>) {
+    /// Step all N environments, returning one [`StepOutcome`] per env.
+    ///
+    /// Note that this does **not** auto-reset a finished env the way Gymnasium's
+    /// vector envs do — the caller resets explicitly via [`Self::reset_at`]. That is
+    /// what lets a caller read the terminal observation off the outcome and bootstrap
+    /// a truncated episode before resetting.
+    pub fn step_batch(&mut self, actions: &[[f32; 4]]) -> Vec<StepOutcome> {
         debug_assert_eq!(actions.len(), self.envs.len());
-        let mut obs_out = Vec::with_capacity(self.envs.len());
-        let mut rew_out = Vec::with_capacity(self.envs.len());
-        let mut done_out = Vec::with_capacity(self.envs.len());
-        for (env, action) in self.envs.iter_mut().zip(actions.iter()) {
-            let (obs, rew, done, _) = env.step(action);
-            obs_out.push(obs);
-            rew_out.push(rew);
-            done_out.push(done);
-        }
-        (obs_out, rew_out, done_out)
+        self.envs
+            .iter_mut()
+            .zip(actions.iter())
+            .map(|(env, action)| env.step(action))
+            .collect()
     }
 }
 
@@ -109,11 +109,11 @@ mod tests {
         assert_eq!(obs_s, obs_v[0]);
 
         let action = [0.0_f32; 4];
-        let (o_s, r_s, d_s, _) = single.step(&action);
-        let (obs_out, rew_out, done_out) = vec.step_batch(&[[0.0; 4]]);
-        assert_eq!(obs_out[0], o_s);
-        assert!((rew_out[0] - r_s).abs() < 1e-6);
-        assert_eq!(done_out[0], d_s);
+        let single_out = single.step(&action);
+        let batch_out = vec.step_batch(&[[0.0; 4]]);
+        assert_eq!(batch_out[0].obs, single_out.obs);
+        assert!((batch_out[0].reward - single_out.reward).abs() < 1e-6);
+        assert_eq!(batch_out[0].end, single_out.end);
     }
 
     #[test]
@@ -127,11 +127,10 @@ mod tests {
         let obs = vec.reset_all();
         assert_eq!(obs.len(), 4);
         let actions = [[0.0_f32; 4]; 4];
-        let (o, r, d) = vec.step_batch(&actions);
-        assert_eq!(o.len(), 4);
-        assert_eq!(r.len(), 4);
-        assert_eq!(d.len(), 4);
-        assert!(r.iter().all(|v| v.is_finite()));
+        let out = vec.step_batch(&actions);
+        assert_eq!(out.len(), 4);
+        assert!(out.iter().all(|o| o.reward.is_finite()));
+        assert!(out.iter().all(|o| o.obs.len() == 13));
     }
 
     #[test]

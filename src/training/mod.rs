@@ -22,7 +22,7 @@ pub mod wu_orbit_reward;
 pub use backend::Backend;
 pub use bc::{collect_demonstrations, BcDataset, DemonstrationEnv};
 pub use cli::parse_f32_range;
-pub use env::{Observation, SpawnSpec, StepInfo, TrainingEnv};
+pub use env::{Observation, SpawnSpec, StepInfo, StepOutcome, TerminationReason, TrainingEnv};
 pub use eval::{evaluate_policy, EvaluationSummary};
 pub use eval_metrics::{MetricFamily, TaskMetrics};
 

@@ -25,19 +25,15 @@ use crate::plane::{
 use crate::training::flight_env::{integrate_state, roll_angle, Lcg};
 
 use crate::training::reward_config::OrbitRewardConfig;
-use crate::training::{Observation, SpawnSpec, StepInfo, TrainingEnv};
+use crate::training::{
+    Observation, SpawnSpec, StepInfo, StepOutcome, TerminationReason, TrainingEnv,
+};
 
 const G: f32 = 9.81;
 const TWO_PI: f32 = std::f32::consts::PI * 2.0;
 const HEADING_PERTURB_RANGE: f32 = 25.0 * std::f32::consts::PI / 180.0;
 const ANG_VEL_RANGE: f32 = 5.0 * std::f32::consts::PI / 180.0;
 const VVEL_RANGE: f32 = 2.0;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TerminationReason {
-    Failure,
-    Timeout,
-}
 
 #[derive(Clone)]
 pub struct ResidualOrbitEnv {
@@ -294,7 +290,7 @@ impl TrainingEnv for ResidualOrbitEnv {
         (self.build_observation(), spawn_spec)
     }
 
-    fn step(&mut self, action: &[f32]) -> (Observation, f32, bool, StepInfo) {
+    fn step(&mut self, action: &[f32]) -> StepOutcome {
         let pid_inputs = self.orbit_controller.update(
             &self.state,
             &ControllerContext::empty_for(PlaneId::TEST),
@@ -320,13 +316,17 @@ impl TrainingEnv for ResidualOrbitEnv {
         if termination == Some(TerminationReason::Failure) {
             reward += self.reward_cfg.terminal_failure_penalty;
         }
-        let done = termination.is_some();
         let info = StepInfo {
             episode_step: self.episode_step,
             ..Default::default()
         };
 
-        (obs, reward, done, info)
+        StepOutcome {
+            obs,
+            reward,
+            end: termination,
+            info,
+        }
     }
 
     fn observation_dim(&self) -> usize {
@@ -440,7 +440,8 @@ mod tests {
             "reset obs contains NaN/inf: {obs:?}"
         );
 
-        let (obs, reward, _done, info) = env.step(&[0.0, 0.0, 0.0, 0.0]);
+        let out = env.step(&[0.0, 0.0, 0.0, 0.0]);
+        let (obs, reward, info) = (out.obs, out.reward, out.info);
         assert_eq!(obs.len(), ORBIT_OBS_DIM);
         assert!(
             obs.iter().all(|v| v.is_finite()),
@@ -484,7 +485,7 @@ mod tests {
         ref_state.update_air_data();
 
         // Step the residual env with zero action.
-        let (env_obs, _, _, _) = env.step(&[0.0, 0.0, 0.0, 0.0]);
+        let env_obs = env.step(&[0.0, 0.0, 0.0, 0.0]).obs;
 
         let ref_obs = build_orbit_observation(
             &ref_state,
@@ -510,7 +511,7 @@ mod tests {
             ResidualOrbitEnv::with_reward_config(1000.0, 100.0, 1000.0, jet_cfg(), reward_cfg);
         env.offset_rng_seed(99);
         let _ = env.reset();
-        let (obs_zero, _, _, _) = env.step(&[0.0, 0.0, 0.0, 0.0]);
+        let obs_zero = env.step(&[0.0, 0.0, 0.0, 0.0]).obs;
 
         let mut reward_cfg2 = OrbitRewardConfig::default();
         reward_cfg2.residual_scale = 0.0;
@@ -518,7 +519,7 @@ mod tests {
             ResidualOrbitEnv::with_reward_config(1000.0, 100.0, 1000.0, jet_cfg(), reward_cfg2);
         env2.offset_rng_seed(99);
         let _ = env2.reset();
-        let (obs_full, _, _, _) = env2.step(&[1.0, 0.5, -0.3, 0.8]);
+        let obs_full = env2.step(&[1.0, 0.5, -0.3, 0.8]).obs;
 
         for (i, (z, f)) in obs_zero.iter().zip(obs_full.iter()).enumerate() {
             assert!(
@@ -554,7 +555,8 @@ mod tests {
         env.state.position.y = 5.0;
         env.state.altitude = 5.0;
 
-        let (_obs, reward, done, _info) = env.step(&[0.0, 0.0, 0.0, 0.0]);
+        let out = env.step(&[0.0, 0.0, 0.0, 0.0]);
+        let (reward, done) = (out.reward, out.done());
 
         assert!(done, "low altitude should terminate");
         let terms = env.current_terms();

@@ -65,7 +65,9 @@ use crate::plane::{ControlInputs, FlightState, PlaneConfig, PHYSICS_DT};
 use crate::training::flight_env::{direct_action_to_inputs, integrate_state, roll_angle, Lcg};
 use crate::training::level_hold_env::{level_hold_observation, LEVEL_HOLD_OBS_DIM};
 use crate::training::reward_config::HeadingHoldRewardConfig;
-use crate::training::{DemonstrationEnv, Observation, SpawnSpec, StepInfo, TrainingEnv};
+use crate::training::{
+    DemonstrationEnv, Observation, SpawnSpec, StepInfo, StepOutcome, TerminationReason, TrainingEnv,
+};
 
 /// Observation dimension for the heading-hold task: the 13-dim level-hold
 /// observation plus `[sin(heading_error)/scale, cos(heading_error), turn_rate/scale]`.
@@ -122,12 +124,6 @@ const MIN_SPAWN_ALTITUDE_MARGIN: f32 = 50.0;
 /// flat 70.0 put episode starts 10 m/s from instant failure. A hard turn at the envelope
 /// floor bleeds speed fast, so such an episode is unlearnable rather than merely hard.
 const MIN_SPAWN_AIRSPEED_MARGIN: f32 = 20.0;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TerminationReason {
-    Failure,
-    Timeout,
-}
 
 /// Build the normalized heading-hold observation vector for `state` relative
 /// to the given target heading/altitude/airspeed. The single definition
@@ -390,7 +386,7 @@ impl TrainingEnv for HeadingHoldEnv {
         (self.build_observation(), spawn_spec)
     }
 
-    fn step(&mut self, action: &[f32]) -> (Observation, f32, bool, StepInfo) {
+    fn step(&mut self, action: &[f32]) -> StepOutcome {
         let inputs = Self::action_to_inputs(action);
         self.integrate(&inputs);
         self.episode_step += 1;
@@ -401,13 +397,17 @@ impl TrainingEnv for HeadingHoldEnv {
         if termination == Some(TerminationReason::Failure) {
             reward += self.reward_cfg.terminal_failure_penalty;
         }
-        let done = termination.is_some();
         let info = StepInfo {
             episode_step: self.episode_step,
             ..Default::default()
         };
 
-        (obs, reward, done, info)
+        StepOutcome {
+            obs,
+            reward,
+            end: termination,
+            info,
+        }
     }
 
     fn observation_dim(&self) -> usize {
@@ -593,7 +593,7 @@ mod tests {
     fn step_returns_correct_obs_length() {
         let mut env = HeadingHoldEnv::new(0.0, 1000.0, 120.0, jet_cfg());
         env.reset();
-        let (obs, _reward, _done, _info) = env.step(&[0.0, 0.0, 0.0, 0.0]);
+        let obs = env.step(&[0.0, 0.0, 0.0, 0.0]).obs;
         assert_eq!(obs.len(), 16);
     }
 
@@ -602,7 +602,8 @@ mod tests {
         let mut env = HeadingHoldEnv::new(0.0, 1000.0, 120.0, jet_cfg());
         env.reset();
         for _ in 0..60 {
-            let (obs, reward, _, _) = env.step(&[0.0, 0.0, 0.3, 0.0]);
+            let out = env.step(&[0.0, 0.0, 0.3, 0.0]);
+            let (obs, reward) = (out.obs, out.reward);
             assert!(
                 obs.iter().all(|v| v.is_finite()),
                 "obs contains NaN/inf: {:?}",
@@ -637,7 +638,7 @@ mod tests {
         env.reset();
         let mut done = false;
         for _ in 0..600 {
-            let (_, _, d, _) = env.step(&[-1.0, -1.0, 0.0, 0.0]);
+            let d = env.step(&[-1.0, -1.0, 0.0, 0.0]).done();
             if d {
                 done = true;
                 break;
@@ -653,7 +654,8 @@ mod tests {
         env.reset();
         let mut saw_penalized_reward = false;
         for _ in 0..600 {
-            let (_, reward, d, _) = env.step(&[-1.0, -1.0, 0.0, 0.0]);
+            let out = env.step(&[-1.0, -1.0, 0.0, 0.0]);
+            let (reward, d) = (out.reward, out.done());
             if d {
                 assert!(env.is_done());
                 // Penalty (-50) should dominate the per-step reward.
@@ -674,7 +676,8 @@ mod tests {
         env.max_episode_steps = 2;
         env.reset();
         env.step(&[0.0, 0.0, 0.0, 0.0]);
-        let (_, reward, done, _) = env.step(&[0.0, 0.0, 0.0, 0.0]);
+        let out = env.step(&[0.0, 0.0, 0.0, 0.0]);
+        let (reward, done) = (out.reward, out.done());
         assert!(done);
         // A near-level, near-target step should be a small reward, not a
         // failure-penalized one.

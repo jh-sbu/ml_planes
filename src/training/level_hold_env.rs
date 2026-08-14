@@ -32,7 +32,9 @@ use crate::training::flight_env::{
     direct_action_to_inputs, integrate_state, pitch_angle, roll_angle, Lcg,
 };
 use crate::training::reward_config::LevelHoldRewardConfig;
-use crate::training::{DemonstrationEnv, Observation, SpawnSpec, StepInfo, TrainingEnv};
+use crate::training::{
+    DemonstrationEnv, Observation, SpawnSpec, StepInfo, StepOutcome, TerminationReason, TrainingEnv,
+};
 
 /// Observation dimension for the level-hold task. Shared by `LevelHoldEnv` and
 /// `RlLevelHoldController` — both must agree with `level_hold_observation` below.
@@ -226,11 +228,21 @@ impl LevelHoldEnv {
             + c.alive_bonus
     }
 
-    fn is_done(&self) -> bool {
+    /// Why the episode ends here, if it does. Mirrors
+    /// [`crate::training::heading_hold_env::HeadingHoldEnv::termination_reason`]:
+    /// the failure checks come first so that a plane which crashes on the very last
+    /// step is reported as a `Failure`, not a `Timeout`.
+    fn termination_reason(&self) -> Option<TerminationReason> {
         let c = &self.reward_cfg;
-        self.state.altitude < c.min_altitude
+        if self.state.altitude < c.min_altitude
             || (self.state.altitude - self.target_altitude).abs() > c.max_altitude_error
-            || self.episode_step >= self.max_episode_steps
+        {
+            Some(TerminationReason::Failure)
+        } else if self.episode_step >= self.max_episode_steps {
+            Some(TerminationReason::Timeout)
+        } else {
+            None
+        }
     }
 
     fn action_to_inputs(action: &[f32]) -> ControlInputs {
@@ -321,20 +333,24 @@ impl TrainingEnv for LevelHoldEnv {
         (self.build_observation(), spawn_spec)
     }
 
-    fn step(&mut self, action: &[f32]) -> (Observation, f32, bool, StepInfo) {
+    fn step(&mut self, action: &[f32]) -> StepOutcome {
         let inputs = Self::action_to_inputs(action);
         self.integrate(&inputs);
         self.episode_step += 1;
 
         let obs = self.build_observation();
         let reward = self.compute_reward();
-        let done = self.is_done();
         let info = StepInfo {
             episode_step: self.episode_step,
             ..Default::default()
         };
 
-        (obs, reward, done, info)
+        StepOutcome {
+            obs,
+            reward,
+            end: self.termination_reason(),
+            info,
+        }
     }
 
     fn observation_dim(&self) -> usize {
@@ -433,7 +449,7 @@ mod tests {
     fn step_returns_correct_obs_length() {
         let mut env = LevelHoldEnv::new(1000.0, 80.0, jet_cfg());
         env.reset();
-        let (obs, _reward, _done, _info) = env.step(&[0.0, 0.0, 0.0, 0.0]);
+        let obs = env.step(&[0.0, 0.0, 0.0, 0.0]).obs;
         assert_eq!(obs.len(), 13);
     }
 
@@ -442,7 +458,8 @@ mod tests {
         let mut env = LevelHoldEnv::new(1000.0, 80.0, jet_cfg());
         env.reset();
         for _ in 0..60 {
-            let (obs, reward, _, _) = env.step(&[0.0, 0.0, 0.0, 0.0]);
+            let out = env.step(&[0.0, 0.0, 0.0, 0.0]);
+            let (obs, reward) = (out.obs, out.reward);
             assert!(
                 obs.iter().all(|v| v.is_finite()),
                 "obs contains NaN/inf: {:?}",
@@ -458,15 +475,48 @@ mod tests {
         let mut env = LevelHoldEnv::new(50.0, 80.0, jet_cfg());
         env.alt_spawn_offset_range = -30.0..=-30.0; // target(50) + offset(-30) = 20
         env.reset();
-        let mut done = false;
+        let mut end = None;
         for _ in 0..600 {
-            let (_, _, d, _) = env.step(&[-1.0, -1.0, 0.0, 0.0]); // nose down, idle
-            if d {
-                done = true;
+            let out = env.step(&[-1.0, -1.0, 0.0, 0.0]); // nose down, idle
+            if out.done() {
+                end = out.end;
                 break;
             }
         }
-        assert!(done, "episode should have terminated near the ground");
+        assert_eq!(
+            end,
+            Some(TerminationReason::Failure),
+            "flying into the ground is a failure — it must not bootstrap a continuation value"
+        );
+    }
+
+    #[test]
+    fn running_out_of_steps_is_a_timeout() {
+        // The counterpart to `episode_terminates_on_ground`. Level trim well clear
+        // of every failure threshold means the only way this episode can end is the
+        // step limit, and that ending must be reported as a truncation so the PPO
+        // value target bootstraps rather than treating the state as absorbing.
+        let n = 5u32;
+        let mut env = LevelHoldEnv::new(1000.0, 100.0, jet_cfg());
+        env.alt_spawn_offset_range = 0.0..=0.0;
+        env.airspeed_spawn_offset_range = 0.0..=0.0;
+        env.max_episode_steps = n;
+        env.reset();
+
+        let mut ended = None;
+        for _ in 0..(n + 10) {
+            let out = env.step(&[0.0, 0.0, 0.0, 0.0]);
+            if out.done() {
+                ended = Some((out.end, out.info.episode_step));
+                break;
+            }
+        }
+
+        assert_eq!(
+            ended,
+            Some((Some(TerminationReason::Timeout), n)),
+            "must time out at exactly step {n}"
+        );
     }
 
     #[test]
