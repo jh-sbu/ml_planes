@@ -8,7 +8,14 @@
 - Physics: `bevy_rapier3d` (Rapier rigid-body dynamics)
 - Rendering: `bevy` + `bevy_egui` HUD (feature-flagged off for training)
 - Aerodynamics: custom coefficient-based model (coefficient tables in `.plane.ron` assets)
-- ML: `burn` (pure Rust; no Python, no IPC). CPU `ndarray` backend at inference (the `inference` feature) and, by default, at training too (the `training` feature adds `autodiff`); GPU `wgpu` training is opt-in via the `wgpu` feature
+- ML: `burn` (pure Rust; no Python, no IPC *in the simulator or the in-repo training loop*). CPU `ndarray` backend at inference (the `inference` feature) and, by default, at training too (the `training` feature adds `autodiff`); GPU `wgpu` training is opt-in via the `wgpu` feature
+- **Python bindings (PLANNED, not yet implemented):** a native extension module exposing the
+  `training::` environments (`TrainingEnv`/`VecEnv`) to Python so PyTorch can drive them as a
+  Gymnasium-style env. In-process FFI (PyO3/`abi3` + maturin) — still no IPC, no sockets, no
+  Python in the simulator itself. See the scope-decision row in §3 for the boundary this must
+  respect: Python is an **additional consumer** of the envs, never a dependency of the Rust
+  crate's own build, tests, or training stack. `cargo test --no-default-features` and the whole
+  `just test-all` matrix must stay Python-free and green without a Python toolchain installed.
 - Asset format: RON (Rusty Object Notation). `.plane.ron` (aero config) and `.plan.ron` (flight plan) use Bevy's asset loader; `.tuning.ron` (PID gain pools), `*.reward.ron` (reward/termination, in `assets/training/`), `*.ppo.ron` (PPO hyperparameters, in `assets/training/`), and multi-plane `*.scenario.ron` (in `assets/scenarios/`) are loaded directly via `ron::de` (`implicit_some` enabled for scenarios) — no Bevy asset server required
 
 **Development philosophy:** Test-Driven Development (TDD) is mandatory. Write a failing test before writing any implementation code. The Red-Green-Refactor cycle governs all new features: red (failing test), green (minimal implementation to pass), refactor (clean up). The environment, aerodynamic model, and test suite must be solid before any controller or ML work begins.
@@ -748,7 +755,8 @@ that ships a non-default target) `tests/core/scenario.rs`.
 | Stall modeling | Simple: CL caps at `CLmax`. No deep stall, no spin dynamics. |
 | Compressibility | Ignored. Low-Mach assumption throughout. |
 | Structural limits | Not modeled. |
-| ML runtime | Pure Rust (`burn`). No Python, no IPC, no C extensions. |
+| ML runtime | Pure Rust (`burn`) for everything the simulator and the in-repo training binaries do — no Python, no IPC, no C extensions on that path, and that stays non-negotiable. |
+| Python bindings | **PLANNED (not yet implemented).** A `python` crate feature will expose the `training::` envs (`TrainingEnv`, `VecEnv`, `Observation`/`StepOutcome`, the `*.reward.ron` configs) through PyO3 as an importable extension module, so a PyTorch training loop can step the same 6-DOF envs the Rust PPO trainer uses. Constraints: (a) **optional and off by default** — no `pyo3` in a default/`training`/`server` build, and the existing test matrix must pass with no Python present; (b) **bindings only, no logic** — the wrapper marshals to/from the existing traits and adds no reward, termination, or physics behavior of its own, so Rust-side and Python-side rollouts of the same env are the same env (a divergence here is the failure mode this row exists to prevent); (c) the Rust `burn` PPO/BC track stays the supported in-repo path — Python is a second consumer, not a replacement, and `train_ppo`/`train_bc`/`evaluate_policy` keep working unchanged. Policy interchange between the two stacks (`.mpk` ↔ PyTorch checkpoints) is **not** implied by the bindings and is a separate, currently-undecided question. |
 | Reward/termination tuning | Configuration lives in `assets/training/*.reward.ron`; PPO hyperparameters live in `assets/training/*.ppo.ron`. `Default` implementations mirror baseline files so tests need no file I/O; a missing or invalid override warns and falls back to compiled defaults. See "Training Strategies and Evaluation" for the experiment workflow. |
 | Multi-agent | Architecture must support one `Box<dyn FlightController>` per plane entity. Exact multi-agent training strategy deferred. Cross-plane state is read via the per-tick `ControllerContext` snapshot (`plane/context.rs`), whose `find`/`others` do a **linear scan** — deliberately, since `N` is small, the snapshot is rebuilt every tick, and the only per-tick peer lookup (`WingmanController`'s leader) is not hot. Massive scenarios (hundreds/thousands of agents each doing per-tick peer lookups) are **deferred but not out of scope**; if they land, build an `id → index` map once in phase 1 of `run_flight_controllers` and pass it alongside the slice. `find`/`others` encapsulate access, so that stays a local change — see the `ControllerContext` doc comment. |
 
