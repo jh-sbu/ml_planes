@@ -556,14 +556,46 @@ mod tests {
         env.state.altitude = 5.0;
 
         let out = env.step(&[0.0, 0.0, 0.0, 0.0]);
-        let (reward, done) = (out.reward, out.done());
+        let reward = out.reward;
 
-        assert!(done, "low altitude should terminate");
+        assert_eq!(
+            out.end,
+            Some(TerminationReason::Failure),
+            "low altitude is a failure, not a timeout — it must not bootstrap"
+        );
         let terms = env.current_terms();
         let expected = env.compute_base_reward(&terms) + env.reward_cfg.terminal_failure_penalty;
         assert!(
             (reward - expected).abs() < 1e-4,
             "reward={reward} expected={expected}"
+        );
+    }
+
+    #[test]
+    fn timeout_terminal_reward_does_not_include_failure_penalty() {
+        // Mirrors `OrbitEnv::timeout_terminal_reward_does_not_include_failure_penalty`.
+        // `reset()` first, because `step()` runs the inner PID orbit controller and
+        // only `reset()` seeds it with a usable state.
+        let mut env = ResidualOrbitEnv::new(1000.0, 100.0, 1000.0, jet_cfg());
+        let _ = env.reset();
+        // The spawn is within every termination threshold (radial offset ±250 vs
+        // max_radial_error 1000, altitude ±150 vs max_altitude_error 700), so a
+        // single step ends the episode on the step limit alone.
+        env.max_episode_steps = 1;
+
+        let out = env.step(&[0.0, 0.0, 0.0, 0.0]);
+        let reward = out.reward;
+
+        assert_eq!(
+            out.end,
+            Some(TerminationReason::Timeout),
+            "hitting max_episode_steps while flying is a truncation"
+        );
+        let terms = env.current_terms();
+        let expected = env.compute_base_reward(&terms);
+        assert!(
+            (reward - expected).abs() < 1e-4,
+            "timeout must not carry the failure penalty: reward={reward} expected={expected}"
         );
     }
 }

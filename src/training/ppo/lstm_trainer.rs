@@ -333,23 +333,13 @@ where
         // from the `last_values` pass below because that one carries the *current*
         // per-env hidden states, which are different.
         if !truncated.is_empty() {
-            let k = truncated_obs.len();
-            let mut flat: Vec<f32> = Vec::with_capacity(k * self.obs_dim);
-            for o in &truncated_obs {
-                flat.extend_from_slice(o);
-            }
-            let obs_t = Tensor::<B::InnerBackend, 2>::from_data(
-                TensorData::new(flat, vec![k, self.obs_dim]),
+            let values = truncated_bootstrap_values::<B::InnerBackend>(
+                &inference_model.value,
+                &truncated_obs,
+                &truncated_hidden,
+                self.obs_dim,
                 &inner_device,
             );
-            let hidden =
-                LstmHiddenState::batch_to_burn::<B::InnerBackend>(&truncated_hidden, &inner_device);
-            let (values_t, _) = inference_model.value.forward_step(obs_t, Some(hidden));
-            let values = values_t
-                .squeeze_dims::<1>(&[1])
-                .into_data()
-                .to_vec::<f32>()
-                .expect("truncated bootstrap values");
             for (&(env_i, step_i), &v) in truncated.iter().zip(values.iter()) {
                 per_env[env_i][step_i].bootstrap_value = Some(v);
             }
@@ -629,6 +619,38 @@ where
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Evaluate `V(s')` at each truncated episode's terminal observation.
+///
+/// `hidden[i]` must be the value-LSTM state as it stood **at** the terminal step —
+/// after consuming `s_t`, before the episode's reset zeroes it. Passing the
+/// post-reset zero state instead would evaluate the terminal observation as if it
+/// were the first step of a fresh episode, which is a different (and wrong) value.
+/// Batched into one recurrent forward call, and kept separate from the rollout's
+/// `last_values` pass because that one carries the *current* per-env hidden states.
+fn truncated_bootstrap_values<BB: burn::tensor::backend::Backend>(
+    value: &super::lstm_model::LstmValueNet<BB>,
+    obs: &[Observation],
+    hidden: &[LstmHiddenState],
+    obs_dim: usize,
+    device: &BB::Device,
+) -> Vec<f32> {
+    debug_assert_eq!(obs.len(), hidden.len());
+    let k = obs.len();
+    let mut flat: Vec<f32> = Vec::with_capacity(k * obs_dim);
+    for o in obs {
+        flat.extend_from_slice(o);
+    }
+    let obs_t = Tensor::<BB, 2>::from_data(TensorData::new(flat, vec![k, obs_dim]), device);
+    let state = LstmHiddenState::batch_to_burn::<BB>(hidden, device);
+    let (values_t, _) = value.forward_step(obs_t, Some(state));
+    values_t
+        .squeeze_dims::<1>(&[1])
+        .into_data()
+        .to_vec::<f32>()
+        .expect("truncated bootstrap values")
+}
+
+/// In-place Fisher-Yates shuffle using a linear congruential generator.
 fn lcg_shuffle(indices: &mut Vec<usize>, seed: &mut u64) {
     let n = indices.len();
     for i in (1..n).rev() {
@@ -648,7 +670,7 @@ fn lcg_shuffle(indices: &mut Vec<usize>, seed: &mut u64) {
 mod tests {
     use super::*;
     use crate::plane::config::PlaneConfig;
-    use crate::training::WuOrbitEnv;
+    use crate::training::{WuOrbitEnv, WuOrbitRewardConfig};
     use bevy::math::Vec3;
     use burn::backend::{Autodiff, NdArray};
 
@@ -759,6 +781,72 @@ mod tests {
                 .filter(|s| !s.done)
                 .all(|s| s.bootstrap_value.is_none()),
             "a step that did not end an episode must never carry a bootstrap value"
+        );
+    }
+
+    #[test]
+    fn rollout_never_bootstraps_a_failure() {
+        // Recurrent counterpart of `PpoTrainer::rollout_never_bootstraps_a_failure`.
+        // A 1 m altitude-error budget against a ±150 m spawn perturbation makes
+        // every episode end in `Failure`, so the whole rollout must be
+        // bootstrap-free — the case the timeout test above cannot reach.
+        let reward_cfg = WuOrbitRewardConfig {
+            max_altitude_error: 1.0,
+            // `with_reward_config` copies this onto the env; keep it high so the
+            // failure, not the step limit, is what ends every episode.
+            max_episode_steps: 100_000,
+            ..Default::default()
+        };
+        let env = WuOrbitEnv::with_reward_config(1000.0, 100.0, 3000.0, jet_cfg(), reward_cfg);
+        let mut trainer = LstmPpoTrainer::<B, WuOrbitEnv>::with_n_envs(env, 2, Default::default());
+        trainer.rollout_steps = 64;
+
+        let (buf, _, _) = trainer.collect_rollout();
+
+        assert!(
+            buf.steps.iter().any(|s| s.done),
+            "a 1 m altitude-error budget over a 64-step rollout must produce failures"
+        );
+        assert!(
+            buf.steps.iter().all(|s| s.bootstrap_value.is_none()),
+            "a failure is absorbing — no step in a failure-only rollout may bootstrap"
+        );
+    }
+
+    #[test]
+    fn truncated_bootstrap_uses_the_supplied_hidden_state() {
+        // What the rollout tests above cannot check: `collect_rollout` never stores
+        // the terminal observation, so no test can recompute the expected `V(s')`.
+        // What *is* checkable is that the hidden state materially determines the
+        // answer — so an edit that drops the argument, or hands over the post-reset
+        // zero state instead of the pre-reset one, changes the value and fails here.
+        //
+        // This deliberately does not catch a pre-step-vs-post-step off-by-one: both
+        // are nonzero states, and telling them apart needs an episode replay the
+        // buffer keeps no data for.
+        let device = Default::default();
+        let obs_dim = WuOrbitEnv::new(1000.0, 100.0, 3000.0, jet_cfg()).observation_dim();
+        let model = LstmActorCritic::<NdArray>::new(&device, obs_dim);
+
+        let obs: Vec<Observation> = vec![vec![0.1; obs_dim]];
+        let carried = vec![LstmHiddenState {
+            h: vec![0.5; LSTM_HIDDEN],
+            c: vec![0.25; LSTM_HIDDEN],
+        }];
+        let zeroed = vec![LstmHiddenState::default()];
+
+        let with_state =
+            truncated_bootstrap_values::<NdArray>(&model.value, &obs, &carried, obs_dim, &device);
+        let without_state =
+            truncated_bootstrap_values::<NdArray>(&model.value, &obs, &zeroed, obs_dim, &device);
+
+        assert_eq!(with_state.len(), 1);
+        assert!(with_state[0].is_finite() && without_state[0].is_finite());
+        assert!(
+            (with_state[0] - without_state[0]).abs() > 1e-6,
+            "the carried hidden state must change V(s'): {} vs {}",
+            with_state[0],
+            without_state[0]
         );
     }
 

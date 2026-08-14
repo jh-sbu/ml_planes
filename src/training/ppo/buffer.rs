@@ -13,8 +13,11 @@ pub struct RolloutStep {
     pub done: bool,
     /// Set only on a **truncated** step (the episode hit its time limit while the
     /// plane was still flying), holding `V(s_{t+1})` evaluated at the terminal
-    /// observation. `None` means either "episode still running" or "real terminal
-    /// state", both of which bootstrap 0.
+    /// observation. `None` covers the other two `compute_gae` branches, which are
+    /// *not* the same: on a `done` step it means a real terminal state, which
+    /// bootstraps 0; on a running step it means the ordinary TD continuation
+    /// `V(s_{t+1})`, read off the next step in the buffer (or `last_value` at the
+    /// tail).
     ///
     /// Without this, a timeout trains the critic toward a return of exactly `r_T`
     /// when the correct target is `r_T + gamma * V(s_{t+1})` — and since the

@@ -549,8 +549,13 @@ Training environments (`LevelHoldEnv`, `OrbitEnv`, `ResidualOrbitEnv`, `WuOrbitE
   episodes vs. `gamma: 0.99`'s ~100-step horizon ⇒ well under 1% of samples per update) and grows
   quickly with shorter episodes or a longer horizon. Guarded by
   `ppo::{buffer,lstm_buffer}::tests::gae_bootstraps_on_truncation`,
-  `gae_zero_bootstrap_on_failure`, and each trainer's `rollout_bootstraps_truncated_steps_only`.
-  `terminal_failure_penalty` remains `Failure`-only.
+  `gae_zero_bootstrap_on_failure`, and each trainer's
+  `rollout_bootstraps_truncated_steps_only` + `rollout_never_bootstraps_a_failure` — the
+  second is needed because the first forces timeouts and then filters on `!done`, so it
+  cannot see a failure step at all. Each env additionally pins the *exact* reason (not just
+  `done()`) for both a failure and a timeout, since the five `termination_reason` impls share
+  their failure-checks-first ordering by convention only. `terminal_failure_penalty` remains
+  `Failure`-only.
 - **Level-hold observation contract:** `LevelHoldEnv` and `RlLevelHoldController` must agree
   bit-for-bit on the 13-dim observation vector; rather than keep two copies in sync by hand,
   both call the single free function `training::level_hold_env::level_hold_observation()`. Any

@@ -547,17 +547,21 @@ mod tests {
         env.state.position.y = 5.0;
         env.state.altitude = 5.0;
         let terms = env.current_terms();
-        assert!(
-            env.termination_reason(&terms).is_some(),
-            "low altitude should terminate"
+        // `is_some()` here would pass with the two reasons swapped, which is exactly
+        // the mistake that silently corrupts the PPO value target.
+        assert_eq!(
+            env.termination_reason(&terms),
+            Some(TerminationReason::Failure),
+            "low altitude should terminate as a Failure"
         );
 
         env.state = on_orbit_state(1000.0, Vec3::X);
         env.episode_step = env.max_episode_steps;
         let terms = env.current_terms();
-        assert!(
-            env.termination_reason(&terms).is_some(),
-            "max steps should terminate"
+        assert_eq!(
+            env.termination_reason(&terms),
+            Some(TerminationReason::Timeout),
+            "max steps should terminate as a Timeout"
         );
     }
 
@@ -569,8 +573,8 @@ mod tests {
         env.state.altitude = 5.0;
 
         let out = env.step(&[0.0, 0.0, 0.0, 0.0]);
-        let (reward, done) = (out.reward, out.done());
-        assert!(done, "should be done");
+        let (reward, end) = (out.reward, out.end);
+        assert_eq!(end, Some(TerminationReason::Failure), "should be a failure");
         assert!(
             reward < 0.0,
             "terminal failure reward should include penalty: {reward}"

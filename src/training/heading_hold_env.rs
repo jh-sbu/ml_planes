@@ -636,15 +636,21 @@ mod tests {
         let mut env = HeadingHoldEnv::new(0.0, 50.0, 120.0, jet_cfg());
         env.alt_spawn_offset_range = -30.0..=-30.0;
         env.reset();
-        let mut done = false;
+        let mut end = None;
         for _ in 0..600 {
-            let d = env.step(&[-1.0, -1.0, 0.0, 0.0]).done();
-            if d {
-                done = true;
+            let out = env.step(&[-1.0, -1.0, 0.0, 0.0]);
+            if out.done() {
+                end = out.end;
                 break;
             }
         }
-        assert!(done, "episode should have terminated near the ground");
+        // The exact reason matters, not just that it ended: a crash reported as a
+        // `Timeout` would make PPO bootstrap `V(s')` off an absorbing state.
+        assert_eq!(
+            end,
+            Some(TerminationReason::Failure),
+            "hitting the ground must be a Failure, not a Timeout"
+        );
     }
 
     #[test]
@@ -655,9 +661,10 @@ mod tests {
         let mut saw_penalized_reward = false;
         for _ in 0..600 {
             let out = env.step(&[-1.0, -1.0, 0.0, 0.0]);
-            let (reward, d) = (out.reward, out.done());
-            if d {
+            let (reward, end) = (out.reward, out.end);
+            if end.is_some() {
                 assert!(env.is_done());
+                assert_eq!(end, Some(TerminationReason::Failure));
                 // Penalty (-50) should dominate the per-step reward.
                 assert!(
                     reward < -10.0,
@@ -677,8 +684,12 @@ mod tests {
         env.reset();
         env.step(&[0.0, 0.0, 0.0, 0.0]);
         let out = env.step(&[0.0, 0.0, 0.0, 0.0]);
-        let (reward, done) = (out.reward, out.done());
-        assert!(done);
+        let (reward, end) = (out.reward, out.end);
+        assert_eq!(
+            end,
+            Some(TerminationReason::Timeout),
+            "exhausting max_episode_steps while still flying must be a Timeout"
+        );
         // A near-level, near-target step should be a small reward, not a
         // failure-penalized one.
         assert!(

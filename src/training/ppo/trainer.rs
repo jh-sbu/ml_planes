@@ -593,7 +593,7 @@ mod tests {
     use super::*;
     use crate::plane::config::PlaneConfig;
     use crate::training::level_hold_env::LEVEL_HOLD_OBS_DIM;
-    use crate::training::LevelHoldEnv;
+    use crate::training::{LevelHoldEnv, LevelHoldRewardConfig};
     use bevy::math::Vec3;
     use burn::backend::{Autodiff, NdArray};
 
@@ -715,6 +715,38 @@ mod tests {
                 .filter(|s| !s.done)
                 .all(|s| s.bootstrap_value.is_none()),
             "a step that did not end an episode must never carry a bootstrap value"
+        );
+    }
+
+    #[test]
+    fn rollout_never_bootstraps_a_failure() {
+        // The companion to `rollout_bootstraps_truncated_steps_only`, which cannot
+        // see this case: an 8-step limit never produces a crash, and its final
+        // assertion filters on `!done`, so failure steps are excluded by
+        // construction. Here a 1 m altitude-error budget makes *every* episode end
+        // in `Failure` within a few steps, whatever action the policy samples — so
+        // any step carrying a bootstrap value is the bug (a `truncated()` guard
+        // loosened to `done()`).
+        let reward_cfg = LevelHoldRewardConfig {
+            max_altitude_error: 1.0,
+            // `with_reward_config` copies this onto the env, so raise it here or the
+            // rollout times out before it can fail.
+            max_episode_steps: 100_000,
+            ..Default::default()
+        };
+        let env = LevelHoldEnv::with_reward_config(1000.0, 100.0, jet_cfg(), reward_cfg);
+        let mut trainer = PpoTrainer::<B>::with_n_envs(env, 2, Default::default());
+        trainer.rollout_steps = 64;
+
+        let (buf, _mean_return, _mean_len) = trainer.collect_rollout();
+
+        assert!(
+            buf.steps.iter().any(|s| s.done),
+            "a 1 m altitude-error budget over a 64-step rollout must produce failures"
+        );
+        assert!(
+            buf.steps.iter().all(|s| s.bootstrap_value.is_none()),
+            "a failure is absorbing — no step in a failure-only rollout may bootstrap"
         );
     }
 
