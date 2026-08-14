@@ -1,5 +1,5 @@
-//! Phase 0 (client/server foundations): serde round-trip coverage for the core
-//! sim-state types that later phases replicate or carry in network commands.
+//! Serde round-trip coverage for the core
+//! sim-state types replicated or carried in network commands.
 //!
 //! Gated on `net` (enabled by `--features server`) because the derives — and the
 //! `Vec3`/`Quat` serde impls they rely on (`bevy/serialize`) — only exist there.
@@ -13,7 +13,7 @@ use ml_planes::plane::{ControlInputs, FlightState, PlaneId, PlaneIndex};
 use ml_planes::training::SpawnSpec;
 
 /// Round-trip via RON and assert byte-stability: serialize → deserialize →
-/// serialize must reproduce the original encoding. RON is used (over JSON) because
+/// serialize must reproduce the same encoding. RON is used (over JSON) because
 /// it encodes `f32::INFINITY` as `inf` and parses it back — `FlightState`'s
 /// `consumable_remaining` defaults to infinity. Re-serialization comparison avoids
 /// needing `PartialEq` on the value types.

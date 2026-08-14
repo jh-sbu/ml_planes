@@ -1,7 +1,7 @@
-//! Phase 1 (client/server): the shared network protocol module.
+//! Shared network protocol tests.
 //!
-//! Covers Milestone 1 — every client→server command type round-trips through serde,
-//! and `NetProtocolPlugin` builds in a headless app without panicking.
+//! Every client→server command type round-trips through serde, and
+//! `NetProtocolPlugin` builds in a headless app without panicking.
 //!
 //! Gated on `net` (enabled by `--features server`); the command types and the
 //! replicon plugins only exist there.
@@ -21,7 +21,7 @@ use ml_planes::sim_speed::SimSpeed;
 use ml_planes::training::SpawnSpec;
 
 /// Round-trip via RON and assert byte-stability (serialize → deserialize →
-/// serialize reproduces the original encoding), mirroring `tests/net_serde.rs`.
+/// serialize reproduces the same encoding), mirroring `tests/net_serde.rs`.
 fn assert_ron_roundtrip<T>(value: &T)
 where
     T: serde::Serialize + serde::de::DeserializeOwned,
@@ -93,7 +93,7 @@ fn remove_plane_net_command_roundtrips() {
     assert_ron_roundtrip(&RemovePlaneNetCommand { plane: PlaneId(9) });
 }
 
-/// Phase 6: selection state is replicated server→client so the client can display
+/// Selection state is replicated server→client so the client can display
 /// and enumerate the current tuning profile / RL model. These components must be
 /// serde under `net`.
 #[test]
@@ -127,7 +127,7 @@ fn set_controller_targets_command_roundtrips() {
     });
 }
 
-/// Phase 6: the tuning-asset path is replicated so the client can rebuild a
+/// The tuning-asset path is replicated so the client can rebuild a
 /// `PlaneTuningHandle` and reuse the existing profile-name enumeration.
 #[test]
 fn plane_tuning_path_roundtrips() {

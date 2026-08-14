@@ -142,9 +142,7 @@ fn spawn_resolved_scenario_spawns_all_planes() {
         "the wingman carries a FormationOffset"
     );
 
-    // Anchor: the wingman's controller must be the real WingmanController at
-    // spawn time (pre-tuning) — guards the spawn path itself, independent of
-    // the tuning-rebuild fix pinned by `scenario_wingman_survives_tuning_rebuild`.
+    // The spawn path must install a real WingmanController before tuning loads.
     let mut wingmen = world.query::<(&ControllerKind, &mut ActiveController)>();
     let mut found = false;
     for (kind, mut ctrl) in wingmen.iter_mut(world) {
@@ -162,13 +160,8 @@ fn spawn_resolved_scenario_spawns_all_planes() {
     assert!(found, "expected a Wingman-kind plane in the fixture");
 }
 
-/// `apply_initial_tuning` used to rebuild every controller unconditionally once
-/// the `.tuning.ron` asset loaded, replacing a scenario-spawned wingman's real
-/// `WingmanController` with the `LevelHold` fallback `ControllerKind::Wingman
-/// .build()` produces. This pins the fix end-to-end through the live scenario
-/// spawn path (`spawn_resolved_scenario` + `SimControlPlugin`), and — since it
-/// reads the leader's *runtime* `PlaneId` rather than assuming `PlaneId(1)` —
-/// doubles as a regression guard for the resolved-vs-runtime id remap (Bug B).
+/// A scenario wingman must survive tuning rebuilds and retain its leader's
+/// remapped runtime `PlaneId`.
 #[test]
 fn scenario_wingman_survives_tuning_rebuild() {
     let resolved = Scenario::from_ron_str(LEADER_WINGMAN)
@@ -248,11 +241,8 @@ const HEADING_HOLD_TURN: &str = r#"(
     ],
 )"#;
 
-/// End-to-end regression for the P1 fix: `assets/scenarios/heading_hold.scenario.ron`
-/// spawns a plane on ground track 0 at `DEFAULT_SPEED` (100 m/s) commanding a 90°/
-/// 120 m/s target. Before the `ControllerTargets`-snapshot fix, `apply_initial_tuning`
-/// rebuilt the controller from the live (heading-0/100 m/s) state the moment
-/// `generic_jet.tuning.ron`'s `heading_hold` pool loaded, silently cancelling the turn.
+/// `assets/scenarios/heading_hold.scenario.ron` spawns a plane on ground track 0
+/// at 100 m/s while commanding a 90°/120 m/s target. Tuning loads must preserve it.
 ///
 /// This drives the real spawn path (`spawn_resolved_scenario` + `SimControlPlugin`) with
 /// the *actual* `generic_jet.tuning.ron` asset (loaded via the real `AssetServer`, same
@@ -382,7 +372,7 @@ fn scenario_wingman_leader_id_uses_runtime_plane_ids() {
         .resolve()
         .expect("resolve fixture");
 
-    // Deliberately no SimControlPlugin — isolates this from the Bug A fix.
+    // Omit SimControlPlugin to isolate runtime-id remapping.
     let mut app = build_headless_app();
     app.insert_resource(NextPlaneId(5));
     app.insert_resource(ScenarioRes(resolved));
@@ -594,7 +584,7 @@ fn shipped_scenarios_parse_and_resolve() {
     }
 }
 
-/// The refactored live-app default scene is a valid scenario with the six demo
+/// The live-app default scene is a valid scenario with the six demo
 /// planes in order. Non-RL planes must build a controller; the RL planes resolve
 /// to their RL kinds (they only *build* under a native inference build, and are
 /// otherwise skipped by the live spawner).

@@ -1,13 +1,11 @@
 // Physics-scaled STARTER gains for orbit/heading_hold — NOT yet /tune-validated.
 // Run `/tune assets/planes/tanker.plane.ron <controller>` to refine those across the envelope.
 //
-// level_hold."normal" — /tune-validated 2026-06-18 (passes all 5 envelope scenarios,
-// 200m/80–2000m/130 m·s⁻¹). NOTE: observe_state flies the DRY 45 t airframe (it spawns
+// level_hold."normal" passes all 5 envelope scenarios
+// (200m/80–2000m/130 m·s⁻¹). NOTE: observe_state flies the dry 45 t airframe (it spawns
 // mass=cfg.mass with infinite fuel), so these are tuned for 45 t — the live sim spawns the
 // loaded ~135 t jet, which (being even more sluggish in pitch) may want still more pitch_kd.
-// The tanker's huge pitch inertia gives a lightly-damped phugoid that locks into a
-// ±22 m limit cycle (pitch_target clamp → bang-bang) under generic-style gains; the fix was
-// heavy inner-loop pitch-rate damping (pitch_kd 0.76→8.0) plus a small alt_kd bump.
+// Its high pitch inertia requires strong inner-loop pitch-rate damping.
 PlaneTuning(
     level_hold: {
         "normal": LevelHoldTuning(

@@ -82,7 +82,7 @@ where
     /// - every env (including env 0) has its episode-reset RNG offset from
     ///   `s`, rather than only envs `1..n` being offset from an unseeded base.
     ///
-    /// `seed = None` reproduces the original unseeded behavior exactly
+    /// `seed = None` selects unseeded behavior
     /// (env 0 unoffset, `rng_seed = 12345`, no `Backend::seed` call).
     ///
     /// Weight init itself is verified bit-identical for a given seed (see
@@ -723,10 +723,8 @@ mod tests {
         // The companion to `rollout_bootstraps_truncated_steps_only`, which cannot
         // see this case: an 8-step limit never produces a crash, and its final
         // assertion filters on `!done`, so failure steps are excluded by
-        // construction. Here a 1 m altitude-error budget makes *every* episode end
-        // in `Failure` within a few steps, whatever action the policy samples — so
-        // any step carrying a bootstrap value is the bug (a `truncated()` guard
-        // loosened to `done()`).
+        // construction. A 1 m altitude-error budget makes every episode fail
+        // within a few steps, so no step may carry a bootstrap value.
         let reward_cfg = LevelHoldRewardConfig {
             max_altitude_error: 1.0,
             // `with_reward_config` copies this onto the env, so raise it here or the

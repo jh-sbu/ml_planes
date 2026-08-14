@@ -1,7 +1,7 @@
 //! Coefficient-based aerodynamic force/torque model, shared verbatim by the live
 //! Rapier sim and the self-contained training integrator.
 //!
-//! # Stated simplifications (accepted scope, not bugs)
+//! # Model simplifications
 //!
 //! - **Side force is a body-axis buildup**: `CY = cy_beta·β + cy_p·(pb/2V) +
 //!   cy_r·(rb/2V) + cy_delta_r·δr` is applied straight along body +Y rather than as a
@@ -135,8 +135,7 @@ pub fn compute_aero_forces(
     // Drag opposes that full 3-D vector. The alpha rotation is what keeps the model
     // stable at large alpha (steep dive): without it, negative CL at large negative
     // alpha produces a downward force that grows as V² and blows up to NaN. The beta
-    // terms vanish identically at beta = 0 (cos β = 1, sin β = 0), so trimmed flight
-    // reduces exactly to the older alpha-only rotation.
+    // terms vanish identically at beta = 0 (cos β = 1, sin β = 0).
     //
     // Lift stays normal to the wind in the aircraft's plane of symmetry, so it has no
     // beta dependence. Thrust is body-fixed along +X (the engine turns with the
@@ -489,9 +488,7 @@ mod tests {
 
     #[test]
     fn zero_sideslip_matches_alpha_only_rotation() {
-        // Regression guard on the reduction: at beta = 0 the full 3-D resolution must
-        // collapse term-for-term to the original alpha-only rotation, so none of the
-        // pre-existing longitudinal expectations move.
+        // At beta = 0 the 3-D resolution must reduce to the alpha-only rotation.
         let cfg = jet_config();
         let mut state = zero_state();
         state.airspeed = 100.0;

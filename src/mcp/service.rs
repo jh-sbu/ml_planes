@@ -2,12 +2,12 @@
 //!
 //! Keeping every `rmcp` macro / type behind this single module means a future SDK bump
 //! (rmcp has broken every minor: 0.1→0.2→0.3→1.x→2.0) has a one-file blast radius; the
-//! shared snapshot + command-bridge primitives added in later phases stay plain Rust.
+//! shared snapshot and command-bridge primitives stay plain Rust.
 //!
 //! Read tools (`get_sim_status`, `list_planes`, `get_plane_state`) are backed by the shared
 //! [`SnapshotHandle`] the Bevy thread rewrites each frame: each takes a `read()` lock, clones
 //! the [`SimSnapshot`], releases, then shapes JSON via the pure `*_value` helpers below
-//! (unit-testable without rmcp or sockets). Write tools (Phase 3: `spawn_plane`, `remove_plane`)
+//! (unit-testable without rmcp or sockets). Write tools such as `spawn_plane` and `remove_plane`
 //! enqueue a [`ControlRequest`] on the [`ControlSender`] the Bevy thread drains; they guard on
 //! `connected`, then poll the snapshot to confirm the eventually-consistent result.
 
@@ -858,7 +858,7 @@ mod tests {
         assert_eq!(result.is_error, Some(true));
     }
 
-    // ---- Phase 3: write path ----
+    // ---- Plane lifecycle tools ----
 
     fn spawn_args(kind: &str) -> SpawnPlaneArgs {
         SpawnPlaneArgs {
@@ -992,7 +992,7 @@ mod tests {
         );
     }
 
-    // ---- Phase 4: controller / tuning / sim-speed / model write tools ----
+    // ---- Controller, tuning, sim-speed, and model tools ----
 
     #[test]
     fn dispatch_switch_controller_enqueues_for_known_id() {

@@ -10,10 +10,8 @@
 //!    density_ratio, airspeed/100,
 //!    sin(heading_error)/0.5, cos(heading_error), turn_rate/0.2]
 //!
-//! The first 13 elements are exactly `level_hold_observation` — reused
-//! verbatim (not recomputed) so this env and `RlLevelHoldController` never
-//! silently drift apart, and so `MetricFamily::LevelHold`'s obs-index
-//! assumptions (0/1/4/6) keep meaning what they already mean.
+//! The first 13 elements come directly from `level_hold_observation`, keeping
+//! training, inference, and metric indices aligned.
 //!
 //! The heading error is encoded as `(sin, cos)` rather than a signed
 //! `error/π` term: many episodes *start* near the ±π boundary (the target
@@ -45,16 +43,6 @@
 //! `target_heading` from the full circle is fully general — the sampled
 //! value *is* the required heading change.
 //!
-//! # Suggested curriculum
-//!
-//! `PpoTrainer` (unlike `LstmPpoTrainer`) never calls `CurriculumEnv`, so
-//! there is no in-env curriculum here. Stage training manually via
-//! `--target-heading-range` + `--init-from`:
-//! ```text
-//! train_ppo --task heading_hold --target-heading-range -30:30   --bc-steps 200000 --steps 1000000 --output hh_s1
-//! train_ppo --task heading_hold --target-heading-range -90:90   --init-from models/heading_hold/hh_s1 --steps 1000000 --output hh_s2
-//! train_ppo --task heading_hold --target-heading-range -180:180 --init-from models/heading_hold/hh_s2 --steps 2000000 --output hh_s3
-//! ```
 
 use bevy::math::{Quat, Vec3};
 
@@ -90,27 +78,9 @@ const VVEL_RANGE: f32 = 2.0;
 pub const DEFAULT_TARGET_HEADING_DEG_MIN: f32 = -180.0;
 pub const DEFAULT_TARGET_HEADING_DEG_MAX: f32 = 180.0;
 
-/// Default randomized-target airspeed envelope [m/s] — deliberately identical to
-/// level-hold's `90:140`, pinned by `default_airspeed_envelope_matches_level_hold`.
-///
-/// This used to be `110:140`, on the argument that at the 5000 m / 90 m/s / full-fuel
-/// corner the generic jet needs CL≈1.15 of `cl_max=1.4` just for 1 g, leaving little
-/// margin to sustain the bank a 180° turn requires. That squeeze is real and is now an
-/// **accepted cost**: the tighter floor meant anything flown below 110 m/s was out of
-/// distribution, and the live sim routinely runs planes at 100. An `RlHeadingHold`
-/// checkpoint accepted at `mean_tail_abs_altitude_m = 0.333` measured 1.47 m live; the
-/// same policy re-evaluated at 1000 m / 100 m/s in the *training* physics already showed
-/// 1.142 m, so most of that gap was this envelope, not the transfer.
-///
-/// Two consequences to train around rather than design around:
-///   - The bleed margin to `min_airspeed` (60 m/s) narrows from 50 to 30 m/s, so early
-///     training fails more often. That is the correct signal, not a regression. Use a BC
-///     warm start (`--bc-steps`) so the policy inherits the PID expert's speed
-///     management, and stage via `--target-speed-range 110:140` then `--init-from` at
-///     `90:140` if a cold run struggles.
-///   - Spawn no longer starts near that floor — see [`MIN_SPAWN_AIRSPEED_MARGIN`].
-///
-/// `--target-speed-range 110:140` remains available for the easier envelope.
+/// Default randomized-target airspeed envelope [m/s], identical to level hold.
+/// The 5000 m / 90 m/s / full-fuel corner has little bank margin; BC warm starts
+/// or staged training can help. Spawns retain [`MIN_SPAWN_AIRSPEED_MARGIN`].
 pub const DEFAULT_TARGET_AIRSPEED_MIN: f32 = 90.0;
 pub const DEFAULT_TARGET_AIRSPEED_MAX: f32 = 140.0;
 
@@ -456,9 +426,7 @@ impl DemonstrationEnv for HeadingHoldEnv {
 mod tests {
     use super::*;
 
-    /// The self-contained Euler integrator must step at the same rate as the live
-    /// Rapier sim. When it did not (60 Hz here vs 64 Hz live), `evaluate_policy`
-    /// numbers stopped predicting live behavior and nothing caught it.
+    /// The training integrator must use the live simulation timestep.
     #[test]
     fn env_dt_is_the_shared_physics_dt() {
         let env = HeadingHoldEnv::new(0.0, 1000.0, 120.0, jet_cfg());
@@ -515,9 +483,7 @@ mod tests {
         );
     }
 
-    /// The alternate constructors route through `new()` today, but nothing pinned
-    /// that they preserve dt — and `with_reward_config` is what every training run
-    /// actually calls, so a regression there would ship silently.
+    /// Alternate constructors preserve the shared timestep.
     #[test]
     fn env_dt_survives_alternate_constructors() {
         let with_reward = HeadingHoldEnv::with_reward_config(
@@ -709,11 +675,7 @@ mod tests {
         }
     }
 
-    /// heading_hold no longer carries a tighter airspeed floor than level_hold. The
-    /// bank-authority squeeze at the 5000 m / 90 m/s / full-fuel corner is a known and
-    /// accepted cost — see `DEFAULT_TARGET_AIRSPEED_MIN`'s doc. Asserted against
-    /// level_hold's constants rather than a literal so this states the *intent* and
-    /// survives a future edit to either env.
+    /// Heading hold and level hold share the same airspeed envelope.
     #[test]
     fn default_airspeed_envelope_matches_level_hold() {
         use crate::training::level_hold_env;
@@ -727,9 +689,7 @@ mod tests {
         );
     }
 
-    /// The behavioral half: the default envelope must actually reach the sub-100 m/s
-    /// operating points that were out-of-distribution before. Deterministic — `Lcg`
-    /// with the fixed seed 42 set in `new()`.
+    /// The default envelope samples sub-100 m/s operating points.
     #[test]
     fn default_envelope_samples_below_the_old_110_floor() {
         let mut env = HeadingHoldEnv::with_target_ranges(
@@ -901,8 +861,7 @@ mod tests {
 
     #[test]
     fn expert_targets_track_resampled_episode_targets() {
-        // Regression guard for the `make_expert` gotcha documented above: the
-        // expert's setpoints must match the *episode's* targets, not the
+        // Expert setpoints must match the episode's targets, not the
         // spawn state, even though reset() spawns at target ± an offset.
         let mut env = HeadingHoldEnv::with_target_ranges(
             -std::f32::consts::PI..=std::f32::consts::PI,

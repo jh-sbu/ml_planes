@@ -210,7 +210,7 @@ pub fn spawn_plane_with_id(
             PlaneTuningHandle(tuning_handle),
             SelectedTuningProfile("normal".to_string()),
             // Replicated companion to the handle so a networked client can rebuild
-            // its own `PlaneTuningHandle` and enumerate profiles (Phase 6).
+            // its own `PlaneTuningHandle` and enumerate profiles.
             PlaneTuningPath(tuning_path),
         ));
     }
@@ -274,9 +274,7 @@ const MAX_PLANE_CONFIG_BYTES: u64 = 256 * 1024;
 /// does a bare `root_path.join(path)`, so an *absolute* path escapes the asset
 /// root entirely there, and `..` escapes both.
 ///
-/// Rejects rather than sanitizes. Silently rewriting a hostile path into a
-/// "safe" one is its own bug class, and every legitimate caller already passes a
-/// clean relative path. Deliberately **no `canonicalize`**: it touches the
+/// Rejects rather than sanitizes. Deliberately **no `canonicalize`**: it touches the
 /// filesystem, fails on paths that do not exist yet, and would make this
 /// function its own file-existence oracle. A pure lexical check is enough.
 pub fn sanitize_asset_path(path: &str) -> Option<String> {
@@ -352,7 +350,7 @@ pub fn load_spawn_config(config_path: &str) -> PlaneConfig {
 }
 
 // Ground-contact detection reads the Rapier context, absent on the thin networked
-// client (which never collides locally — see `plans/client_server.md` Phase 4).
+// client, which never collides locally.
 #[cfg(any(not(feature = "net"), feature = "server"))]
 pub fn detect_ground_contact(
     plane_query: Query<Entity, With<FlightState>>,
@@ -482,10 +480,8 @@ mod tests {
         assert_eq!(sanitize_asset_path(""), None);
     }
 
-    /// A traversal path that currently *succeeds*, so this fails loudly before
-    /// the fix rather than passing by accident. `planes/../planes/cargo_jet…`
-    /// resolves back to a real 128000 kg airframe, proving `..` is honored; the
-    /// same mechanism with more `../` reaches outside `assets/` entirely.
+    /// Resolves to a real asset if traversal is not rejected, avoiding a
+    /// false-positive test caused by a nonexistent path.
     const TRAVERSAL_TO_REAL_FILE: &str = "planes/../planes/cargo_jet.plane.ron";
 
     #[test]

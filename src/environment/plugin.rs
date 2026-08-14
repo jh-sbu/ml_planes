@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 // Physics-dependent pieces (ground collider, ground-contact detection, the
 // physics-pose interpolation buffers) are compiled out of the pure networked
-// client, which has no Rapier schedule — see `plans/client_server.md` Phase 4.
+// client, which has no Rapier schedule.
 #[cfg(any(not(feature = "net"), feature = "server"))]
 use bevy_rapier3d::prelude::PhysicsSet;
 
@@ -40,12 +40,7 @@ impl Plugin for EnvironmentPlugin {
         );
         #[cfg(feature = "visual")]
         app.add_systems(Update, draw_orbit_pin_gizmo);
-        // Re-centres the infinite grid on the camera, so it must run after the camera
-        // systems have moved it — the same unordered read-after-write that made the
-        // planes pulse. Latent rather than visible here: the ground snaps to a 10 m
-        // lattice and the grid is periodic, so a frame-stale camera pose almost always
-        // resolves to an identical result. It stops being latent the moment the snap
-        // shrinks or the quantisation goes away.
+        // Re-centre the infinite grid after camera movement.
         #[cfg(feature = "visual")]
         app.add_systems(
             Update,

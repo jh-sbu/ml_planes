@@ -253,8 +253,7 @@ impl Plugin for PlanePlugin {
         app.configure_sets(Update, PlaneRenderPose::Write.before(PlaneRenderPose::Read));
 
         // The 6-DOF sim chain runs everywhere except the thin networked client,
-        // which renders replicated state and runs no physics (see
-        // `plans/client_server.md` Phase 4). The asset loaders above stay on so the
+        // which renders replicated state and runs no physics. The asset loaders stay on so the
         // client can still load `.plane.ron`/`.tuning.ron` for display.
         #[cfg(any(not(feature = "net"), feature = "server"))]
         app.add_systems(

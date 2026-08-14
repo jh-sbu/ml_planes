@@ -1,15 +1,14 @@
 //! Client-side networking: the renet client transport plus rendering of
 //! replicated plane state.
 //!
-//! Phase 4 of the client/server split (`plans/client_server.md`). The visual app
-//! (`src/main.rs`) runs no physics of its own; planes arrive purely via replication
+//! The visual app (`src/main.rs`) runs no physics of its own; planes arrive via replication
 //! ([`crate::net::protocol`]). This module turns those replicated entities into
 //! smoothly-rendered planes:
 //!
 //! - [`ClientNetPlugin`] — decorates each replicated plane with a
 //!   [`NetInterpolation`] buffer and renders an interpolated [`Transform`].
 //! - [`connect_to_server`] / [`start_renet_client`] — build the renet/netcode
-//!   client transport (mirrors [`crate::net::server::start_renet_server`]); added by
+//!   client transport (mirrors [`crate::net::server::start_renet_server`]); called by
 //!   the binary when a connection is requested, not by the plugin, so tests never
 //!   bind a socket.
 //!
@@ -20,19 +19,10 @@
 //! render timeline is uniform and independent of the client frame rate; poses are
 //! buffered per plane ([`NetInterpolation`]) and sampled at a playback point that lags
 //! the newest snapshot by [`RENDER_DELAY`], keeping a straddling pair available to
-//! blend. Stamping on client frame-arrival time instead made the rendered lag track
-//! frame-time jitter, which showed up as plane gizmos pulsing back and forth.
+//! blend.
 //!
-//! [`render_net_interpolation`] runs in [`PlaneRenderPose::Write`] and that matters: it
-//! writes `Transform` in `Update`, while the follow camera and gizmo renderer read it
-//! back in the same schedule. Without that ordering edge Bevy serialised them in an
-//! unspecified order that flipped between frames, so the camera intermittently smoothed
-//! toward the previous frame's pose and oscillated at ~4–6 Hz — every plane pulsing in
-//! sync, since they share one camera, while world-space motion stayed perfectly smooth.
-//! That smoothness is why the artifact reads as a *networking* bug and survived several
-//! interpolation rewrites; it was never one. `ScheduleBuildSettings::ambiguity_detection`
-//! (`LogLevel::Warn` on `Update`) names such pairs directly and is the fastest way to
-//! re-check this class of defect.
+//! [`render_net_interpolation`] runs in [`PlaneRenderPose::Write`] so the follow camera
+//! and gizmo renderer read the pose established for the current frame.
 
 use std::collections::{HashMap, VecDeque};
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
@@ -162,7 +152,7 @@ pub struct NetInterpolation {
 /// Shared playback clock, in the server's tick-time space. All planes ride the same
 /// server tick timeline, so one clock drives them all. `playback` advances purely by
 /// real `dt` between resyncs, so the rendered motion is smooth regardless of client
-/// frame-time or snapshot-arrival jitter — the fix for the gizmo pulse.
+/// frame-time or snapshot-arrival jitter.
 #[derive(Resource, Debug, Clone, Copy, Default)]
 pub struct NetRenderClock {
     /// Server time we currently render at.
@@ -359,9 +349,8 @@ fn render_net_interpolation(
     }
 }
 
-/// The server address a [`start_renet_client`] run connects to. Inserted by the
-/// binary (e.g. the `--connect` bridge / Phase 5 menu) only when a connection is
-/// requested.
+/// The server address a [`start_renet_client`] run connects to. Inserted only
+/// when a connection is requested.
 #[derive(Resource, Clone, Copy, Debug)]
 pub struct ConnectTarget(pub SocketAddr);
 

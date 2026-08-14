@@ -559,7 +559,7 @@ mod tests {
             OrbitDirection::CounterClockwise,
         );
         assert_eq!(obs.len(), ORBIT_OBS_DIM);
-        // Vertical speed is now the second-to-last element (fuel fraction is last).
+        // Vertical speed precedes fuel fraction.
         assert!(
             (obs[ORBIT_OBS_DIM - 2] - 0.5).abs() < 1e-5,
             "vertical speed obs={}",

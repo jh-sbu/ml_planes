@@ -24,9 +24,8 @@ pub struct PpoHyperparams {
     pub minibatch: usize,
     /// Optional fixed seed for burn's backend RNG (weight init + sampling
     /// noise), the trainer's minibatch-shuffle RNG, and per-env episode
-    /// resets. `None` (the default, and every pre-existing `.ppo.ron` file
-    /// that predates this field) reproduces the original unseeded behavior.
-    /// `#[serde(default)]` keeps old RON files parsing unchanged. A CLI
+    /// resets. `None` selects unseeded behavior. `#[serde(default)]` preserves
+    /// compatibility with configs that omit the field. A CLI
     /// `--seed` passed to `train_ppo`/`train_bc` overrides this field.
     ///
     /// This fixes the run's *starting point* exactly (verified bit-identical
@@ -111,8 +110,7 @@ mod tests {
 
     #[test]
     fn ron_without_seed_field_still_parses() {
-        // Back-compat: every `.ppo.ron` file shipped before this field was
-        // added must keep parsing with `seed` defaulting to `None`.
+        // Configs without `seed` default to `None`.
         let src = r#"(
             gamma: 0.99,
             gae_lambda: 0.95,

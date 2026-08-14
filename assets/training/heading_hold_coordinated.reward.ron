@@ -1,86 +1,9 @@
-// Heading-hold profile behind models/heading_hold/skill_heading_hold_goal4_coordinated.mpk
-// (also copied to models/heading_hold/current_best.mpk) — the first heading_hold checkpoint
-// trained FROM SCRATCH since the 2026-08-06 physics/envelope changes, and the first one that
-// does not crab. NOT the task default; pass explicitly via --reward-config.
-//
-// # SUPERSEDED RATIONALE (2026-08-10): the plant now charges for a crab itself.
-//
-// The aero model gained a real side force (cy_beta/cy_p/cy_r/cy_delta_r) and now resolves
-// drag along the full 3-D velocity vector, so sideslip is no longer a free degenerate
-// direction — the airframe pays for it directly. Everything below was measured under
-// CY = 0 and is HISTORICAL, not predictive: the 0.15/0.75/3.00 sweep, the 10.5 deg crab,
-// and the claim that nothing but the reward charges for beta. Whether beta_weight: 0.75 is
-// still right, or now double-charges against the physics, is an open question for the next
-// retrain. This profile keeps 0.75 pending evidence, and the checkpoint it trained is
-// behaviorally stale. Re-run examples/heading_hold_expert_baseline.rs to re-establish the
-// classical beta reference under the new physics before tuning this term.
-//
-// # What this profile fixed (pre-CY): the sideslip crab
-//
-// Every prior heading_hold checkpoint held a large steady-state sideslip — the accepted
-// `skill_heading_hold_goal3_alpha_guard` sits at `mean_tail_abs_beta_rad = 0.184` (10.5 deg),
-// confirmed live at 8.0-9.6 deg at four operating points. That is a *trained-in* degenerate
-// mode, not a transfer artifact: the aero model had no side force (CY = 0), so sideslip cost
-// the airframe nothing but a trim rudder deflection, and nothing in the reward charged for it
-// either. At the old `beta_scale: 0.5, beta_weight: 0.15` the beta slope is 0.3/rad, so a
-// 10 deg crab cost the same per step as a 1 deg heading error — free, in practice.
-//
-//     beta_weight: 0.15 -> 0.75   (slope 0.3/rad -> 1.5/rad)
-//
-// was the whole fix, and it was not a delicate one: a batch varying only this term gave
-// beta = 0.42 deg at 0.75 and 0.18 deg at 3.00, but 3.00 wrecked heading tracking (29 deg
-// tail error) by fighting the rudder against every turn. 0.5-0.75 was the usable band; the
-// PID expert (which closes beta -> rudder explicitly) reached 0.000075 rad, so there was no
-// plant-level tension at all — the term just had to be worth more than zero.
-// `examples/heading_hold_expert_baseline.rs` reports `mean_tail_abs_beta_rad` so that
-// classical reference is measurable.
-//
-// # Other deltas from heading_hold_stall_safe.reward.ron (its nearest sibling)
-//
-//     alt_error_scale:  60.0 -> 30.0    tightens altitude, and is the single lever that
-//                                       moved the low-speed/high-altitude corner (below)
-//     beta_weight:      0.15 -> 0.75    the anti-crab fix above
-//
-// heading_error_weight (1.5), speed_error_scale (7.0), the bank guard and the alpha guard are
-// all unchanged — the alpha guard in particular is still load-bearing and still opted in.
-//
-// # 1000-episode eval at the full 500:5000 m / 90:140 m/s / -180:180 deg envelope
-//
-//   success_rate = 1.000, mean_tail_abs_heading_rad = 0.010194 (0.584 deg),
-//   mean_tail_abs_altitude_m = 1.161, mean_tail_abs_speed_mps = 0.161,
-//   mean_tail_abs_beta_rad = 0.00035 (0.020 deg)   <- vs 0.184 rad for the prior checkpoint
-//
-// Live Rapier rollouts (1000 m/100 m/s/+90 deg, 3000/120/180, 800/140/+45):
-//   altitude 0.51-1.39 m, airspeed 0.14-0.28 m/s, heading 0.18-0.51 deg, beta 0.008-0.030 deg.
-//
-// # Training recipe (from scratch — no --init-from at stage 1)
-//
-// All stages at --target-heading-range -180:180, --target-speed-range 90:140,
-// --target-alt-range 500:5000, entropy_coef 0.0 throughout (see the .ppo.ron header).
-//
-//   1. BC warm start + PPO, lr 3e-4, 3M steps, beta_weight 0.75, alt_error_scale 60,
-//      speed_error_scale 10, heading_error_weight 1.2  (--bc-steps 300000)
-//   2. lr 1e-4, 4M, heading_error_weight -> 1.5 (terminal_failure_penalty -> -1250)
-//   3. lr 3e-5, 4M, speed_error_scale -> 7.0
-//   4. lr 1e-4, 6M    | pure volume at the *same* reward — this is what took heading
-//   5. lr 1e-4, 14M   | tail error from 1.4 deg to 0.86 deg. See the .ppo.ron header.
-//   6. lr 3e-5, 8M,  alt_error_scale -> 30.0   (corner pass)
-//   7. lr 3e-5, 14M, same reward as 6          (this profile)
-//
-// ~53M steps total. Full logs/configs: target/skill-runs/heading_hold-goal-20260807/.
-//
-// # Known limit: the 5000 m / 90 m/s corner is improved but not solved
-//
-// Corner-pinned eval (--target-alt-range 5000 --target-speed-range 90, 200 episodes):
-// success_rate 1.000, heading 1.59 deg, altitude 7.53 m. That is a real improvement on the
-// prior checkpoint (success 0.865, altitude 5.27 m at a *lower* survival rate) and ~15x
-// better than the PID expert, which loses 114.7 m of altitude at the same point — this
-// remains an airframe-margin corner, not a tracking-quality one. `alt_error_scale` 60 -> 30
-// was the only lever that moved it (corner altitude 9.77 -> 6.05 m in one pass); tightening
-// `alpha_soft_limit` below 0.25 backfired hard (success collapsed to 0.50-0.66). As in
-// heading_hold_stall_safe.reward.ron: do NOT chase this by loosening max_altitude_error.
-//
-// Deliberately has NO |roll| penalty term: bank is the control authority for turning here.
+// Experimental coordinated heading_hold profile; not the task default. Its
+// beta_weight was tuned before the aerodynamic model added side force, so it may
+// over-penalize sideslip and should be revalidated before retraining. The existing
+// checkpoint is behaviorally stale under current physics. The 5000 m / 90 m/s
+// large-turn corner remains airframe-limited. No roll-angle penalty: bank is the
+// control authority for turning.
 (
     // Heading error term [rad]: -(|heading_error| / heading_error_scale) * heading_error_weight
     heading_error_scale:  0.5,
@@ -95,9 +18,7 @@
     speed_error_scale:    7.0,
     speed_error_weight:   0.5,
 
-    // Sideslip angle term [rad] — 5x the historical 0.15. Was THE anti-crab term back when
-    // CY = 0 made a crab free; the plant now charges for sideslip itself, so this value is
-    // unvalidated under the current physics. See the SUPERSEDED RATIONALE in the header.
+    // Sideslip angle term [rad]; unvalidated with the current side-force model.
     beta_scale:           0.5,
     beta_weight:          0.75,
 

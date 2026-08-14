@@ -1,8 +1,6 @@
 // PID gains for business_jet.plane.ron.
-// level_hold "normal" — /tune-validated 2026-06-15, 2 rounds. Passes all 5 envelope
+// level_hold "normal" passes all 5 envelope
 // scenarios (200/80, 500/100, 1000/130, 2000/110, 300/70) with ΔAlt ≤ 1.3 m, ΔSpd ≤ 0.9 m/s.
-// vs starter: pitch_kd 0.764→1.146 (killed a ~1.4 s short-period limit cycle),
-// spd_ki 0.129→0.258 (removed ~3 m/s steady offset at the high/fast point).
 // orbit / heading_hold remain physics-scaled starters — not yet /tune-validated.
 PlaneTuning(
     level_hold: {

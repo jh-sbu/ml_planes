@@ -1,37 +1,5 @@
-// PPO hyperparameters for the final stage that produced
-// models/heading_hold/skill_heading_hold_goal4_coordinated.mpk (= current_best.mpk) — see
-// heading_hold_coordinated.reward.ron for the full from-scratch recipe and the anti-crab fix.
-// NOT the task default; pass explicitly via --ppo-config.
-//
-// entropy_coef MUST stay 0.0, including at stage 1 of the recipe. That stage starts from a BC
-// warm start (--bc-steps 300000), and the task file's own 0.005 default diverges from such a
-// start (see heading_hold_tight_tracking.ppo.ron). A same-config sibling run with 0.005 scored
-// success_rate 0.35 against 1.00 for the 0.0 run, confirming it again from scratch.
-//
-// # The lever that mattered: training volume at lr 1e-4, not reward tightening
-//
-// Once the policy was in the right basin (~1.4 deg tail heading error), the thing that closed
-// the gap to the 1 deg goal was plain continuation at the *same* reward with lr 1e-4 and a
-// large step budget — 6M then 14M steps, taking heading 1.43 -> 0.59 deg while also improving
-// altitude, airspeed and beta. Everything else tried in the same 8-wide batches lost:
-//
-//   heading_error_weight 1.5 -> 2.5   heading 3.45 deg   (worse)
-//   heading_error_weight 1.5 -> 4.0   heading 12.7 deg   (much worse)
-//   roll_rate_weight 0.10 -> 0.02     heading 2.28 deg   (worse)
-//   bank_soft_limit 60 -> 75 deg      heading 2.85 deg   (worse)
-//   large-turn-biased range 90:180    heading 3.21 deg   (worse)
-//   same reward, lr 1e-4, more steps  heading 0.59 deg   (WINNER)
-//
-// This is a third independent confirmation that heading_error_weight is not the knob for
-// heading precision on this task (see heading_hold_tight_tracking.ppo.ron's speed_error_scale
-// finding). Reach for step budget and learning rate before reaching for the heading term.
-//
-// lr here is 3e-5 rather than the 1e-4 of the volume stages: stages 6-7 tighten
-// alt_error_scale and only need to *polish*, not change behavior. The corner pass at lr 1e-4
-// with the same reward was measurably worse on the corner (9.14 m vs 6.05 m altitude).
-//
-// rollout_steps 4096 (doubled from the task default 2048) is inherited from the earlier
-// heading_hold fine-tuning lineage, unchanged.
+// Fine-tuning parameters for heading_hold_coordinated.reward.ron. Zero entropy
+// assumes a BC-pretrained policy; this is not the task default.
 (
     gamma: 0.99,
     gae_lambda: 0.95,

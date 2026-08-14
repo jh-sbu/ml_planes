@@ -1,6 +1,5 @@
-//! Consolidated net/mcp/server integration tests (formerly 9 separate test binaries; merged
-//! per plans/test_compile_speed.md to cut link steps). Entirely compiled out without `net`.
-//! Run one former file's tests with e.g.
+//! Net, MCP, and server integration tests. Entirely compiled out without `net`.
+//! Run one module's tests with e.g.
 //! `cargo test --no-default-features --features "mcp server" --test net net_serde::`.
 #![cfg(feature = "net")]
 

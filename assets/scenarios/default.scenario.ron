@@ -1,12 +1,10 @@
-// Default startup scene for the visual app — the scenario the main menu's
-// "Start Scenario" screen offers as `default`. This is a faithful translation of
-// the former hardcoded `main.rs::setup()` demo: a level-hold leader with a
+// Default startup scene: a level-hold leader with a
 // wingman in formation, a PID orbit, the two RL comparison planes, and an L1
 // flight-plan follower.
 //
 // All planes cruise at 100 m/s, so `velocity` is omitted and derived from
 // `heading_deg` (0 = +X, 90 = +Z) at the default speed — this also yaws the
-// initial attitude to face the velocity, matching the old setup.
+// initial attitude to face the velocity.
 //
 // The RL planes (`rl_orbit`, `rl_level_hold`) only *build* on a native
 // `--features inference` build with their model present; in the default visual

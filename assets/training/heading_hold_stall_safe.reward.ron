@@ -1,45 +1,8 @@
-// Heading-hold profile behind models/heading_hold/skill_heading_hold_goal3_alpha_guard.mpk —
-// the first heading_hold checkpoint retrained after the 2026-08-06 physics/envelope changes
-// (training integrator 60 -> 64 Hz, target-airspeed floor 110 -> 90 m/s), which left every
-// earlier checkpoint behaviorally stale. NOT the task default; pass explicitly via
-// --reward-config.
-//
-// Differs from heading_hold_ultra_tight_tracking.reward.ron (its direct ancestor, values
-// otherwise unchanged) only by turning ON the angle-of-attack margin guard:
-//
-//     alpha_soft_limit: 0.25, alpha_excess_scale: 0.05, alpha_excess_weight: 1.0
-//
-// Why the guard exists. The generic jet stalls at alpha = (cl_max - cl0)/cl_alpha = 0.289 rad
-// (16.6 deg). At the low-speed/high-altitude corner the airspeed floor opened up (90 m/s at
-// 5000 m, 7000 kg loaded) level flight already needs CL ~= 1.15 of the 1.4 available, so
-// sustained level turns are bank-limited to ~35 deg and there is almost no maneuvering margin.
-// Nothing in the pre-guard reward kept a policy off cl_max — `compute_aero_forces` just clamps
-// CL, so a policy that keeps pulling for altitude or turn rate mushes and departs rather than
-// getting a gradient telling it not to. Live-sim (Rapier) rollouts of every pre-guard candidate
-// departed at 5000 m / 90 m/s / 120 deg turn with alpha pegged past 40 deg; the bank_excess term
-// does not catch this, because bank is not what stalls the airframe.
-//
-// 1000-episode eval at the full 500:5000 m / 90:140 m/s / -180:180 deg envelope:
-//   success_rate = 0.995, mean_tail_abs_heading_rad = 0.008559 (0.49 deg),
-//   mean_tail_abs_altitude_m = 1.431, mean_tail_abs_speed_mps = 0.323.
-// Live Rapier check at four nominal operating points (1000 m/100, 3000 m/120, 800 m/140,
-// 2000 m/110, turns of +90/180/+45/-90 deg): altitude 0.97-1.58 m, airspeed 0.37-0.39 m/s,
-// heading 0.31-0.51 deg. Known limit: the extreme corner (>=5000 m AND <=90 m/s AND a large
-// commanded turn) still departs — the PID expert loses ~111 m of altitude at that same point
-// (examples/heading_hold_expert_baseline.rs), so it is an airframe-margin corner, not a
-// tracking-quality one. Do not chase it by loosening max_altitude_error.
-//
-// Recipe (each stage 4M steps, --target-speed-range 90:140, --target-alt-range 500:5000,
-// starting from the 2026-08-06 tier-2 checkpoint skill_heading_hold_goal2_ultratight_hw15speed7):
-//   1. re-fit to 64 Hz + the 90 m/s floor, ultra_tight reward, lr 1e-5 -> 3e-5 (several passes)
-//   2. bank-limit pass: same reward but bank_soft_limit 0.6109 (35 deg), bank_excess_weight 2.0,
-//      lr 3e-5   — raises envelope-wide success to ~1.0 at some cost in heading precision
-//   3. this profile (alpha guard on), lr 3e-5 — recovers heading precision and holds the gain
-// Pairs with heading_hold_stall_safe.ppo.ron. Full logs:
-// target/skill-runs/heading_hold-goal-20260806b/.
-//
-// Deliberately has NO |roll| penalty term (unlike level_hold's roll_scale/roll_weight):
-// bank is the control authority for turning here.
+// Optional stall-margin heading_hold profile. The generic jet stalls at alpha
+// 0.289 rad; the 0.25 rad guard preserves margin at low-speed/high-altitude
+// corners. Large turns at 5000 m and 90 m/s remain airframe-limited.
+// Pair with heading_hold_stall_safe.ppo.ron and pass with `--reward-config`.
+// No roll-angle penalty: bank is the control authority for turning.
 (
     // Heading error term [rad]: -(|heading_error| / heading_error_scale) * heading_error_weight
     heading_error_scale:  0.5,
@@ -82,7 +45,7 @@
     // Re-derived for heading_error_weight=1.5 per the discounted-worst-case argument in
     // heading_hold.reward.ron: at gamma=0.99 the horizon is 100 steps and the worst-case
     // per-step heading term is -(pi/0.5)*1.5 ~= -9.42, discounting to ~= -942; -1250.0 keeps
-    // the ~1.33x margin. Unchanged from the ultra_tight profile.
+    // the ~1.33x margin.
     terminal_failure_penalty: -1250.0,
 
     // Termination conditions

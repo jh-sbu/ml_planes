@@ -5,8 +5,7 @@
 //! Replicon requires the protocol (replication rules + remote events) to be
 //! registered in the **same order** on the client and the server, which is why a
 //! single plugin owns all of it. The plugin only declares the protocol; the actual
-//! transport (renet server/client) and the command-handling systems are wired up by
-//! the server binary (Phase 3) and client (Phases 4–6).
+//! transport and command-handling systems are wired up by the binaries.
 
 use bevy::prelude::*;
 use bevy_replicon::prelude::*;
@@ -25,15 +24,8 @@ use crate::controllers::SelectedModel;
 /// Default UDP port the dedicated server binds to and clients connect to.
 pub const DEFAULT_PORT: u16 = 5555;
 
-/// Protocol identity/version. Bumped whenever the replicated component set or the
-/// command set changes incompatibly; the renet transport (Phase 3) uses it to reject
-/// mismatched peers.
-///
-/// v2: added `ControllerTelemetry` to the replicated set (controller status display).
-/// v3: added `ControllerTargets` to the replicated set + `SetControllerTargetsCommand`
-/// (editable controller setpoints from the client).
-/// v4: added `ControllerKind::RlHeadingHold` (new enum discriminant — a stale peer
-/// would misread any kind serialized after it).
+/// Protocol identity/version. Bump when the replicated component or command set
+/// changes incompatibly so the transport rejects mismatched peers.
 pub const PROTOCOL_ID: u64 = 4;
 
 /// Switch the target plane's active controller (server rebuilds it).
@@ -113,8 +105,8 @@ impl Plugin for NetProtocolPlugin {
             .replicate::<PlaneId>()
             .replicate::<PlaneIndex>()
             .replicate::<ControllerKind>()
-            // Selection state (Phase 6) so the client can display + enumerate the
-            // current tuning profile / RL model. `PlaneTuningPath` lets the client
+            // Selection state lets the client display and enumerate the current
+            // tuning profile / RL model. `PlaneTuningPath` lets the client
             // rebuild a `PlaneTuningHandle` and reuse the existing enumeration.
             .replicate::<SelectedTuningProfile>()
             .replicate::<PlaneTuningPath>()

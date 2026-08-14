@@ -488,9 +488,7 @@ mod tests {
         buf.advantages = vec![0.0; 20];
         buf.returns = vec![0.0; 20];
 
-        // With seq_len=16, without a split there would be one sequence containing
-        // steps 0-15, mixing episode 1 (0-9) and episode 2 (10-15).
-        // With the boundary fix, step 9 (done) closes a chunk and step 10 starts fresh.
+        // The episode boundary at step 9 must split the sequence.
         let seqs = buf.chunk_sequences(16, obs_dim);
 
         // Every sequence must contain obs values from only one episode.

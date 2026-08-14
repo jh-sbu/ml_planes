@@ -20,7 +20,7 @@
 //!   --reward-config <path>      Reward/termination profile path, overriding the task default
 //!                               (assets/training/<task>.reward.ron). Missing file → defaults.
 //!   --seed <u64>                Fix the model's weight init and the minibatch-shuffle RNG
-//!                               for a reproducible run. Omitted → unseeded (original behavior).
+//!                               for a reproducible run. Omitted → unseeded.
 //!                               The starting weights are exactly reproducible (verified
 //!                               bit-exact), but burn's `ndarray` matmul backend has its own tiny
 //!                               floating-point non-associativity that compounds over epochs, so

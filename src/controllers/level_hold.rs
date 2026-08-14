@@ -135,8 +135,7 @@ impl LevelHoldController {
             target_airspeed,
             // Outer altitude loop: altitude error [m] → α_target [rad], output clamped ±0.3 rad.
             //
-            // kp=0.01: 10 m error → 0.1 rad proportional term; proportional is now a meaningful
-            // fraction of the clamp so the integral does not carry all the corrective load.
+            // kp=0.01: 10 m error → 0.1 rad, leaving integral authority below the clamp.
             //
             // ki=0.12, integral_clamp=0.93: steady-state integral I_ss =
             //   (α_trim + δe_trim/kp_α) / ki = (0.0653 + 0.046) / 0.12 ≈ 0.925,
@@ -427,11 +426,7 @@ mod tests {
 
     #[test]
     fn bumpless_engagement_preserves_pitch_via_altitude_integral() {
-        // When state pitch is near zero (level_state has level_attitude → pitch=0),
-        // altitude integral seeds to ~0 so pitch_target ≈ 0 and elevator error ≈ 0 on
-        // the first step. (Non-zero pitch at engagement would seed a non-zero integral
-        // — the mechanism is the same as the old alpha seeding since pitch ≈ alpha in
-        // level/trim flight.)
+        // A level attitude seeds a near-zero altitude integral and elevator error.
         use crate::plane::ControlInputs;
         let state = level_state(1000.0, 100.0);
         let prev_inputs = ControlInputs {

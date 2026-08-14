@@ -54,8 +54,7 @@ fn load_bytes_orbit_produces_valid_controller() {
 
 /// The embedded orbit checkpoint must match the current observation dimension: a
 /// real forward pass feeds an `ORBIT_OBS_DIM`-wide observation through the loaded
-/// network. Guards against a stale-dimension checkpoint (which loads but would panic
-/// in the matmul) after the fuel observation was appended (13 → 14).
+/// network, rejecting stale-dimension checkpoints before the matmul.
 #[test]
 fn loaded_orbit_policy_runs_forward_pass() {
     let config = RlOrbitConfig {
@@ -119,9 +118,7 @@ fn loading_stale_dim_orbit_model_errors() {
     let _ = std::fs::remove_file(path.with_extension("mpk"));
 }
 
-/// Same guard for the level-hold controller (pre-envelope-randomization
-/// 11-dim stale checkpoint, from before `density_ratio`/airspeed were
-/// appended to the observation).
+/// A stale level-hold checkpoint must be rejected.
 #[test]
 fn loading_stale_dim_level_hold_model_errors() {
     let path = save_stale_model(LEVEL_HOLD_OBS_DIM - 2, "level_hold");
@@ -140,9 +137,7 @@ fn loading_stale_dim_level_hold_model_errors() {
 
 /// The `level_hold_observation` builder `RlLevelHoldController::update` calls
 /// must stay in lockstep with `LEVEL_HOLD_OBS_DIM` and the density-ratio /
-/// airspeed elements the envelope-randomization rework appended — a cheap
-/// regression guard on the single shared builder (env and controller no
-/// longer keep independent copies of this vector).
+/// airspeed elements used by the shared builder.
 #[test]
 fn level_hold_controller_obs_matches_env_obs() {
     let mut state = FlightState {
@@ -196,8 +191,7 @@ fn rl_orbit_targets_use_the_shared_orbit_variant() {
     );
 }
 
-/// Same guard for the heading-hold controller: a stale-dimension checkpoint
-/// (e.g. saved before the turn-rate element was appended) must be rejected
+/// A stale-dimension heading-hold checkpoint must be rejected
 /// at load time, not panic in the forward pass.
 #[test]
 fn loading_stale_dim_heading_hold_model_errors() {

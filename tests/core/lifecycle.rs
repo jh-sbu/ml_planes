@@ -25,7 +25,7 @@ fn plane_indices(app: &mut App) -> Vec<u32> {
     v
 }
 
-/// Phase 2: a `SpawnPlaneCommand` adds a fully-indexed plane; two commands yield
+/// A `SpawnPlaneCommand` adds a fully-indexed plane; two commands yield
 /// distinct increasing indices; `RemovePlaneCommand` despawns it.
 #[test]
 fn spawn_commands_index_planes_and_remove_despawns() {
@@ -69,7 +69,7 @@ fn spawn_commands_index_planes_and_remove_despawns() {
 #[derive(Resource)]
 struct SpawnedEntity(Entity);
 
-/// Phase 1: `spawn_plane` must load the aero config from the supplied path,
+/// `spawn_plane` must load the aero config from the supplied path,
 /// not a hardcoded one.
 #[test]
 fn spawn_plane_uses_supplied_config_path() {
@@ -219,8 +219,7 @@ fn spawn_command_rejects_traversal_config_path() {
             ..Default::default()
         },
         kind: ControllerKind::LevelHold,
-        // Resolves back to a real airframe, so this fails before the fix rather
-        // than passing by accident on an unparseable target.
+        // Resolves to a real airframe if traversal is not rejected.
         config_path: "planes/../planes/cargo_jet.plane.ron".to_string(),
     });
     app.update();
@@ -253,7 +252,7 @@ struct LeaderWingman {
     wingman: Entity,
 }
 
-/// Phase 3: removing a wingman's leader drops the wingman to `LevelHold` instead
+/// Removing a wingman's leader drops the wingman to `LevelHold` instead
 /// of leaving it silently masquerading as formation flight against a dead leader.
 #[test]
 fn removing_leader_drops_wingman_to_level_hold() {
@@ -283,13 +282,9 @@ fn removing_leader_drops_wingman_to_level_hold() {
     );
 }
 
-/// Phase 3 hardening: a plane can carry `ControllerKind::Wingman` without an
-/// actual `WingmanController` installed (e.g. a `SpawnPlaneCommand { kind:
-/// Wingman }`, whose generic `build()` falls back to `LevelHold` — or, before
-/// the tuning-rebuild fix, a wingman clobbered by `apply_initial_tuning`).
-/// `cleanup_orphaned_wingmen`'s downcast used to silently no-op in that case,
-/// leaving the plane claiming formation flight it wasn't doing. It must demote
-/// to `LevelHold` just like an orphaned (leader-removed) wingman does.
+/// A plane can carry `ControllerKind::Wingman` without an actual
+/// `WingmanController` because the generic factory falls back to `LevelHold`.
+/// It must demote to `LevelHold` like an orphaned wingman.
 #[test]
 fn wingman_kind_without_wingman_controller_falls_back_to_level_hold() {
     let mut app = build_headless_app_with(|app| {
@@ -375,7 +370,7 @@ fn spawn_leader_and_wingman(
     });
 }
 
-/// Phase 3: removing the followed plane drops the camera back to free-look so it
+/// Removing the followed plane drops the camera back to free-look so it
 /// (and the HUD keyed off the followed entity) doesn't freeze on a dead entity.
 /// `camera` is gated behind `visual`, so this runs only in visual builds.
 #[cfg(feature = "visual")]

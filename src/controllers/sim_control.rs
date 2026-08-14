@@ -2,10 +2,8 @@
 //!
 //! These systems react to `Changed<ControllerKind>` / `Changed<SelectedTuningProfile>`
 //! / `Changed<SelectedModel>` and rebuild a plane's [`ActiveController`] accordingly.
-//! They previously lived in `main.rs` behind `#[cfg(feature = "visual")]` +
-//! `run_if(in_state(AppState::InGame))`, but the client/server split (see
-//! `plans/client_server.md`) needs them to run on a headless server too: a client's
-//! `SwitchControllerCommand` / `SetTuningProfileCommand` / `SetModelCommand` is applied
+//! They run on the headless server so a client's `SwitchControllerCommand` /
+//! `SetTuningProfileCommand` / `SetModelCommand` is applied
 //! server-side simply by mutating the corresponding component, after which these systems
 //! rebuild the controller.
 //!
@@ -203,12 +201,8 @@ fn report_skipped_model(notes: &mut Notifications, path: &str, err: &ModelLoadEr
 /// `SelectedModel` is wired yet: runtime (panel/hotkey) spawns arrive on the PID
 /// fallback with no model and need loading, whereas startup-spawned RL planes
 /// already carry both the loaded controller and a `SelectedModel`, so they're
-/// skipped to avoid a redundant reload. That skip is only safe because
-/// `preserve_rl_controller` stops `apply_initial_tuning`/`apply_controller_switch` from
-/// later clobbering the already-loaded controller with the PID fallback once the plane's
-/// tuning asset loads — before that guard existed, a startup-spawned RL plane's policy was
-/// silently replaced by PID the moment its `.tuning.ron` resolved, with nothing here to
-/// notice and reload it (`Changed<ControllerKind>` doesn't fire on a tuning-asset load).
+/// skipped to avoid a redundant reload. `preserve_rl_controller` keeps subsequent
+/// tuning loads from replacing the loaded policy with a PID fallback.
 #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
 fn rl_kind_needs_load_on_change(
     kind: ControllerKind,
@@ -546,13 +540,8 @@ fn extract_orbit_params(ctrl: &mut ActiveController) -> Option<OrbitParams> {
 /// systems should leave it alone (or, for `RlOrbitResidual`, just re-tune its inner PID
 /// baseline) instead of calling `kind.build()`.
 ///
-/// `ControllerKind::build()` falls back to a PID controller for every RL kind — it has no
-/// model path to load one from (`kind.rs`, "RlLevelHold requires a model path — fall back to
-/// LevelHold like Wingman"). Without this check, `apply_initial_tuning`/`apply_controller_switch`
-/// would silently replace a live RL policy with that PID fallback the moment a `.tuning.ron`
-/// asset loads or a profile switches, exactly as they once did for `Wingman` before
-/// `extract_wingman_params`/`restore_wingman` closed that gap — see the "Adding a New
-/// `ControllerKind`" checklist in `CLAUDE.md`.
+/// `ControllerKind::build()` has no model path and therefore returns a PID fallback for
+/// every RL kind. This check keeps tuning changes from replacing a live RL policy.
 ///
 /// Returns `true` when handled here (the caller must skip `kind.build()`); `false` when the
 /// active controller isn't actually running the RL policy yet (e.g. the kind just changed *to*
@@ -660,10 +649,8 @@ fn restore_wingman(ctrl: &mut ActiveController, params: WingmanParams) {
 /// (`LevelHoldController::with_tuning`/`from_state` capture `state.altitude`/
 /// `state.airspeed`; `HeadingHoldController::from_state` captures
 /// `ground_track_heading(state)`; `AscentController::new` re-targets
-/// `state.altitude + 1000.0`). A tuning-asset load or profile switch would
-/// otherwise silently cancel a scenario- or pilot-commanded setpoint the moment
-/// the plane's tuning finishes loading — exactly the bug class `ControllerTargets`
-/// exists to prevent on the HUD side, just hitting it from the rebuild side instead.
+/// `state.altitude + 1000.0`). Preserve scenario- and pilot-commanded setpoints
+/// across tuning loads and profile switches.
 ///
 /// `Orbit`/`RlOrbit*` and `Wingman` are deliberately excluded: they already have
 /// their own extract/restore pairs above (`extract_orbit_params`,
@@ -742,10 +729,6 @@ fn apply_initial_tuning(
             | ControllerKind::RlLstmOrbit => pt
                 .get_orbit(profile_name)
                 .map(|t| t as &dyn ControllerTuning),
-            // Bug fix: this arm was missing entirely, so a heading-hold plane got
-            // `level_hold` gains here on the tuning-asset-load frame while
-            // `apply_controller_switch` (below) correctly used `heading_hold` gains —
-            // divergent tuning depending on which system fired first.
             ControllerKind::HeadingHold | ControllerKind::RlHeadingHold => pt
                 .get_heading_hold(profile_name)
                 .map(|t| t as &dyn ControllerTuning),
@@ -754,7 +737,6 @@ fn apply_initial_tuning(
                 .map(|t| t as &dyn ControllerTuning),
         };
 
-        // Preserve orbit geometry: extract before rebuild, restore after.
         let orbit_params = if matches!(
             *kind,
             ControllerKind::Orbit
@@ -853,7 +835,6 @@ fn apply_controller_switch(
                     .map(|t| t as &dyn ControllerTuning),
             });
 
-        // Preserve orbit geometry when switching between orbit variants.
         // None when the current controller is not an orbit type (e.g. LevelHold → Orbit
         // stays with the from_state() auto-center default).
         let orbit_params = if matches!(
@@ -867,7 +848,6 @@ fn apply_controller_switch(
         } else {
             None
         };
-        // Preserve wingman formation state across a profile switch the same way.
         // `None` when the kind just changed *to* Wingman this frame (the current
         // controller isn't a wingman yet) — the LevelHold fallback stands, and
         // `cleanup_orphaned_wingmen` will demote the kind honestly next tick.

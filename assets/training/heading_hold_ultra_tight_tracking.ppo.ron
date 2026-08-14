@@ -1,15 +1,5 @@
-// PPO hyperparameters for the FINAL fine-tune stage that produced
-// models/heading_hold/skill_heading_hold_goal2_ultratight_hw15speed7.mpk — see
-// heading_hold_ultra_tight_tracking.reward.ron for the full recipe and the earlier stage
-// (heading_hold_tight_tracking.{reward,ppo}.ron) this continues from. NOT the task default;
-// pass explicitly via --ppo-config. entropy_coef MUST be 0.0 — see
-// heading_hold_tight_tracking.ppo.ron's comment, still true here since this continues from
-// that BC/PPO-converged policy. lr=1e-5 (3x below heading_hold_tight_tracking.ppo.ron's 3e-5,
-// 30x below the task default 3e-4) is what let the reward-scale change (speed_error_scale
-// 10->7, heading_error_weight 1.2->1.5) refine the policy without destabilizing it — a
-// same-lr/same-reward continuation of the incumbent alone only reached 0.32deg heading with
-// altitude/speed regressing slightly; this lr drop paired with the reward change is what
-// closed the rest of the gap to 0.15deg while also improving altitude/speed.
+// Low-learning-rate fine-tuning parameters for
+// heading_hold_ultra_tight_tracking.reward.ron. Use with a converged warm start.
 (
     gamma: 0.99,
     gae_lambda: 0.95,

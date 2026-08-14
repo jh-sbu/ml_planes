@@ -1,11 +1,8 @@
 // Tuned PID gains for generic_jet.plane.ron.
-// level_hold "normal" — /tune-validated 2026-08-10, 3 rounds, at full fuel.
+// level_hold "normal" is validated at full fuel.
 // Passes all 5 trim scenarios (200/80, 500/100, 1000/130, 2000/110,
 // 300/70) with worst 30–60 s errors of ΔAlt 6.19 m and ΔSpd 0.27 m/s.
 // Also recovers from all ±200 m / ±20 m/s combinations by 60 s without stalling.
-// vs previous: the stronger pitch loop removes the low-speed steady descent;
-// increased speed-loop authority holds trim without trading altitude for airspeed.
-// throttle_ff_gain remains 0.3; orbit/heading_hold gains are unchanged.
 PlaneTuning(
     level_hold: {
         "normal": LevelHoldTuning(

@@ -161,7 +161,7 @@ pub fn spawnable_kind_names() -> &'static [&'static str] {
 
 /// Parse a controller-kind name (serde variant identifier) into a spawnable [`ControllerKind`].
 ///
-/// Backs both `spawn_plane` and (Phase 4) `switch_controller`. `Wingman` / `FlightPlan` are
+/// Backs both `spawn_plane` and `switch_controller`. `Wingman` / `FlightPlan` are
 /// rejected with a descriptive error because the generic builder mis-substitutes them; unknown
 /// names likewise return an `Err` (never a panic). RL kinds parse only under `inference`.
 pub fn parse_spawnable_controller_kind(name: &str) -> Result<ControllerKind, String> {

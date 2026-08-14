@@ -1,4 +1,4 @@
-//! MCP Phase 5: end-to-end over a real renet transport.
+//! MCP end-to-end test over a real renet transport.
 //!
 //! Unlike the other net/MCP tests (deliberately transport-free), this one boots a **real**
 //! `ml_planes_server` child on an ephemeral UDP port, stands up the headless MCP replicon

@@ -55,15 +55,8 @@ fn jet_cfg() -> PlaneConfig {
 /// policy output after training.
 ///
 /// Does **not** assert anything about the reward trend. `PpoTrainer::new` builds
-/// its `ActorCritic` via burn's default (unseeded) module init — see the
-/// "Known nondeterminism" note in CLAUDE.md §6 — so at this rollout size (50 ×
-/// 128 = 6,400 steps, vs. 2,000,000 for a real training run) the policy is still
-/// deep in random exploration and `mean_return` swings by hundreds between runs
-/// on identical code. A prior version of this test asserted
-/// `last_mean > first_mean - 5.0` over the first/last 10 iterations; it failed
-/// reproducibly on unmodified `main` (`first_mean=-342` / `last_mean=-672` one
-/// run, `first_mean=-599` / `last_mean=-751` the next) purely from that
-/// unseeded init, not from any actual regression. Behavioral/convergence
+/// its `ActorCritic` via unseeded module initialization. At 6,400 steps the policy
+/// remains in random exploration, so reward-trend assertions are unstable. Convergence
 /// validation lives in the slower `evaluate_policy` / `train-evaluate-optimize`
 /// workflows instead, which run full-length training.
 #[test]

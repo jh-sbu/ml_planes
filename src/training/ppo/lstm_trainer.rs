@@ -94,8 +94,7 @@ where
         Self::with_n_envs_seeded(template_env, n, device, None)
     }
 
-    /// See `PpoTrainer::with_n_envs_seeded` — identical seeding contract
-    /// (`None` reproduces the original unseeded behavior exactly).
+    /// See `PpoTrainer::with_n_envs_seeded`; `None` selects unseeded behavior.
     pub fn with_n_envs_seeded(
         template_env: E,
         n: usize,

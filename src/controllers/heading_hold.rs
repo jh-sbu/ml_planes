@@ -298,8 +298,7 @@ mod tests {
 
     #[test]
     fn heading_error_matches_controller_update_sign() {
-        // Regression guard: the free function must agree with what update() used to compute
-        // inline, so RL obs / BC expert / PID controller never disagree on sign.
+        // RL observations, BC expert, and PID controller must agree on sign.
         let state = level_state();
         let mut ctrl = HeadingHoldController::from_state(&state, &ControlInputs::default());
         ctrl.target_heading = -FRAC_PI_2;

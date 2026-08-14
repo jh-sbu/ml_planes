@@ -1,11 +1,11 @@
-//! MCP Phase 3: the command bridge (write path).
+//! MCP command bridge (write path).
 //!
 //! Transport-free headless test mirroring `tests/mcp_snapshot.rs`: register
 //! `RepliconPlugins` + `NetProtocolPlugin` + `McpBridgePlugin` (no renet transport), push
 //! `ControlRequest`s onto the command channel, run an update, and assert
 //! `drain_control_requests` consumed them (and did its `SetSimSpeed` bookkeeping). Genuine
 //! client→server delivery of the resulting `client_trigger` is covered server-side by
-//! `tests/server_sim.rs` and by the live-server Milestone 3 check.
+//! `tests/server_sim.rs` and live-server checks.
 //!
 //! Gated on `mcp` (`cargo test --features mcp`).
 

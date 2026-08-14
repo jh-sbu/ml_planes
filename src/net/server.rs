@@ -1,7 +1,6 @@
 //! Server-side networking: the authoritative-sim plugin and renet transport setup.
 //!
-//! Phase 3 of the client/server split (`plans/client_server.md`). The dedicated
-//! server binary (`src/bin/server.rs`) runs the headless 64 Hz sim
+//! The dedicated server binary (`src/bin/server.rs`) runs the headless 64 Hz sim
 //! (`PlanePlugin` + Rapier + `SimControlPlugin` + `LifecyclePlugin`) and adds the
 //! pieces here:
 //!

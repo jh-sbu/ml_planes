@@ -4,12 +4,9 @@
 //! incompatible (stale-dimension) RL model is skipped and the controller falls
 //! back to PID. Each notification fades out after [`NOTIFICATION_TTL_SECS`].
 //!
-//! The pure data type lives here (no rendering deps) so it is available to the
-//! headless server and the controller-rebuild systems in
-//! [`controllers::sim_control`](crate::controllers::sim_control), mirroring how
-//! [`SimSpeed`](crate::sim_speed) was extracted. The egui banner that renders it
-//! (`draw_notifications`) stays in [`ui::notifications`](crate::ui::notifications),
-//! which re-exports [`Notifications`].
+//! The render-neutral data type is available to the headless server. The egui
+//! renderer lives in [`ui::notifications`](crate::ui::notifications), which
+//! re-exports [`Notifications`].
 
 use bevy::prelude::*;
 

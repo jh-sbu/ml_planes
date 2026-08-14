@@ -1,14 +1,5 @@
-// PPO training-loop hyperparameters for the heading_hold task.
-//
-// Copy of level_hold.ppo.ron's tuned clip/lr with a nonzero entropy bonus restored:
-// level_hold's zero-entropy setting was promoted for a task with a single stable
-// equilibrium (level, on-altitude, on-speed). heading_hold's equilibrium requires
-// discovering *coordinated banking*, which a zero-entropy policy starting from random
-// init is unlikely to stumble onto — a small entropy bonus keeps exploration alive long
-// enough to find it. Retune via train-evaluate-optimize once a baseline is established.
-//
-// This is `Task::HeadingHold`'s default `--ppo-config` (see `Task::default_ppo_config_path`
-// in src/bin/train_ppo.rs); pass an explicit `--ppo-config` to override for one-off runs.
+// Default PPO hyperparameters for heading_hold. The entropy bonus supports
+// exploration from random initialization; use zero entropy for converged warm starts.
 (
     gamma: 0.99,
     gae_lambda: 0.95,

@@ -9,8 +9,8 @@
 //!    pitch_angle/0.5, vertical_speed/30, fuel_fraction,
 //!    density_ratio, airspeed/100]
 //!
-//! The last two entries were added so the policy can generalize across a
-//! randomized target-altitude/airspeed envelope (see `with_target_ranges`):
+//! The last two entries let the policy generalize across a randomized
+//! target-altitude/airspeed envelope (see `with_target_ranges`):
 //! `alt_err`/`speed_err` alone cannot distinguish "500 m, 10 m/s low" from
 //! "5000 m, 10 m/s low", but the aerodynamics (and thrust) at those two
 //! altitudes differ substantially via `density_ratio`. `density_ratio` is
@@ -142,10 +142,8 @@ pub struct LevelHoldEnv {
 }
 
 impl LevelHoldEnv {
-    /// Create an environment with a **fixed** target altitude/airspeed (no
-    /// per-episode randomization) using the default reward config. Preserves
-    /// the environment's pre-randomization behavior exactly, for existing
-    /// callers that want a single fixed operating point.
+    /// Create an environment with a fixed target altitude/airspeed and the
+    /// default reward config.
     pub fn new(target_altitude: f32, target_airspeed: f32, cfg: PlaneConfig) -> Self {
         let reward_cfg = LevelHoldRewardConfig::default();
         let max_episode_steps = reward_cfg.max_episode_steps;
@@ -386,9 +384,7 @@ impl DemonstrationEnv for LevelHoldEnv {
 mod tests {
     use super::*;
 
-    /// The self-contained Euler integrator must step at the same rate as the live
-    /// Rapier sim. When it did not (60 Hz here vs 64 Hz live), `evaluate_policy`
-    /// numbers stopped predicting live behavior and nothing caught it.
+    /// The training integrator must use the live simulation timestep.
     #[test]
     fn env_dt_is_the_shared_physics_dt() {
         let env = LevelHoldEnv::new(1000.0, 80.0, jet_cfg());

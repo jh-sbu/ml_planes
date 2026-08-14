@@ -6,11 +6,6 @@
 // bank is the control authority for turning here, so penalizing roll magnitude would fight
 // the task. Roll is governed instead by roll_rate (chatter guard) and bank_excess (an envelope
 // guard past the PID heading loop's own +-60 deg clamp, so the BC expert never incurs it).
-//
-// Suggested staged curriculum (see heading_hold_env module doc for the full recipe):
-//   train_ppo --task heading_hold --target-heading-range -30:30   --bc-steps 200000 --steps 1000000 --output hh_s1
-//   train_ppo --task heading_hold --target-heading-range -90:90   --init-from models/heading_hold/hh_s1 --steps 1000000 --output hh_s2
-//   train_ppo --task heading_hold --target-heading-range -180:180 --init-from models/heading_hold/hh_s2 --steps 2000000 --output hh_s3
 (
     // Heading error term [rad]: -(|heading_error| / heading_error_scale) * heading_error_weight
     heading_error_scale:  0.5,
@@ -39,9 +34,7 @@
     bank_excess_weight:   1.0,
 
     // Angle-of-attack margin guard: penalizes |alpha| beyond alpha_soft_limit, the same
-    // shape as the bank guard above. Inert here (weight 0.0) so this profile's reward is
-    // byte-for-byte the one its checkpoints were trained under; see
-    // heading_hold_stall_safe.reward.ron for the profile that turns it on and why.
+    // shape as the bank guard above. Inert here; heading_hold_stall_safe enables it.
     alpha_soft_limit:     0.26,
     alpha_excess_scale:   0.1,
     alpha_excess_weight:  0.0,
@@ -52,14 +45,13 @@
     // Applied once on episode Failure (crash / speed collapse), never on Timeout — every
     // other term above is negative, so without this an early failure is rewarded relative
     // to riding out the episode. Sized to the worst-case *discounted* cost of that
-    // alternative, not just its per-step magnitude: at gamma=0.99 (heading_hold.ppo.ron)
+    // alternative, not just its per-step magnitude: at gamma=0.99
     // the discount horizon is 1/(1-gamma) = 100 steps, and the worst-case per-step heading
     // term (180 deg error) is -(pi/heading_error_scale)*heading_error_weight ~= -3.77, so
     // sitting at max error forever discounts to ~= -377. The penalty must exceed that or a
     // policy that deliberately stalls out (min_airspeed floor is a couple seconds away)
-    // beats one that completes a hard turn — a code review caught the previous -50.0 value
-    // failing this by roughly 7x. See reward_config.rs's
-    // heading_hold_failure_penalty_covers_discounted_horizon test.
+    // beats one that completes a hard turn. See
+    // `heading_hold_failure_penalty_covers_discounted_horizon`.
     terminal_failure_penalty: -500.0,
 
     // Termination conditions

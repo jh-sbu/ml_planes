@@ -1,8 +1,6 @@
-//! Phase 2: the controller-rebuild systems run headlessly via `SimControlPlugin`.
+//! Headless tests for `SimControlPlugin` controller rebuilding.
 //!
-//! These systems used to live in `main.rs` behind `#[cfg(feature = "visual")]` and
-//! `run_if(in_state(AppState::InGame))`, so they could not run on a headless server.
-//! This test pins that a `MinimalPlugins` app with only `SimControlPlugin` rebuilds a
+//! A `MinimalPlugins` app with only `SimControlPlugin` must rebuild a
 //! plane's `ActiveController` when its `ControllerKind` is mutated — the mechanism the
 //! server uses to apply a client's `SwitchControllerCommand`.
 
@@ -75,11 +73,7 @@ fn switching_controller_kind_rebuilds_active_controller() {
     );
 }
 
-/// Regression guard for a bug fixed alongside `RlHeadingHold`: `apply_initial_tuning`'s
-/// tuning-family match had no `HeadingHold` arm at all, so on the tuning-asset-load frame
-/// a heading-hold plane got `level_hold` gains instead of `heading_hold` gains — while
-/// `apply_controller_switch` (a later profile switch) correctly used the `heading_hold`
-/// pool. This pins that the *initial* rebuild now reaches the same `heading_hold` profile.
+/// Initial tuning must use the heading-hold pool for a heading-hold controller.
 #[test]
 fn initial_tuning_applies_heading_hold_pool_to_heading_hold_controller() {
     let mut app = build_headless_app_with(|app| {
@@ -90,8 +84,7 @@ fn initial_tuning_applies_heading_hold_pool_to_heading_hold_controller() {
     let heading_hold = HeadingHoldController::from_state(&state, &ControlInputs::default());
 
     let mut tuning = PlaneTuning::default();
-    // A distinctive level_hold gain that must NOT reach the controller — if the bug
-    // regresses, apply_initial_tuning falls through to this pool instead.
+    // A distinctive level-hold gain catches selection of the wrong pool.
     tuning.level_hold.insert(
         "normal".to_string(),
         LevelHoldTuning {
@@ -151,11 +144,8 @@ fn level_state(altitude: f32, airspeed: f32) -> FlightState {
 
 /// `ControllerKind::Wingman.build()` cannot construct a real `WingmanController`
 /// (the generic factory has no leader reference) — it falls back to a plain
-/// `LevelHoldController`. `apply_initial_tuning` used to rebuild *every*
-/// controller unconditionally once the `.tuning.ron` asset loaded, silently
-/// replacing a live wingman with that fallback. This pins that the rebuild now
-/// preserves the wingman law (leader id + offset) while still applying the
-/// loaded tuning profile to the inner `LevelHoldController`.
+/// `LevelHoldController`. The rebuild must preserve the wingman law (leader id
+/// and offset) while applying tuning to the inner `LevelHoldController`.
 #[test]
 fn initial_tuning_preserves_wingman_controller() {
     let mut app = build_headless_app_with(|app| {
@@ -298,11 +288,8 @@ fn profile_switch_preserves_wingman_controller() {
 
 /// `HeadingHoldController::from_state` (which `HeadingHoldTuning::build` starts from)
 /// re-seeds `target_heading`/`inner.target_altitude`/`inner.target_airspeed` from the
-/// *current* `FlightState`. Before the `ControllerTargets`-snapshot fix, a scenario- or
-/// pilot-commanded heading target that differed from the plane's current ground track
-/// (e.g. `assets/scenarios/heading_hold.scenario.ron`'s 90°/120 m/s target on a plane
-/// spawned flying heading 0 at `DEFAULT_SPEED`) was silently cancelled the moment the
-/// tuning asset finished loading. This pins that the rebuild now preserves all three.
+/// *current* `FlightState`. The rebuild must preserve commanded heading, altitude,
+/// and airspeed targets that differ from the current state.
 #[test]
 fn initial_tuning_preserves_heading_hold_targets() {
     let mut app = build_headless_app_with(|app| {
@@ -457,8 +444,7 @@ fn controller_switch_preserves_heading_hold_targets() {
 
 /// `LevelHoldController::with_tuning` (which `ControllerKind::LevelHold.build()` calls)
 /// starts from `Self::new(state.altitude, state.airspeed)`, re-seeding both setpoints
-/// from live state — the same class of bug as heading hold, just less visually obvious.
-/// This pins that `apply_initial_tuning` now preserves a level-hold target that differs
+/// from live state. `apply_initial_tuning` must preserve a level-hold target that differs
 /// from the plane's current altitude/airspeed (e.g. right after an ascent hands off, or
 /// a scenario's `LevelHold { altitude, airspeed }` spec on a plane spawned below target).
 #[test]
@@ -524,9 +510,8 @@ fn initial_tuning_preserves_level_hold_targets() {
 }
 
 /// `ControllerKind::Ascent.build()` always re-targets `state.altitude + 1000.0`
-/// (`kind.rs`'s own doc comment says so) — a tuning rebuild mid-climb used to reset
-/// the climb target to whatever the plane's current altitude happened to be plus
-/// 1000 m, discarding the originally commanded target. This pins that it now survives.
+/// (`kind.rs`'s own doc comment says so), so tuning rebuilds must restore the
+/// commanded climb target.
 #[test]
 fn initial_tuning_preserves_ascent_target_altitude() {
     let mut app = build_headless_app_with(|app| {
@@ -582,9 +567,7 @@ fn initial_tuning_preserves_ascent_target_altitude() {
     // gains regardless of profile — a separate, pre-existing gap out of scope here.
 }
 
-/// Regression guard: orbit geometry preservation (`extract_orbit_params` /
-/// `OrbitController::apply_params`) must be unaffected by the new
-/// LevelHold/HeadingHold/Ascent targets-snapshot logic added alongside it —
+/// Orbit geometry preservation is independent of scalar target restoration;
 /// `Orbit` is deliberately excluded from `rebuild_preserves_targets`.
 #[test]
 fn initial_tuning_still_rebuilds_orbit_geometry() {

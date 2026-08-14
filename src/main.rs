@@ -28,8 +28,7 @@ use ml_planes::plane::{FlightState, PlaneTuningHandle};
 #[cfg(all(feature = "visual", feature = "inference", not(target_arch = "wasm32")))]
 use ml_planes::controllers::{ModelLibrary, SelectedModel};
 
-// Phase 6: on the networked client the input/hotkey systems no longer mutate local
-// components (the server is authoritative); they send client→server commands.
+// Networked clients send input and hotkey commands to the authoritative server.
 #[cfg(all(feature = "visual", feature = "net"))]
 use bevy_replicon::prelude::ClientTriggerExt;
 #[cfg(all(feature = "visual", feature = "net"))]
@@ -68,8 +67,7 @@ fn main() {
                 meta_check: AssetMetaCheck::Never,
                 ..default()
             })
-            // No audio assets exist yet; this skips ALSA/JACK/OSS device probing
-            // at startup. Remove once real audio (AudioPlayer/AudioSource) is added.
+            // Avoid audio-device probing when there are no audio assets.
             .disable::<bevy::audio::AudioPlugin>(),
     );
     #[cfg(not(feature = "visual"))]
@@ -79,11 +77,7 @@ fn main() {
         bevy::transform::TransformPlugin,
     ));
 
-    // Local physics + the controller-rebuild systems run in every build except the
-    // pure networked client, which renders replicated state (see
-    // `plans/client_server.md` Phase 4). `PlanePlugin`/`EnvironmentPlugin`/
-    // `LifecyclePlugin` are still added on the client for the asset loaders, the
-    // plane gizmos, and the (Phase 6) lifecycle observers.
+    // Pure networked clients render replicated state without local physics.
     #[cfg(any(not(feature = "net"), feature = "server"))]
     {
         app.insert_resource(TimestepMode::Fixed {
@@ -124,10 +118,8 @@ fn main() {
             .add_plugins(ClientNetPlugin);
     }
 
-    // Client-side input/hotkey systems only run while a scenario is flying, so the menu
-    // screens don't drive controller switching, input polling, etc. In the local-sim /
-    // WASM build they mutate the components `SimControlPlugin` reacts to; in the networked
-    // client (Phase 6) they send client→server commands and the server stays authoritative.
+    // Input systems run only while a scenario is active. Local builds mutate
+    // components; networked clients send commands to the server.
     #[cfg(all(feature = "visual", feature = "net"))]
     app.init_resource::<ManualFlightInput>();
     #[cfg(feature = "visual")]
@@ -175,7 +167,7 @@ fn tuning_profile_names(kind: ControllerKind, pt: &PlaneTuning) -> Option<Vec<St
     (!names.is_empty()).then_some(names)
 }
 
-// --- Local-sim / WASM build: mutate components directly (SimControlPlugin rebuilds) ---
+// --- Local-sim / WASM input ---
 
 #[cfg(all(feature = "visual", not(feature = "net")))]
 fn poll_controller_inputs(

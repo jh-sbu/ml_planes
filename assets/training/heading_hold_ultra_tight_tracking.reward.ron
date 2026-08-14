@@ -1,21 +1,5 @@
-// Further-tightened variant of heading_hold_tight_tracking.reward.ron for a "heading <=0.2deg
-// without sacrificing the ~1m/1m-s altitude/airspeed tier" target — NOT wired in as the task
-// default; pass explicitly via --reward-config. Promoted from a 2026-08-06 /goal session
-// (target/skill-runs/heading_hold-goal-20260806/): starting from
-// models/heading_hold/skill_heading_hold_goal_target1_tight_verylowlr_bigbatch.mpk (the
-// heading_hold_tight_tracking checkpoint, 0.44deg/0.816m/0.494m/s), a parallel batch search
-// found that tightening `speed_error_scale` (10.0 -> 7.0) — NOT `heading_error_weight` —
-// was the effective lever for heading precision: tighter speed tracking stabilizes the turn
-// dynamics heading depends on, and pulled heading down to 0.267deg *while also improving*
-// altitude/speed tail error, unlike direct heading_error_weight increases (1.8/2.4/3.0 tried
-// in isolation, all made heading WORSE, not better). A second round layered a modest
-// heading_error_weight bump (1.2 -> 1.5, paired terminal_failure_penalty scaled 1000 -> 1250)
-// on top of the speed_error_scale=7.0 change and closed the rest of the gap. Final 1000-episode
-// eval at the full -180:180 target-heading-range: success_rate=0.999,
-// mean_tail_abs_heading_rad=0.002611 (0.150deg), mean_tail_abs_altitude_m=0.456,
-// mean_tail_abs_speed_mps=0.388 — beats the incumbent on every tail metric. Pairs with
-// heading_hold_ultra_tight_tracking.ppo.ron (entropy_coef=0.0, lr=1e-5 — see that file's
-// comment). Checkpoint: models/heading_hold/skill_heading_hold_goal2_ultratight_hw15speed7.mpk.
+// Optional ultra-tight heading_hold reward. Pair with
+// heading_hold_ultra_tight_tracking.ppo.ron and pass explicitly with `--reward-config`.
 //
 // Deliberately has NO |roll| penalty term (unlike level_hold's roll_scale/roll_weight):
 // bank is the control authority for turning here, so penalizing roll magnitude would fight
@@ -30,8 +14,7 @@
     alt_error_scale:      60.0,
     alt_error_weight:     1.0,
 
-    // Airspeed error term — tightened from the tight_tracking profile's 10.0. This was the
-    // dominant lever for closing the heading gap, not heading_error_weight (see file header).
+    // Airspeed error term; tighter speed control stabilizes turn dynamics.
     speed_error_scale:    7.0,
     speed_error_weight:   0.5,
 
@@ -49,10 +32,7 @@
     bank_excess_scale:    0.35,
     bank_excess_weight:   1.0,
 
-    // Angle-of-attack margin guard: penalizes |alpha| beyond alpha_soft_limit, the same
-    // shape as the bank guard above. Inert here (weight 0.0) so this profile's reward is
-    // byte-for-byte the one its checkpoints were trained under; see
-    // heading_hold_stall_safe.reward.ron for the profile that turns it on and why.
+    // Angle-of-attack margin guard. Inert here; heading_hold_stall_safe enables it.
     alpha_soft_limit:     0.26,
     alpha_excess_scale:   0.1,
     alpha_excess_weight:  0.0,
@@ -66,8 +46,7 @@
     // 1/(1-gamma)=100 steps, worst-case per-step heading term is -(pi/0.5)*1.5 ~= -9.42, so
     // sitting at max error forever discounts to ~= -942. -1250.0 preserves (slightly exceeds)
     // the ~1.33x margin the tight_tracking profile's -1000.0/-754 pairing established. See
-    // reward_config.rs's heading_hold_failure_penalty_covers_discounted_horizon test (default
-    // profile only; this file's margin was checked by hand above).
+    // reward_config.rs's heading_hold_failure_penalty_covers_discounted_horizon test.
     terminal_failure_penalty: -1250.0,
 
     // Termination conditions

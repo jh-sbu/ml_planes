@@ -198,7 +198,7 @@ impl FlightController for WingmanController {
         //    Stage 2: heading error (demanded vs. own ground track) → bank.
         //    Same signed-angle math and `-heading_pid` output sign as
         //    guidance::orbit_bank_command. heading_pid's kd damps the heading
-        //    rate — the term the old direct position→bank loop lacked. This is
+        //    rate. This is
         //    negative (slot-restoring) feedback: a cross-track error crabs the
         //    demanded heading toward the slot and banks to fly that heading.
         let head = ground_heading(own);
@@ -316,11 +316,9 @@ mod tests {
         assert!(inputs.rudder.is_finite());
     }
 
-    /// `from_inner` is the recovery path a tuning rebuild uses to re-wrap an
-    /// already-tuned `LevelHoldController` without disturbing its gains or
-    /// current targets. Guards the `new()` → `from_inner()` refactor: `new()`
-    /// must still apply its leader-geometry pre-seed, and `from_inner` must
-    /// preserve whatever `inner` it's handed (gains *and* targets) untouched.
+    /// `from_inner` re-wraps an already-tuned `LevelHoldController` without
+    /// disturbing its gains or current targets. `new()` must apply its
+    /// leader-geometry pre-seed, while `from_inner` preserves the supplied inner.
     #[test]
     fn from_inner_keeps_tuned_inner_and_leader() {
         let own = level_state(Vec3::new(0.0, 1000.0, 0.0), 100.0);
@@ -347,8 +345,7 @@ mod tests {
         );
     }
 
-    /// `new()` still applies the leader-geometry pre-seed after delegating to
-    /// `from_inner` — regression guard for the refactor.
+    /// `new()` applies the leader-geometry pre-seed after delegating to `from_inner`.
     #[test]
     fn new_still_preseeds_targets_from_leader_geometry() {
         let leader = level_state(Vec3::new(0.0, 1000.0, 0.0), 100.0);
@@ -387,10 +384,7 @@ mod tests {
 
     #[test]
     fn lateral_error_commands_restoring_bank_direction() {
-        // Pin the closed-loop sign: a cross-track offset must command a bank that
-        // turns the wingman *back* toward the slot (negative feedback). The old
-        // pure position→bank loop used the opposite (divergent) sign, which is
-        // why it spiraled away from any offset; this test guards the fix.
+        // A cross-track offset must command a bank back toward the slot.
         let leader = level_state(Vec3::new(0.0, 1000.0, 0.0), 100.0);
         let offset = FormationOffset {
             offset_body: Vec3::new(-20.0, 15.0, 0.0),

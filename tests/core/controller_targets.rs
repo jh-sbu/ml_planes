@@ -27,7 +27,7 @@ fn level_state(position: Vec3, airspeed: f32) -> FlightState {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 1: targets() read accessors
+// targets() read accessors
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -139,7 +139,7 @@ fn targets_are_readable_through_boxed_controller() {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 2: apply_targets() write accessors
+// apply_targets() write accessors
 // ---------------------------------------------------------------------------
 
 #[test]

@@ -148,8 +148,7 @@ fn wingman_and_leader_stay_airborne() {
 
 /// Multi-minute formation hold: spawned on-slot, the wingman must STAY on-slot
 /// for ~180 simulated seconds without the bank loop running away into a spiral.
-/// This pins the heading/yaw-damping fix — the pre-fix pure position→bank loop
-/// holds for ~60 s then diverges into a permanent circling turn.
+/// This exercises heading/yaw damping over a long horizon.
 #[test]
 fn wingman_holds_slot_over_three_minutes() {
     const TARGET_ALT: f32 = 1000.0;

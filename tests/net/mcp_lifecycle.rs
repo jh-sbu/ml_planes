@@ -1,4 +1,4 @@
-//! MCP Phase 5: connection lifecycle (auto-reconnect + clean shutdown).
+//! MCP connection lifecycle (auto-reconnect + clean shutdown).
 //!
 //! Transport-free headless tests mirroring `tests/mcp_bridge.rs`: register `RepliconPlugins`
 //! + `NetProtocolPlugin` + `McpBridgePlugin` (no renet driver plugin) and exercise the two

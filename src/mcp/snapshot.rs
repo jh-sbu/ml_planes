@@ -2,7 +2,7 @@
 //!
 //! [`collect_snapshot`] (a Bevy `Update` system) rebuilds a [`SimSnapshot`] every frame
 //! from the replicated components the MCP client receives, writing it under the
-//! [`SnapshotHandle`]'s write lock. Phase 2's read tools clone/read the same `Arc` from
+//! [`SnapshotHandle`]'s write lock. Read tools clone the same `Arc` from
 //! the rmcp side. The snapshot owns its own `Serialize`/`Deserialize` derives and is built
 //! by the pure [`build_snapshot`] helper, so the assembly logic is unit-testable without a
 //! Bevy `App`, a socket, or rmcp.
@@ -10,7 +10,7 @@
 //! `requested_sim_speed` is the MCP's *last-requested* playback speed, not the server's
 //! authoritative one: `SimSpeed` is a server-side resource and is **not** in the replicated
 //! component set (`src/net/protocol.rs`), so the client cannot observe the true speed. The
-//! `set_sim_speed` tool (Phase 4) writes [`RequestedSimSpeed`]; until then it stays `None`.
+//! `set_sim_speed` tool writes [`RequestedSimSpeed`]; until then it stays `None`.
 
 use std::sync::{Arc, RwLock};
 
@@ -33,7 +33,7 @@ use crate::controllers::SelectedModel;
 /// Embeds the rich domain types (`Vec3`/`Quat`/[`ControllerKind`]/[`ControllerTelemetry`]/
 /// [`ControlInputs`]) directly — all are `Serialize`/`Deserialize` under the `net` feature
 /// (which `mcp` requires), so no parallel mirror structs are needed. The exact JSON output
-/// shaping (e.g. position as `[x, y, z]`) is a Phase 2 tool concern.
+/// shaping (e.g. position as `[x, y, z]`) belongs to the tool layer.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PlaneSnapshot {
     pub plane_id: u32,
@@ -76,7 +76,7 @@ pub struct SimSnapshot {
 }
 
 /// Shared handle to the live [`SimSnapshot`]. The Bevy thread holds one clone (rewriting it
-/// each frame); Phase 2 hands a second clone to the rmcp service (read-only).
+/// each frame); the rmcp service holds a read-only clone.
 #[derive(Resource, Clone)]
 pub struct SnapshotHandle(pub Arc<RwLock<SimSnapshot>>);
 
@@ -94,8 +94,7 @@ impl Default for SnapshotHandle {
 }
 
 /// The MCP's last-requested playback speed, mirrored into [`SimSnapshot::requested_sim_speed`].
-/// Written by the `set_sim_speed` tool (Phase 4); read by [`collect_snapshot`]. Stays `None`
-/// in Phase 1.
+/// Written by the `set_sim_speed` tool and read by [`collect_snapshot`].
 #[derive(Resource, Default)]
 pub struct RequestedSimSpeed(pub Option<SimSpeed>);
 

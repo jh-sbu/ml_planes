@@ -1,4 +1,4 @@
-//! MCP Phase 1: the snapshot mirror (read path).
+//! MCP snapshot mirror (read path).
 //!
 //! Transport-free headless test mirroring `tests/server_sim.rs`: register
 //! `RepliconPlugins` + `NetProtocolPlugin` + `McpBridgePlugin` (no renet transport, no
@@ -78,7 +78,6 @@ fn snapshot_mirrors_a_spawned_plane() {
     assert_eq!(snap.server_addr, "127.0.0.1:5555");
     // No renet transport, so the client never connects.
     assert!(!snap.connected, "no transport ⇒ not connected");
-    // Phase 1 never calls set_sim_speed.
     assert_eq!(snap.requested_sim_speed, None);
 
     assert_eq!(snap.planes.len(), 1, "the spawned plane should be mirrored");

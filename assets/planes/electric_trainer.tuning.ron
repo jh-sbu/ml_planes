@@ -1,10 +1,7 @@
 // PID gains for electric_trainer.plane.ron.
-// level_hold "normal" — /tune-validated 2026-08-10 across five trim points
+// level_hold "normal" is validated across five trim points
 // (200 m/55 m·s⁻¹, 300/50, 500/70, 1000/90, 2000/80) and ±200 m / ±20 m·s⁻¹
 // recovery cases. Worst 40–60 s trim RMS: ΔAlt 0.78 m, ΔSpd 0.18 m/s.
-// vs starter: pitch_kd 0.764→1.146 removes the high-speed short-period cycle;
-// spd_kp 0.026→0.16 damps throttle/speed hunting, and spd_ki 0.156→0.20
-// supplies enough integral authority for 90 m/s trim without transient feedforward.
 // Orbit and heading_hold remain physics-scaled STARTER gains — NOT yet /tune-validated.
 // Mass is constant (battery), so no fuel-burn lightening compensation is needed.
 PlaneTuning(

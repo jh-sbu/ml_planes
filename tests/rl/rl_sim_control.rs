@@ -3,15 +3,9 @@
 //! policy instead of silently replacing it with the PID fallback `ControllerKind::build()`
 //! produces for RL kinds.
 //!
-//! This mirrors `tests/core/sim_control.rs`'s wingman-survival tests
-//! (`initial_tuning_preserves_wingman_controller` / `profile_switch_preserves_wingman_controller`)
-//! — the same bug class, documented in `CLAUDE.md` under "A kind whose `build()` can't
-//! reconstruct its full state", now closed for the RL kinds too.
-//!
 //! `RlLstmOrbit` is not covered here: no `models/lstm_orbit/` checkpoint is shipped, and
 //! `LstmActorCritic` can't load a plain `ActorCritic` `.mpk` (different architecture), so
-//! there's no fixture to embed. Its `preserve_rl_controller` arm is a one-line mirror of
-//! `RlOrbit`'s (a plain downcast check, no PID to retune).
+//! there's no compatible fixture to embed.
 //!
 //! Run: `cargo test --no-default-features --features inference --test rl rl_sim_control::`
 
@@ -135,9 +129,7 @@ fn tuning_asset() -> PlaneTuning {
 ///
 /// Carries a `SelectedModel` at spawn, mirroring `spawn_resolved_scenario` — this matters
 /// for the test, not just realism: without it, `apply_rl_controller_switch`'s spawn-frame
-/// reload (see `rl_kind_needs_load_on_change`'s "no model wired yet" branch) would load a
-/// *different*, real checkpoint off disk moments after `apply_initial_tuning` clobbers this
-/// one, masking the very bug this test exists to catch.
+/// reload would load a different checkpoint and invalidate the fixture.
 #[test]
 fn initial_tuning_preserves_rl_level_hold_controller() {
     let mut app = build_headless_app_with(|app| {
@@ -241,9 +233,7 @@ fn profile_switch_preserves_rl_level_hold_controller() {
     );
 }
 
-/// Same clobber, heading-hold family: `apply_initial_tuning`'s tuning-family match routes
-/// `RlHeadingHold` through the (now-fixed) `heading_hold` tuning pool lookup, but
-/// `preserve_rl_controller` must still intercept before `kind.build()` runs, since
+/// `preserve_rl_controller` must intercept before `kind.build()` runs because
 /// `RlHeadingHoldController` has no PID gains for a tuning profile to apply to.
 ///
 /// No checkpoint is shipped under `models/heading_hold/` yet (this feature's smoke
@@ -499,13 +489,8 @@ fn initial_tuning_retunes_rl_orbit_residual_baseline() {
     );
 }
 
-/// `apply_rl_controller_switch`'s three orbit-family arms demote `ControllerKind` back to
-/// `Orbit` when a *resolved* checkpoint path fails to load (e.g. dimension mismatch), so the
-/// HUD stops claiming "RL". The `RlLevelHold` arm was missing the equivalent demotion to
-/// `LevelHold` — this reproduces that path via `ModelLibrary`, since `selected_or_default_model_path`
-/// must actually resolve *some* path for `RlLevelHoldController::load` to be attempted (the
-/// "no checkpoint available at all" case already demotes correctly, both before and after this
-/// fix — see `selected_or_default_model_path`'s `None` arm in `sim_control.rs`).
+/// A resolved level-hold checkpoint that fails to load must demote the kind to
+/// `LevelHold`. `ModelLibrary` ensures the load path is attempted.
 #[test]
 fn rl_level_hold_load_failure_demotes_kind() {
     let mut app = build_headless_app_with(|app| {

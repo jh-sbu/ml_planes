@@ -31,8 +31,8 @@
 //!   --seed <u64>              Fix the model's weight init, the minibatch-shuffle RNG, and
 //!                             per-env episode resets, for a reproducible run. Applies to every
 //!                             task (incl. lstm_orbit) and overrides `--ppo-config`'s `seed`
-//!                             field if both are given. Omitted → unseeded (today's original
-//!                             behavior). This makes the *starting point* (weights, env sample
+//!                             field if both are given. Omitted → unseeded. This makes the
+//!                             *starting point* (weights, env sample
 //!                             order, minibatch order) exactly reproducible, verified bit-exact
 //!                             — but NOT the full multi-iteration trajectory: burn's `ndarray`
 //!                             matmul backend has its own tiny (~1 ULP/iteration) floating-point
@@ -43,7 +43,7 @@
 //!                             guaranteed stable either).
 //!   --target-alt-range <MIN:MAX|VALUE>    level_hold/heading_hold only: target altitude [m] is
 //!                             resampled from this range every episode (default: 500:5000). A
-//!                             bare VALUE pins a single fixed target instead (old behavior).
+//!                             bare VALUE pins a single fixed target.
 //!   --target-speed-range <MIN:MAX|VALUE>  level_hold/heading_hold only: target airspeed [m/s],
 //!                             same MIN:MAX|VALUE form (default: 90:140 for both level_hold and
 //!                             heading_hold).
@@ -1168,7 +1168,7 @@ fn fmt_duration(secs: u64) -> String {
     }
 }
 
-/// Plain table renderer — replicates the original metrics printout.
+/// Plain table metrics renderer.
 #[cfg(feature = "training")]
 struct PlainMetricsRenderer {
     start: std::time::Instant,

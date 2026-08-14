@@ -38,7 +38,6 @@ pub struct FollowCamera {
 
 impl Default for FollowCamera {
     fn default() -> Self {
-        // Matches the previous hardcoded body-frame offset Vec3(0, 10, 30)
         Self {
             yaw: 0.0,
             pitch: 10.0_f32.atan2(30.0),
@@ -202,8 +201,7 @@ pub fn update_follow_camera(
         return;
     };
 
-    // Use the same interpolated pose as the plane gizmos so camera and visual
-    // move from the same source — eliminates the fixed-step mismatch bounce.
+    // Use the same interpolated pose as the plane gizmos.
     let alpha = time_fixed.overstep_fraction();
     let (target_pos, target_rot) = if let Some(interp) = target_interp {
         (
@@ -221,9 +219,7 @@ pub fn update_follow_camera(
         follow.smoothed_rot = target_rot;
     }
 
-    // Smooth the target pose at tau=12 rad/s for cinematic camera lag.
-    // The input is now the smooth interpolated pose, so this no longer produces
-    // aliased bounce — it just adds pleasant camera inertia.
+    // Smooth the target pose at tau=12 rad/s for camera inertia.
     let alpha_smooth = 1.0 - (-12.0_f32 * time.delta_secs()).exp();
     follow.smoothed_pos = follow.smoothed_pos.lerp(target_pos, alpha_smooth);
     follow.smoothed_rot = follow.smoothed_rot.slerp(target_rot, alpha_smooth);

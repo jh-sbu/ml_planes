@@ -33,7 +33,7 @@ use crate::ui::notifications::Notifications;
 
 // Networked client flow (Start New Server / Connect to Server). The dedicated
 // server owns physics + spawning; the client only opens a transport and renders
-// the replicated result (see `plans/client_server.md` Phase 5).
+// the replicated result.
 #[cfg(feature = "net")]
 use std::net::{Ipv4Addr, SocketAddr};
 
@@ -596,7 +596,7 @@ impl Plugin for MenuPlugin {
 
         // Spawn the chosen scenario locally only in non-networked builds (WASM /
         // local-sim). With `net`, planes come from the authoritative server, so the
-        // client must not spawn its own (see `plans/client_server.md` Phase 4).
+        // client must not spawn its own.
         #[cfg(not(feature = "net"))]
         app.add_systems(OnEnter(AppState::InGame), spawn_selected_scenario);
 

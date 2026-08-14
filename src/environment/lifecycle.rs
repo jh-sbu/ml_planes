@@ -65,10 +65,7 @@ impl Plugin for LifecyclePlugin {
 /// real `LevelHoldController`; headless drivers see the kind change directly.
 ///
 /// Also demotes a `Wingman`-kind plane whose active controller isn't actually a
-/// `WingmanController` (e.g. a fresh `SpawnPlaneCommand`/`SwitchControllerCommand`
-/// fallback, or — before the tuning-rebuild fix in `sim_control.rs` — a wingman
-/// clobbered by `apply_initial_tuning`): the kind shouldn't claim formation
-/// flight the plane isn't doing.
+/// `WingmanController`; the kind must not claim formation flight the plane is not doing.
 fn cleanup_orphaned_wingmen(
     mut planes: Query<(&mut ActiveController, &mut ControllerKind, &PlaneId)>,
 ) {

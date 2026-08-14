@@ -1,6 +1,6 @@
-//! Phase 3 (client/server): the dedicated-server authoritative sim.
+//! Dedicated-server authoritative simulation tests.
 //!
-//! Covers Milestone 3 — the headless server boots a scenario, marks its planes
+//! The headless server boots a scenario, marks its planes
 //! `Replicated`, and applies the client→server commands (controller switch,
 //! spawn/remove, sim-speed) by mutating the components `SimControlPlugin` /
 //! `LifecyclePlugin` already react to. Runs `ServerSimPlugin` **without** the renet
@@ -375,9 +375,8 @@ fn spawn_and_remove_commands_take_effect() {
     );
 }
 
-/// Regression test for the reported path traversal: `SpawnPlaneNetCommand`
-/// carries a client-supplied `config_path` straight to `fs::read("assets/" + p)`
-/// and `AssetServer::load`. A traversal path must never leave `assets/`; the
+/// `SpawnPlaneNetCommand` carries a client-supplied `config_path` to disk and
+/// asset loading. A traversal path must never leave `assets/`; the
 /// plane still spawns (existing contract) on the generic-jet fallback.
 #[test]
 fn spawn_command_with_traversal_path_does_not_escape_assets() {
@@ -390,8 +389,7 @@ fn spawn_command_with_traversal_path_does_not_escape_assets() {
         client_id: ClientId::Server,
         message: SpawnPlaneNetCommand {
             // Resolves back to a real airframe that ships a `.tuning.ron`
-            // sibling, so this fails before the fix rather than passing by
-            // accident on an unparseable target.
+            // sibling, avoiding a false positive from an unparseable target.
             config_path: "planes/../planes/cargo_jet.plane.ron".to_string(),
             kind: ControllerKind::LevelHold,
             spec: SpawnSpec {

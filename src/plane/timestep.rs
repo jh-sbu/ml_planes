@@ -4,14 +4,7 @@
 //! and, on a `net` build, bevy_replicon's server tick), and the self-contained Euler
 //! integrator in [`crate::training::flight_env`] all run at this rate.
 //!
-//! **Why this is shared rather than a per-site literal:** the training integrator used
-//! to run at 60 Hz while the live sim ran at 64 Hz, deliberately. That made
-//! `evaluate_policy` — which drives the training envs, never Rapier — structurally
-//! unable to see how a policy behaves in the sim it actually flies in. A heading-hold
-//! policy accepted at `mean_tail_abs_altitude_m = 0.333` measured 1.47 m in the live
-//! sim, and roughly a third of that gap was the timestep alone. A training env that
-//! integrates at any other rate is validating against physics the live sim does not
-//! have, so both sides now read the same constant.
+//! Sharing this value keeps training and live simulation dynamics aligned.
 //!
 //! This module is deliberately Bevy-free and un-feature-gated: `plane` is unconditional
 //! in `lib.rs`, so `--no-default-features`, `--features training`, and

@@ -303,8 +303,7 @@ pub fn draw_flight_hud(
             // Controller-target editor: one widget body serves both the local-sim
             // path (edits the live controller directly, below) and the networked
             // client (shadows the edit locally and sends a `SetControllerTargetsCommand`
-            // — the server is authoritative). This is what used to be unreachable on a
-            // client because `ActiveController` isn't replicated.
+            // to the authoritative server).
             let now = real_time.elapsed_secs_f64();
             let mut edited = match controller.as_ref() {
                 Some(c) => c.0.targets(),
@@ -522,7 +521,7 @@ pub fn draw_flight_hud(
                 }
             }
 
-            // RL target editors (level-hold/orbit) are no longer special-cased here:
+            // RL and PID controllers share the same target variants, so
             // `RlLevelHoldController`/`RlOrbitController`/`RlOrbitResidualController`/
             // `RlLstmOrbitController` all report through the same `LevelHold`/`Orbit`
             // `ControllerTargets` variants as their PID counterparts (see
@@ -1125,8 +1124,7 @@ mod tests {
         changed
     }
 
-    /// The likeliest regression in the shared editor: merely *rendering* the
-    /// widgets (no simulated drag) must never report a change or mutate the
+    /// Rendering widgets without input must not report a change or mutate the
     /// value — otherwise the networked client would spam
     /// `SetControllerTargetsCommand` every single frame.
     #[test]
@@ -1176,11 +1174,8 @@ mod tests {
     }
 
     /// The airspeed range has no upper bound (only a 30 m/s stall floor) — a target set
-    /// above the old 200 m/s ceiling (e.g. via MCP or a scenario) must survive an
-    /// unattended render pass unchanged, both in value and in reported `changed`. Before
-    /// the fix, `DragValue::range` silently clamped an out-of-range value on every frame
-    /// and reported it as a user edit, which on a networked client would spam a
-    /// `SetControllerTargetsCommand` that overwrote the real target back down to 200.
+    /// above 200 m/s (e.g. via MCP or a scenario) must survive an unattended
+    /// render pass unchanged in both value and reported `changed` state.
     #[test]
     fn target_airspeed_above_200_survives_a_render_pass() {
         let state = FlightState::default();

@@ -15,9 +15,7 @@
 //!   speed/50, ...]`.
 //! - **Level-hold family** (13-dim `level_hold_observation`): `[alt_err/200,
 //!   speed_err/50, alpha/0.5, pitch_rate, roll/0.5, roll_rate, beta/0.5, ...,
-//!   fuel_fraction, density_ratio, airspeed/100]`. Only indices 0/1/4/6 are read
-//!   here, so the trailing fuel/density/airspeed elements (added across two
-//!   later reworks) don't affect this mapping.
+//!   fuel_fraction, density_ratio, airspeed/100]`. Only indices 0/1/4/6 are read.
 //! - **Heading-hold family** (16-dim `heading_hold_observation`): the
 //!   level-hold layout above (indices 0/1/4/6 reused) plus
 //!   `[sin(heading_err)/0.5, cos(heading_err), turn_rate/0.2]` at 13/14/15.
@@ -42,8 +40,7 @@ pub enum MetricFamily {
 /// m/s). Millimetre / mm-per-second resolution is ample.
 const DECIMALS_LINEAR: usize = 3;
 /// Decimal precision for radian-valued metrics. Heading/roll/beta errors are
-/// small in magnitude, so finer resolution is kept to avoid masking changes the
-/// downstream skills compare on (matches the legacy `{:.6}` heading output).
+/// small in magnitude, so finer resolution avoids masking changes.
 const DECIMALS_RADIAN: usize = 6;
 
 /// Where a metric's raw value comes from in the observation vector.
@@ -532,8 +529,7 @@ mod tests {
         assert!((get("mean_final_abs_radial_m") - 200.0).abs() < 1e-3);
         // final altitude over 1 episode: 0.25*200 = 50
         assert!((get("mean_final_abs_altitude_m") - 50.0).abs() < 1e-3);
-        // Precision: the radian-valued heading metric keeps 6 decimals (matching
-        // the legacy output); linear metres/speed metrics print at 3.
+        // Radians use 6 decimals; linear metrics use 3.
         assert_eq!(row("mean_abs_heading_rad").decimals, 6);
         assert_eq!(row("mean_abs_radial_m").decimals, 3);
         assert_eq!(row("mean_abs_altitude_m").decimals, 3);

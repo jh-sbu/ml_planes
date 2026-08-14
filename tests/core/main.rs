@@ -1,5 +1,4 @@
-//! Consolidated core-sim integration tests (formerly 13 separate test binaries; merged
-//! per plans/test_compile_speed.md to cut link steps). Run one former file's tests with
+//! Core-sim integration tests. Run one module's tests with
 //! `cargo test --no-default-features --test core <module>::`.
 
 #[path = "../common/mod.rs"]

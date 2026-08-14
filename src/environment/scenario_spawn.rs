@@ -8,8 +8,7 @@
 //! drives both the headless and live paths identically.
 //!
 //! A plane whose controller fails to build (e.g. a missing RL `.mpk`) is skipped
-//! with a recorded warning rather than aborting the whole scenario — mirroring the
-//! silent fallback the old hardcoded `main.rs::setup` used. A wingman whose leader
+//! with a recorded warning rather than aborting the whole scenario. A wingman whose leader
 //! was skipped is transitively skipped too (checked to a fixed point, since a
 //! wingman may itself lead another wingman).
 //!
