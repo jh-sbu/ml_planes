@@ -1,6 +1,30 @@
+# PyO3 extension module exposing the `ml_planes::training` environments to Python.
+#
+# Deliberately a *separate* crate rather than a `python` feature on `ml_planes`:
+# the `cdylib` crate-type would otherwise be linked by every `cargo build` of the
+# main crate, and `pyo3` would sit in the root dependency graph and lockfile. Kept
+# out of the root package's build, this crate cannot affect `just test-all`.
 [package]
-name = "python"
+name = "ml_planes_py"
 version = "0.1.0"
 edition = "2024"
+publish = false
+
+# Its own workspace root, so a future `[workspace]` in the root Cargo.toml can't
+# silently pull pyo3 into the main crate's lockfile.
+[workspace]
+
+[lib]
+# Must match the `module-name = "ml_planes._core"` in the root pyproject.toml:
+# pyo3 generates the `PyInit__core` entry point from the `#[pymodule]` fn name.
+name = "_core"
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+# `extension-module` is enabled by maturin only (see [tool.maturin] features in
+# pyproject.toml) — with it on, `cargo test` here would fail to link against a
+# Python interpreter that isn't there.
+pyo3 = { version = "0.29", features = ["abi3-py312"] }
+# No default features: the training envs are ungated in `ml_planes::training`,
+# so the bindings need neither burn nor bevy rendering.
+ml_planes = { path = "../..", default-features = false }

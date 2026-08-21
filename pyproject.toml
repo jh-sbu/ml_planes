@@ -2,11 +2,21 @@
 requires = ["maturin>=1.7,<2"]
 build-backend = "maturin"
 
+[project]
+name = "ml-planes"
+version = "0.1.0"
+description = "Python bindings for the ml_planes 6-DOF flight training environments"
+requires-python = ">=3.12"
+classifiers = ["Programming Language :: Rust"]
+
 [tool.maturin]
 manifest-path = "bindings/python/Cargo.toml"
 python-source = "python"
 module-name = "ml_planes._core"
 features = ["pyo3/extension-module"]
+
+[tool.pytest.ini_options]
+testpaths = ["bindings/python/tests"]
 
 [dependency-groups]
 dev = ["maturin>=1.14.1", "pytest>=9.1.1", "torch>=2.13.0"]

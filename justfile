@@ -48,3 +48,27 @@ play:
 play-debug:
     cargo build --no-default-features --features "server inference" --bin ml_planes_server
     cargo run --features training --bin ml_planes
+
+# Python bindings (PyO3 + maturin, `bindings/python`). Deliberately absent from
+# test-all: the Rust matrix must stay green on a machine with no Python toolchain
+# (CLAUDE.md §3, Python bindings). Every recipe goes through `uv run` rather than
+# an activated venv, so each invocation is self-contained.
+#
+# CARGO_TARGET_DIR points the binding crate — its own workspace, so cargo would
+# otherwise give it a private `bindings/python/target` — at the shared /target.
+
+# Create/refresh .venv from pyproject.toml + uv.lock (first-time setup)
+py-sync:
+    uv sync
+
+# `maturin develop` is not editable on the Rust side, so this must be re-run after
+# ANY edit to bindings/python/src or to the ml_planes code it wraps — a stale .so is
+# the first thing to suspect when a Python result looks impossible.
+
+# Rebuild the extension module into .venv
+py-build:
+    CARGO_TARGET_DIR=target uv run maturin develop --uv
+
+# Binding tests (pytest). Rebuilds first so it can't run against a stale .so.
+py-test: py-build
+    CARGO_TARGET_DIR=target uv run pytest

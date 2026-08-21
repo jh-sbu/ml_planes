@@ -6,9 +6,18 @@
 /.cargo
 /training_logs
 /dist
+/bindings/python/tests/__pycache__/
+/python/ml_planes/__pycache__/
 
 # I use a softlink and keep everything in CLAUDE.md
 /AGENTS.md
 /literature
 
 .claude/scheduled_tasks.lock
+
+# uv writes .venv/.gitignore itself; this is the belt-and-braces entry.
+/.venv
+# Safety net: `just py-build` redirects the binding crate's build into /target
+# (CARGO_TARGET_DIR), but a bare `maturin develop` would create a second, full
+# ~2 GB copy of the bevy/rapier deps here.
+/bindings/python/target
