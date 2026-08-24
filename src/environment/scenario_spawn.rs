@@ -4,8 +4,8 @@
 //! this module is the live-app counterpart used by the visual menu's
 //! "Start Scenario" flow. It reuses [`ResolvedScenario::build_controller`] (peer
 //! references, RL load, synchronous L1 flight-plan load) and [`spawn_plane_with_id`]
-//! (the same sync-mass spawn path as the runtime `SpawnPlaneCommand`), so a scenario
-//! drives both the headless and live paths identically.
+//! (the same deferred, asset-driven spawn path as the runtime `SpawnPlaneCommand`), so
+//! a scenario drives both the headless and live paths identically.
 //!
 //! A plane whose controller fails to build (e.g. a missing RL `.mpk`) is skipped
 //! with a recorded warning rather than aborting the whole scenario. A wingman whose leader
@@ -50,14 +50,15 @@ const DEFAULT_CONFIG: &str = "planes/generic_jet.plane.ron";
 
 /// Convert a scenario `config` path (the observe_state convention, e.g.
 /// `assets/planes/cargo_jet.plane.ron`, or `None` → generic jet) into the
-/// Bevy asset-relative path `spawn_plane`/`load_spawn_config` expect (relative to
-/// `assets/`, e.g. `planes/cargo_jet.plane.ron`).
+/// Bevy asset-relative path `spawn_plane` expects (relative to `assets/`, e.g.
+/// `planes/cargo_jet.plane.ron`).
 ///
 /// The `assets/` strip is cosmetic, not validating — without the
 /// `sanitize_asset_path` check a scenario's `assets/../../etc/x` would become
-/// `../../etc/x` and be read by `load_spawn_config`. Scenario files are local,
-/// so this is a config footgun rather than a remote hole, but it reaches the
-/// same sink; a rejected path falls back to the generic jet.
+/// `../../etc/x` and reach `AssetServer::load`, whose bare `root_path.join` walks
+/// straight out of the asset root. Scenario files are local, so this is a config
+/// footgun rather than a remote hole, but it reaches the same sink; a rejected path
+/// falls back to the generic jet.
 fn asset_relative_config(config: &Option<String>) -> String {
     let stripped = match config {
         Some(p) => p.strip_prefix("assets/").unwrap_or(p),
@@ -257,7 +258,8 @@ mod tests {
     #[test]
     fn asset_relative_config_rejects_traversal() {
         // The `assets/` strip is cosmetic: without validation this yields
-        // `../../etc/x`, which `load_spawn_config` would happily read.
+        // `../../etc/x`, which `AssetServer::load`'s bare `root_path.join` would
+        // happily walk out of the asset root to reach.
         for path in [
             "assets/../../etc/x.plane.ron",
             "../../etc/x.plane.ron",

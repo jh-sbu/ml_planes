@@ -43,15 +43,13 @@ pub fn initial_state_from_spec(spec: &SpawnSpec) -> FlightState {
     s
 }
 
-/// Spawn a physics-ready plane entity, allocating the next available
-/// `PlaneId` from `ids` (auto-incremented). Thin wrapper around
-/// [`spawn_plane_with_id`] for the common case where the caller doesn't need
-/// to know the id up front.
+/// Request a plane, allocating the next available `PlaneId` from `ids`
+/// (auto-incremented). Thin wrapper around [`spawn_plane_with_id`] for the common
+/// case where the caller doesn't need to know the id up front.
 ///
-/// `config_path` is the `.plane.ron` asset loaded asynchronously to drive
-/// aerodynamic forces once ready; `cfg` is used immediately for Rapier
-/// `AdditionalMassProperties` (mass/inertia) at spawn time. Pass a `cfg` whose
-/// mass/inertia match `config_path` — they describe the same airframe.
+/// Like `spawn_plane_with_id`, this returns a [`PendingPlaneSpawn`] that does **not**
+/// simulate yet — everything is built from `config_path` once that asset loads (see
+/// [`finalize_pending_spawns`]).
 pub fn spawn_plane(
     commands: &mut Commands,
     ids: &mut NextPlaneId,
@@ -97,11 +95,10 @@ pub struct PendingPlaneSpawn {
     pub config_path: String,
 }
 
-/// Spawn a physics-ready plane entity under an explicit, caller-assigned
-/// `PlaneId`. Use this instead of [`spawn_plane`] when the id must be known
-/// (or reserved) before controllers are built — e.g. a scenario whose
-/// wingmen reference their leader by id, where the id has to be settled
-/// before `WingmanController::leader_id` is baked in.
+/// Request a plane under an explicit, caller-assigned `PlaneId`. Use this instead of
+/// [`spawn_plane`] when the id must be known (or reserved) before controllers are
+/// built — e.g. a scenario whose wingmen reference their leader by id, where the id
+/// has to be settled before `WingmanController::leader_id` is baked in.
 ///
 /// `config_path` is the `.plane.ron` asset this plane is built from. The returned
 /// entity is a [`PendingPlaneSpawn`] and does **not** simulate yet; it becomes a real

@@ -23,6 +23,7 @@ use std::path::Path;
 use crate::camera::CameraMode;
 #[cfg(not(feature = "net"))]
 use crate::environment::spawn_resolved_scenario;
+use crate::environment::PendingPlaneSpawn;
 #[cfg(not(feature = "net"))]
 use crate::plane::NextPlaneId;
 use crate::plane::PlaneId;
@@ -498,13 +499,19 @@ fn spawn_selected_scenario(
 
 /// `OnExit(InGame)` (non-net): despawn every plane and drop the camera back to
 /// free-look so returning to the menu starts from a clean slate.
+///
+/// Spawn requests still waiting on their `.plane.ron` go too. A [`PendingPlaneSpawn`]
+/// deliberately carries no `PlaneId` (see its docs), and `finalize_pending_spawns` runs
+/// in `PreUpdate` with no `AppState` gate — so one left behind here materializes into a
+/// live plane back in the menu, or alongside the next scenario's planes.
 #[cfg(not(feature = "net"))]
 fn despawn_in_game_planes(
     mut commands: Commands,
     planes: Query<Entity, With<PlaneId>>,
+    pending: Query<Entity, With<PendingPlaneSpawn>>,
     mut camera_mode: ResMut<CameraMode>,
 ) {
-    for entity in &planes {
+    for entity in planes.iter().chain(pending.iter()) {
         commands.entity(entity).despawn();
     }
     *camera_mode = CameraMode::FreeLook;
@@ -518,12 +525,16 @@ fn despawn_in_game_planes(
 fn despawn_in_game_planes(
     mut commands: Commands,
     planes: Query<Entity, With<PlaneId>>,
+    pending: Query<Entity, With<PendingPlaneSpawn>>,
     mut camera_mode: ResMut<CameraMode>,
     mut local_server: ResMut<LocalServer>,
     client: Option<ResMut<RenetClient>>,
 ) {
     teardown_connection(&mut commands, &mut local_server, client);
-    for entity in &planes {
+    // The pending sweep is kept symmetric with the non-net variant even though a client
+    // never spawns locally (`lifecycle_panel` sends `SpawnPlaneNetCommand` instead), so
+    // the two teardown paths can't drift if that ever changes.
+    for entity in planes.iter().chain(pending.iter()) {
         commands.entity(entity).despawn();
     }
     *camera_mode = CameraMode::FreeLook;
@@ -645,6 +656,49 @@ mod tests {
         assert!(
             entries.iter().any(|e| e.name == "orbit"),
             "other shipped scenarios are discovered too"
+        );
+    }
+
+    /// Teardown must reach spawn requests that have not finalized yet. A
+    /// `PendingPlaneSpawn` deliberately carries no `PlaneId`, and
+    /// `finalize_pending_spawns` is ungated by `AppState` — so one that outlives
+    /// `OnExit(InGame)` becomes a live plane back in the menu, or alongside the next
+    /// scenario's planes.
+    #[cfg(not(feature = "net"))]
+    #[test]
+    fn teardown_despawns_planes_still_waiting_on_their_config() {
+        use crate::controllers::{ControllerKind, LevelHoldController};
+        use crate::training::SpawnSpec;
+        use bevy::ecs::system::RunSystemOnce;
+
+        let mut app = App::new();
+        app.insert_resource(CameraMode::FreeLook);
+
+        let finalized = app.world_mut().spawn(PlaneId(1)).id();
+        let pending = app
+            .world_mut()
+            .spawn(PendingPlaneSpawn {
+                plane_id: PlaneId(2),
+                spec: SpawnSpec::default(),
+                kind: ControllerKind::LevelHold,
+                controller: Some(Box::new(LevelHoldController::new(1000.0, 100.0))),
+                config: Handle::default(),
+                config_path: "planes/generic_jet.plane.ron".to_string(),
+            })
+            .id();
+
+        app.world_mut()
+            .run_system_once(despawn_in_game_planes)
+            .expect("teardown system failed");
+
+        assert!(
+            app.world().get_entity(finalized).is_err(),
+            "a finalized plane is despawned"
+        );
+        assert!(
+            app.world().get_entity(pending).is_err(),
+            "a spawn request still waiting on its config must be despawned too, or it \
+             finalizes into a plane after the scene is gone"
         );
     }
 

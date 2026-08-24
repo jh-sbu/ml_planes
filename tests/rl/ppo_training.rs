@@ -4,7 +4,6 @@
 //! All tests require the `training` feature:
 //!   cargo test --no-default-features --features training --test rl ppo_training::
 
-use bevy::math::Vec3;
 use burn::backend::{Autodiff, NdArray};
 
 use ml_planes::plane::config::PlaneConfig;

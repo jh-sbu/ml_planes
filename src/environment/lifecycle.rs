@@ -17,7 +17,7 @@ use crate::controllers::{ActiveController, ControllerKind, WingmanController};
 use crate::plane::{ControlInputs, NextPlaneId, PlaneId};
 use crate::training::SpawnSpec;
 
-use super::spawner::{initial_state_from_spec, spawn_plane};
+use super::spawner::{initial_state_from_spec, spawn_plane, PendingPlaneSpawn};
 
 /// Spawn a new plane at runtime. Fire with `Commands::trigger`.
 #[derive(Event, Debug, Clone)]
@@ -66,10 +66,22 @@ impl Plugin for LifecyclePlugin {
 ///
 /// Also demotes a `Wingman`-kind plane whose active controller isn't actually a
 /// `WingmanController`; the kind must not claim formation flight the plane is not doing.
+///
+/// A leader still parked on its `.plane.ron` counts as **live**. Spawning is
+/// asset-driven, so a [`PendingPlaneSpawn`] carries no `PlaneId` (that is deliberate —
+/// see its docs) yet its id is already reserved, and a wingman whose own config happens
+/// to land first must not be demoted for it. The demotion is one-way: it flips
+/// `ControllerKind`, `apply_controller_switch` rebuilds a real `LevelHoldController`,
+/// and nothing ever promotes back.
 fn cleanup_orphaned_wingmen(
     mut planes: Query<(&mut ActiveController, &mut ControllerKind, &PlaneId)>,
+    pending: Query<&PendingPlaneSpawn>,
 ) {
-    let live: HashSet<PlaneId> = planes.iter().map(|(_, _, id)| *id).collect();
+    let live: HashSet<PlaneId> = planes
+        .iter()
+        .map(|(_, _, id)| *id)
+        .chain(pending.iter().map(|p| p.plane_id))
+        .collect();
     for (mut ctrl, mut kind, _) in planes.iter_mut() {
         if *kind != ControllerKind::Wingman {
             continue;

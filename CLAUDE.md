@@ -457,6 +457,23 @@ Planes can be added/removed at runtime via observer commands (`environment/lifec
   `Wingman`-kind plane whose active controller isn't actually a `WingmanController` (see the
   Wingman Controller Architecture section above). `recover_camera_on_target_loss`
   (visual) drops the camera from `Follow(dead)` back to `FreeLook` so it/the HUD don't freeze.
+- **The pending window cuts both ways.** A `PendingPlaneSpawn` is invisible to every
+  *consumer* by design (above), but it must stay visible to *bookkeeping*, because its
+  `PlaneId` is already reserved and the plane will exist. Two places therefore query it
+  alongside `PlaneId` rather than instead of it: `cleanup_orphaned_wingmen` counts a
+  still-pending leader as live (a wingman whose own config lands first must not be demoted —
+  the demotion is one-way, since `apply_controller_switch` then rebuilds a real
+  `LevelHoldController` and nothing promotes back), and `ui/menu.rs`'s
+  `despawn_in_game_planes` despawns pending entities on `OnExit(InGame)` (`finalize_pending_spawns`
+  has no `AppState` gate, so a survivor materializes into a plane back in the menu or
+  alongside the next scenario's). Neither is reachable from a shipped asset today — a
+  leader/wingman pair on one airframe shares a deduped handle and finalizes atomically,
+  and the `net` client never spawns locally — so both are guarded by tests
+  (`tests/core/lifecycle.rs::wingman_survives_a_leader_still_waiting_on_its_config`,
+  `ui::menu::tests::teardown_despawns_planes_still_waiting_on_their_config`) rather than by
+  anything you would notice by running the app. Any *new* system that keys on `PlaneId` to
+  answer "does this plane exist?" — as opposed to "can I read its state?" — needs the same
+  treatment.
 - **UI (visual):** the bottom-left **Planes** panel (`ui/lifecycle_panel.rs`) lists live planes
   with Remove buttons and a spawn form (kind dropdown + config path), plus hotkeys **`N`**
   (spawn ahead of camera) and **`Delete`** (remove followed); both suppressed while egui has
