@@ -19,6 +19,10 @@
 //!                               --features wgpu).
 //!   --reward-config <path>      Reward/termination profile path, overriding the task default
 //!                               (assets/training/<task>.reward.ron). Missing file → defaults.
+//!   --plane-config <path>       Airframe (.plane.ron) to clone the expert on (default:
+//!                               assets/planes/generic_jet.plane.ron). Unreadable or
+//!                               invalid → exit 2, never a silent fallback; see
+//!                               `train_ppo`'s --plane-config doc for why.
 //!   --seed <u64>                Fix the model's weight init and the minibatch-shuffle RNG
 //!                               for a reproducible run. Omitted → unseeded.
 //!                               The starting weights are exactly reproducible (verified
@@ -102,6 +106,9 @@ fn main() {
 
     // Optional reward-profile override; defaults to the task baseline profile.
     let reward_config = find("--reward-config");
+    // Airframe to clone the PID expert on. Fatal on error (see `train_ppo`).
+    let plane_config = find("--plane-config")
+        .unwrap_or_else(|| ml_planes::training::DEFAULT_PLANE_CONFIG_PATH.to_string());
 
     let seed: Option<u64> = find("--seed").map(|v| {
         v.parse::<u64>().unwrap_or_else(|_| {
@@ -163,6 +170,7 @@ fn main() {
             minibatch,
             save_path,
             reward_config,
+            plane_config,
             seed,
             target_alt_range,
             target_speed_range,
@@ -176,6 +184,7 @@ fn main() {
             minibatch,
             save_path,
             reward_config,
+            plane_config,
             seed,
             target_alt_range,
             target_speed_range,
@@ -257,6 +266,7 @@ fn run<B>(
     minibatch: usize,
     save_path: String,
     reward_config: Option<String>,
+    plane_config: String,
     seed: Option<u64>,
     target_alt_range: std::ops::RangeInclusive<f32>,
     target_speed_range: std::ops::RangeInclusive<f32>,
@@ -265,10 +275,8 @@ fn run<B>(
     B: burn::tensor::backend::AutodiffBackend,
     B::Device: Default,
 {
-    use bevy::math::Vec3;
     use std::time::Instant;
 
-    use ml_planes::plane::config::PlaneConfig;
     use ml_planes::training::ppo::PpoTrainer;
     use ml_planes::training::reward_config::{
         load_reward_config, HeadingHoldRewardConfig, LevelHoldRewardConfig, OrbitRewardConfig,
@@ -277,40 +285,8 @@ fn run<B>(
         collect_demonstrations, DemonstrationEnv, HeadingHoldEnv, LevelHoldEnv, OrbitEnv,
     };
 
-    // Generic jet values matching assets/planes/generic_jet.plane.ron
-    let cfg = PlaneConfig {
-        wing_area: 20.0,
-        mean_chord: 2.0,
-        wing_span: 10.0,
-        mass: 5000.0,
-        inertia: Vec3::new(10000.0, 40000.0, 45000.0),
-        cl0: 0.1,
-        cl_alpha: 4.5,
-        cl_delta_e: 0.4,
-        cl_max: 1.4,
-        cd0: 0.02,
-        cd_induced: 0.05,
-        cm0: -0.02,
-        cm_alpha: 0.6,
-        cm_q: -14.0,
-        cm_delta_e: -1.2,
-        cl_beta: 0.08,
-        cl_p: -0.45,
-        cl_r: -0.12,
-        cl_delta_a: 0.18,
-        cn_beta: 0.10,
-        cn_r: -0.12,
-        cn_delta_r: -0.10,
-        cy_beta: -0.80,
-        cy_p: 0.05,
-        cy_r: 0.25,
-        cy_delta_r: 0.18,
-        thrust_max: 60000.0,
-        powerplant: Default::default(),
-        aileron_limit: 0.4363,
-        elevator_limit: 0.3491,
-        rudder_limit: 0.2618,
-    };
+    let cfg = ml_planes::training::load_plane_config_or_exit(&plane_config);
+    println!("Loaded plane config from {plane_config}");
 
     fn load_or_default<C: serde::de::DeserializeOwned + Default>(path: &str) -> C {
         match load_reward_config(path) {

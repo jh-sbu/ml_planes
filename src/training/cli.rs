@@ -5,6 +5,7 @@
 //! from `evaluate_policy` (which only needs the `inference` feature, not
 //! `training`) as well as the two `training`-gated binaries.
 
+use crate::plane::PlaneConfig;
 use std::ops::RangeInclusive;
 
 /// Parse a `MIN:MAX` or bare `VALUE` string into an inclusive `f32` range.
@@ -39,9 +40,80 @@ pub fn parse_f32_range(s: &str) -> Result<RangeInclusive<f32>, String> {
     Ok(min..=max)
 }
 
+/// Default airframe the training/eval binaries fly when `--plane-config` is not
+/// given. A filesystem path (relative to the crate root, like the reward/PPO
+/// profile paths), **not** a Bevy asset-relative one.
+pub const DEFAULT_PLANE_CONFIG_PATH: &str = "assets/planes/generic_jet.plane.ron";
+
+/// Read a `.plane.ron` airframe from disk.
+///
+/// Thin alias over [`load_ron_config`](crate::training::reward_config::load_ron_config)
+/// for call-site readability, mirroring `load_reward_config`. Fallible on purpose:
+/// see [`load_plane_config_or_exit`] for why the binaries turn an error into an exit
+/// rather than a fallback.
+pub fn load_plane_config(path: &str) -> Result<PlaneConfig, Box<dyn std::error::Error>> {
+    crate::training::reward_config::load_ron_config(path)
+}
+
+/// Load the airframe a training/eval run will fly, or exit(2).
+///
+/// **Operator-facing only.** The error text embeds `ron`'s parse message, which quotes
+/// the offending token from the file — fine for a path typed on a local command line,
+/// but see the content-disclosure invariant in CLAUDE.md §7 before reusing this on any
+/// path that could arrive from a network peer.
+///
+/// Deliberately fatal, unlike `load_reward_config`'s warn-and-fall-back-to-defaults:
+/// a reward profile is a hyperparameter, but the airframe is the *plant*. A run that
+/// silently substituted a different plane would produce a checkpoint fitted to
+/// something nobody asked for, and the mistake would only surface much later as
+/// unexplained live-sim behaviour.
+pub fn load_plane_config_or_exit(path: &str) -> PlaneConfig {
+    match load_plane_config(path) {
+        // Silent on success: `evaluate_policy`'s stdout is a machine-read
+        // `key,value` report, so callers announce the airframe themselves in
+        // whatever form their output format wants.
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("Cannot load plane config '{path}': {e}");
+            eprintln!("Pass a readable .plane.ron via --plane-config, or omit the flag");
+            eprintln!("to use the default ({DEFAULT_PLANE_CONFIG_PATH}).");
+            std::process::exit(2);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loads_the_default_shipped_airframe() {
+        let cfg = load_plane_config(DEFAULT_PLANE_CONFIG_PATH).expect("default airframe loads");
+        // Spot-check a few fields against assets/planes/generic_jet.plane.ron. This
+        // reads the LIVE asset on purpose (unlike the frozen test fixture): the point
+        // is that the default path the binaries use actually parses.
+        assert_eq!(cfg.mass, 5000.0);
+        assert_eq!(cfg.thrust_max, 60000.0);
+        assert_eq!(cfg.cl_alpha, 4.5);
+    }
+
+    #[test]
+    fn missing_plane_config_is_an_error_not_a_fallback() {
+        assert!(load_plane_config("assets/planes/no_such_airframe.plane.ron").is_err());
+    }
+
+    #[test]
+    fn malformed_plane_config_is_an_error() {
+        // A .plane.ron missing required fields must fail rather than defaulting them
+        // to zero — the whole reason PlaneConfig has no `Default`.
+        let dir = std::env::temp_dir().join("ml_planes_cli_test");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("truncated.plane.ron");
+        std::fs::write(&path, "(wing_area: 20.0, mean_chord: 2.0)").expect("write");
+        let r = load_plane_config(path.to_str().unwrap());
+        std::fs::remove_file(&path).ok();
+        assert!(r.is_err(), "a truncated .plane.ron must not parse");
+    }
 
     #[test]
     fn parses_min_max_range() {

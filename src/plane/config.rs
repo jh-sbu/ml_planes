@@ -168,9 +168,41 @@ pub struct PlaneConfig {
     pub rudder_limit: f32,   // [rad]
 }
 
+/// The frozen generic-jet airframe every `src/` unit test flies.
+///
+/// Reads `fixtures/generic_jet.plane.ron` via `include_str!`, so it cannot drift from
+/// the fixture and does not depend on the working directory. The fixture is a
+/// **snapshot**, not a mirror: it is deliberately not kept in sync with
+/// `assets/planes/*.plane.ron`, so retuning a shipped airframe never silently moves a
+/// unit test's expected numbers. Integration tests get the same values from
+/// `tests/common/mod.rs::generic_jet_config()`.
+#[cfg(test)]
+pub(crate) fn fixture_jet_config() -> PlaneConfig {
+    const SRC: &str = include_str!("../../fixtures/generic_jet.plane.ron");
+    ron::de::from_str(SRC).expect("fixtures/generic_jet.plane.ron is valid RON")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixture_parses_and_is_a_complete_airframe() {
+        // The fixture must satisfy the same all-fields-required contract as a shipped
+        // asset: if a new PlaneConfig field is added, this fails here rather than
+        // leaving every unit test flying a half-specified plane.
+        let cfg = fixture_jet_config();
+        assert_eq!(cfg.mass, 5000.0);
+        assert_eq!(cfg.cm_q, -14.0);
+        assert_eq!(
+            cfg.powerplant,
+            Powerplant::JetFuel {
+                capacity_kg: 2000.0,
+                tsfc: 2.0e-5,
+                fuel_type: FuelType::JetA,
+            }
+        );
+    }
 
     #[test]
     fn jet_fuel_adds_mass_and_reports_capacity() {

@@ -246,6 +246,17 @@ impl Plugin for PlanePlugin {
         app.init_resource::<NextPlaneId>();
         app.register_type::<PlaneId>();
 
+        // Spawning is asset-driven and therefore deferred: `spawn_plane` parks a
+        // `PendingPlaneSpawn` and this system builds the real plane once its
+        // `.plane.ron` is available. Lives here rather than in `LifecyclePlugin`
+        // because scenario spawning goes through apps that add `PlanePlugin` only
+        // (e.g. `tests/core/scenario.rs`), and it is ungated because it is plain
+        // component insertion — on a thin networked client nothing ever matches.
+        //
+        // `PreUpdate` precedes `RunFixedMainLoop` in Bevy 0.18, so a plane finalized
+        // this frame still takes its first Rapier step in the same frame.
+        app.add_systems(PreUpdate, crate::environment::finalize_pending_spawns);
+
         // Ordering contract for the rendered plane pose (see `PlaneRenderPose`). Owned
         // here because `PlanePlugin` is in every build, whereas the writer (networked
         // client) and the readers (camera, gizmos) are feature-gated and must not depend

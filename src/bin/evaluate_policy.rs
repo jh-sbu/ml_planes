@@ -17,6 +17,11 @@
 //! Flags:
 //!   --task <task>           level_hold | heading_hold | orbit | residual_orbit | lstm_orbit
 //!   --model <path>          Checkpoint path (with or without .mpk)
+//!   --plane-config <path>   Airframe (.plane.ron) to evaluate against (default:
+//!                           assets/planes/generic_jet.plane.ron). Unreadable or invalid →
+//!                           exit 2. Pass the same airframe a checkpoint was trained with,
+//!                           for the same reason the target ranges must match. Echoed back
+//!                           as the `plane_config` row of the report.
 //!   --episodes <n>          Episodes to roll out (default 64)
 //!   --max-steps <n>         Override the per-episode step cap (default: task config)
 //!   --backend ndarray|cpu   Inference backend (only ndarray/cpu supported)
@@ -68,7 +73,12 @@ fn main() {
         .strip_suffix(".mpk")
         .unwrap_or(&model_path)
         .to_string();
-    let cfg = generic_jet_config();
+    // Airframe the policy is evaluated against. Fatal on error (see train_ppo's
+    // --plane-config): evaluating on a substituted plant would silently report
+    // numbers for a plane the checkpoint was never fitted to.
+    let plane_config = find_arg(&args, "--plane-config")
+        .unwrap_or_else(|| ml_planes::training::DEFAULT_PLANE_CONFIG_PATH.to_string());
+    let cfg = ml_planes::training::load_plane_config_or_exit(&plane_config);
 
     // Curriculum stage to evaluate `lstm_orbit` under (ignored by other tasks).
     // Defaults to `full` — the stage checkpoints are trained through to — so
@@ -205,6 +215,7 @@ fn main() {
     // Common core — identical keys for every task.
     println!("task,{task}");
     println!("model,{path}.mpk");
+    println!("plane_config,{plane_config}");
     if let Some(stage) = reported_stage {
         println!("curriculum_stage,{stage}");
     }
@@ -524,41 +535,4 @@ fn parse_u32(args: &[String], key: &str, default: u32) -> u32 {
             })
         })
         .unwrap_or(default)
-}
-
-#[cfg(feature = "inference")]
-fn generic_jet_config() -> ml_planes::plane::config::PlaneConfig {
-    ml_planes::plane::config::PlaneConfig {
-        wing_area: 20.0,
-        mean_chord: 2.0,
-        wing_span: 10.0,
-        mass: 5000.0,
-        inertia: bevy::math::Vec3::new(10000.0, 40000.0, 45000.0),
-        cl0: 0.1,
-        cl_alpha: 4.5,
-        cl_delta_e: 0.4,
-        cl_max: 1.4,
-        cd0: 0.02,
-        cd_induced: 0.05,
-        cm0: -0.02,
-        cm_alpha: 0.6,
-        cm_q: -14.0,
-        cm_delta_e: -1.2,
-        cl_beta: 0.08,
-        cl_p: -0.45,
-        cl_r: -0.12,
-        cl_delta_a: 0.18,
-        cn_beta: 0.10,
-        cn_r: -0.12,
-        cn_delta_r: -0.10,
-        cy_beta: -0.80,
-        cy_p: 0.05,
-        cy_r: 0.25,
-        cy_delta_r: 0.18,
-        thrust_max: 60000.0,
-        powerplant: Default::default(),
-        aileron_limit: 0.4363,
-        elevator_limit: 0.3491,
-        rudder_limit: 0.2618,
-    }
 }

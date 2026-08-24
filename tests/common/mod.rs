@@ -4,6 +4,7 @@ use bevy::prelude::*;
 use bevy::time::TimeUpdateStrategy;
 use bevy_rapier3d::prelude::*;
 
+use ml_planes::environment::PendingPlaneSpawn;
 use ml_planes::plane::{PlaneConfig, PlanePlugin, PHYSICS_DT};
 
 /// Build a headless Bevy app with Rapier physics and PlanePlugin.
@@ -57,41 +58,99 @@ pub fn build_headless_app_with(configure: impl FnOnce(&mut App)) -> App {
     app
 }
 
-/// Returns a PlaneConfig matching assets/planes/generic_jet.plane.ron exactly.
-/// Used to insert into Assets<PlaneConfig> synchronously, bypassing async file loading.
+/// The frozen generic-jet airframe every integration test flies.
+///
+/// Reads `fixtures/generic_jet.plane.ron` via `include_str!` — a **snapshot**, not a
+/// mirror of `assets/planes/generic_jet.plane.ron`. Keeping them separate means
+/// retuning a shipped airframe cannot silently move a test's expected numbers; the
+/// shipped assets are covered on their own by `tests/core/plane_assets.rs`. The
+/// `src/` unit tests get the same values from `plane::config::fixture_jet_config()`.
+///
+/// Inserted into `Assets<PlaneConfig>` synchronously by callers, bypassing async
+/// file loading.
 #[allow(dead_code)]
 pub fn generic_jet_config() -> PlaneConfig {
-    PlaneConfig {
-        wing_area: 20.0,
-        mean_chord: 2.0,
-        wing_span: 10.0,
-        mass: 5000.0,
-        inertia: Vec3::new(10000.0, 40000.0, 45000.0),
-        cl0: 0.1,
-        cl_alpha: 4.5,
-        cl_delta_e: 0.4,
-        cl_max: 1.4,
-        cd0: 0.02,
-        cd_induced: 0.05,
-        cm0: -0.02,
-        cm_alpha: 0.6,
-        cm_q: -14.0,
-        cm_delta_e: -1.2,
-        cl_beta: 0.08,
-        cl_p: -0.45,
-        cl_r: -0.12,
-        cl_delta_a: 0.18,
-        cn_beta: 0.10,
-        cn_r: -0.12,
-        cn_delta_r: -0.10,
-        cy_beta: -0.80,
-        cy_p: 0.05,
-        cy_r: 0.25,
-        cy_delta_r: 0.18,
-        thrust_max: 60000.0,
-        powerplant: Default::default(),
-        aileron_limit: 0.4363,
-        elevator_limit: 0.3491,
-        rudder_limit: 0.2618,
+    const SRC: &str = include_str!("../../fixtures/generic_jet.plane.ron");
+    ron::de::from_str(SRC).expect("fixtures/generic_jet.plane.ron is valid RON")
+}
+
+/// Finalize the outstanding plane spawns **without advancing the app**.
+///
+/// Hands `cfg` over as the `.plane.ron` asset and runs `finalize_pending_spawns` as a
+/// one-off system, so the plane exists with no physics tick having run. Use this instead
+/// of [`resolve_pending_spawns`] when a test asserts on the exact spawn pose — an
+/// `app.update()` would step Rapier and move the plane before the assertion.
+///
+/// Requires the spawn request to already be in the world (e.g. issued through
+/// `run_system_once`, which applies its deferred `Commands` immediately), since nothing
+/// here flushes a queued command.
+#[allow(dead_code)]
+pub fn finalize_pending_spawns_now(app: &mut App, cfg: &PlaneConfig) {
+    use bevy::ecs::system::RunSystemOnce;
+
+    let ids: Vec<_> = {
+        let world = app.world_mut();
+        world
+            .query::<&PendingPlaneSpawn>()
+            .iter(world)
+            .map(|pending| pending.config.id())
+            .collect()
+    };
+    assert!(!ids.is_empty(), "no pending plane spawn to finalize");
+    let mut assets = app.world_mut().resource_mut::<Assets<PlaneConfig>>();
+    for id in ids {
+        assets
+            .insert(id, cfg.clone())
+            .expect("insert PlaneConfig asset synchronously");
     }
+    app.world_mut()
+        .run_system_once(ml_planes::environment::finalize_pending_spawns)
+        .expect("finalize_pending_spawns system failed");
+}
+
+/// Drive every outstanding plane spawn to completion, handing over `cfg` as the
+/// `.plane.ron` asset instead of waiting on a real filesystem load.
+///
+/// Spawning is asset-driven and therefore deferred: `spawn_plane` parks a
+/// [`PendingPlaneSpawn`] until its config is available. How long a genuine load takes
+/// is not something to assert on — under `--no-default-features` it can land inside the
+/// same frame, while `--features visual` pulls `bevy/default` (hence `multi_threaded`)
+/// and it does not. Handing the asset over directly makes the test read the same either
+/// way; it is the same trick `tests/core/scenario.rs` uses for `Assets<PlaneTuning>`.
+///
+/// Loops because the spawn may still be sitting in an unflushed command queue on entry
+/// (`World::trigger` runs the observer immediately, but its `Commands` apply at the next
+/// flush), so the first pass often has nothing to resolve yet. Stops as soon as nothing
+/// is pending, to keep the number of simulated ticks — and so any fuel burn or physics
+/// motion a caller then measures — to the minimum.
+#[allow(dead_code)]
+pub fn resolve_pending_spawns(app: &mut App, cfg: &PlaneConfig) {
+    for _ in 0..8 {
+        let ids: Vec<_> = {
+            let world = app.world_mut();
+            world
+                .query::<&PendingPlaneSpawn>()
+                .iter(world)
+                .map(|pending| pending.config.id())
+                .collect()
+        };
+        let mut assets = app.world_mut().resource_mut::<Assets<PlaneConfig>>();
+        for id in ids {
+            assets
+                .insert(id, cfg.clone())
+                .expect("insert PlaneConfig asset synchronously");
+        }
+        app.update();
+
+        let world = app.world_mut();
+        if world
+            .query::<&PendingPlaneSpawn>()
+            .iter(world)
+            .next()
+            .is_none()
+        {
+            return;
+        }
+    }
+    panic!("pending plane spawns never finalized");
 }

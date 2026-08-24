@@ -61,6 +61,15 @@ fn main() {
         DEFAULT_TARGET_HEADING_DEG_MAX,
     );
 
+    // Same airframe contract as the training/eval binaries: default to the shipped
+    // generic jet, and refuse to run on an unreadable override rather than quietly
+    // baselining a different plane than the policy under comparison.
+    let plane_config = args
+        .windows(2)
+        .find(|w| w[0] == "--plane-config")
+        .map(|w| w[1].clone())
+        .unwrap_or_else(|| ml_planes::training::DEFAULT_PLANE_CONFIG_PATH.to_string());
+
     let reward_cfg = HeadingHoldRewardConfig::default();
     let max_steps = reward_cfg.max_episode_steps;
     // Same tail window as `evaluate_policy`: the final 20% of the step budget.
@@ -70,7 +79,7 @@ fn main() {
         heading_deg.start().to_radians()..=heading_deg.end().to_radians(),
         alt_range.clone(),
         speed_range.clone(),
-        generic_jet_config(),
+        ml_planes::training::load_plane_config_or_exit(&plane_config),
         reward_cfg,
     );
     env.max_episode_steps = max_steps;
@@ -134,42 +143,4 @@ fn main() {
     // Sideslip: the classical reference for "does this controller crab?" — the PID
     // expert closes β → rudder, so its tail β is what a coordinated policy can reach.
     println!("mean_tail_abs_beta_rad,{:.6}", tail_beta / n);
-}
-
-/// Mirrors `assets/planes/generic_jet.plane.ron` (same helper `evaluate_policy` uses).
-#[cfg(feature = "training")]
-fn generic_jet_config() -> ml_planes::plane::config::PlaneConfig {
-    ml_planes::plane::config::PlaneConfig {
-        wing_area: 20.0,
-        mean_chord: 2.0,
-        wing_span: 10.0,
-        mass: 5000.0,
-        inertia: bevy::math::Vec3::new(10000.0, 40000.0, 45000.0),
-        cl0: 0.1,
-        cl_alpha: 4.5,
-        cl_delta_e: 0.4,
-        cl_max: 1.4,
-        cd0: 0.02,
-        cd_induced: 0.05,
-        cm0: -0.02,
-        cm_alpha: 0.6,
-        cm_q: -14.0,
-        cm_delta_e: -1.2,
-        cl_beta: 0.08,
-        cl_p: -0.45,
-        cl_r: -0.12,
-        cl_delta_a: 0.18,
-        cn_beta: 0.10,
-        cn_r: -0.12,
-        cn_delta_r: -0.10,
-        cy_beta: -0.80,
-        cy_p: 0.05,
-        cy_r: 0.25,
-        cy_delta_r: 0.18,
-        thrust_max: 60000.0,
-        powerplant: Default::default(),
-        aileron_limit: 0.4363,
-        elevator_limit: 0.3491,
-        rudder_limit: 0.2618,
-    }
 }

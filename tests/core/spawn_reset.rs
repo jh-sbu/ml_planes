@@ -26,7 +26,6 @@ fn spawn_then_sync_flight_state() {
 
         fuel_fraction: None,
     };
-    let cfg = crate::common::generic_jet_config();
 
     // run_system_once executes the closure as a one-off system and immediately
     // applies deferred Commands — the entity exists in the world before update().
@@ -43,11 +42,16 @@ fn spawn_then_sync_flight_state() {
                     &spec,
                     Box::new(ManualController::new()),
                     ControllerKind::Manual,
-                    &cfg,
                 );
             },
         )
         .expect("spawn_plane system failed");
+
+    // Spawning is deferred until the `.plane.ron` loads. Finalize it in place rather
+    // than depending on how fast a real load lands (which differs by build): this
+    // variant runs no `app.update()`, so the frame accounting below — and the exact
+    // spawn pose these assertions check — are unaffected.
+    crate::common::finalize_pending_spawns_now(&mut app, &crate::common::generic_jet_config());
 
     // First update: timing infrastructure initializes; FixedUpdate does not fire on
     // frame 0 in Bevy's fixed-timestep model (virtual time accumulator starts empty).

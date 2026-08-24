@@ -433,40 +433,10 @@ mod tests {
         assert_eq!(env.dt, PHYSICS_DT);
     }
 
+    /// The shared frozen test airframe (`fixtures/generic_jet.plane.ron`).
+    /// A snapshot, not a mirror of `assets/planes/` — see `fixture_jet_config`.
     fn jet_cfg() -> PlaneConfig {
-        PlaneConfig {
-            wing_area: 20.0,
-            mean_chord: 2.0,
-            wing_span: 10.0,
-            mass: 5000.0,
-            inertia: Vec3::new(10000.0, 40000.0, 45000.0),
-            cl0: 0.1,
-            cl_alpha: 4.5,
-            cl_delta_e: 0.4,
-            cl_max: 1.4,
-            cd0: 0.02,
-            cd_induced: 0.05,
-            cm0: -0.02,
-            cm_alpha: 0.6,
-            cm_q: -14.0,
-            cm_delta_e: -1.2,
-            cl_beta: 0.08,
-            cl_p: -0.45,
-            cl_r: -0.12,
-            cl_delta_a: 0.18,
-            cn_beta: 0.10,
-            cn_r: -0.12,
-            cn_delta_r: -0.10,
-            cy_beta: -0.80,
-            cy_p: 0.05,
-            cy_r: 0.25,
-            cy_delta_r: 0.18,
-            thrust_max: 60000.0,
-            powerplant: Default::default(),
-            aileron_limit: 0.4363,
-            elevator_limit: 0.3491,
-            rudder_limit: 0.2618,
-        }
+        crate::plane::config::fixture_jet_config()
     }
 
     fn on_orbit_state(radius: f32, heading: Vec3) -> FlightState {

@@ -7,7 +7,9 @@
 //! `build.rs`) gates this module (from `tests/core/main.rs`) so it skips there instead of failing on a default
 //! `FlightState`; test networked builds with `--no-default-features --features "…​ server"`.
 
-use crate::common::{build_headless_app, build_headless_app_with, generic_jet_config};
+use crate::common::{
+    build_headless_app, build_headless_app_with, generic_jet_config, resolve_pending_spawns,
+};
 use bevy::prelude::*;
 use bevy_rapier3d::prelude::{AdditionalMassProperties, MassProperties, ReadMassProperties};
 use ml_planes::controllers::{ControllerKind, LevelHoldController};
@@ -31,7 +33,6 @@ fn spawn_sys(
     asset_server: Res<AssetServer>,
     params: Res<SpawnParams>,
 ) {
-    let cfg = generic_jet_config();
     let spec = SpawnSpec {
         position: Some(Vec3::new(0.0, 1000.0, 0.0)),
         velocity: Some(Vec3::new(100.0, 0.0, 0.0)),
@@ -46,7 +47,6 @@ fn spawn_sys(
         &spec,
         Box::new(LevelHoldController::new(1000.0, 100.0)),
         ControllerKind::LevelHold,
-        &cfg,
     );
     commands.insert_resource(Spawned(s.entity));
 }
@@ -58,7 +58,7 @@ fn spawn_and_get_fuel(fuel_fraction: Option<f32>) -> f32 {
         app.insert_resource(SpawnParams { fuel_fraction });
         app.add_systems(Startup, spawn_sys);
     });
-    app.update();
+    resolve_pending_spawns(&mut app, &generic_jet_config());
     let e = app.world().resource::<Spawned>().0;
     app.world()
         .entity(e)

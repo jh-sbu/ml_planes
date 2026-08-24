@@ -21,7 +21,9 @@ pub mod wu_orbit_reward;
 #[cfg(feature = "training")]
 pub use backend::Backend;
 pub use bc::{collect_demonstrations, BcDataset, DemonstrationEnv};
-pub use cli::parse_f32_range;
+pub use cli::{
+    load_plane_config, load_plane_config_or_exit, parse_f32_range, DEFAULT_PLANE_CONFIG_PATH,
+};
 pub use env::{Observation, SpawnSpec, StepInfo, StepOutcome, TerminationReason, TrainingEnv};
 pub use eval::{evaluate_policy, EvaluationSummary};
 pub use eval_metrics::{MetricFamily, TaskMetrics};

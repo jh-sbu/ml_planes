@@ -19,47 +19,6 @@ use super::visual::PhysicsInterp;
 #[derive(Event, Debug, Clone)]
 pub struct PlaneGroundContactEvent(pub Entity);
 
-/// Mass/inertia (and control limits) for the generic-jet airframe, used to seed
-/// Rapier `AdditionalMassProperties` at spawn time. Aerodynamic coefficients are
-/// left at zero — the async-loaded `.plane.ron` handle drives aero forces once
-/// the asset is ready. Shared by `main.rs`'s startup spawns and the runtime
-/// `SpawnPlaneCommand` so both seed identical body mass.
-pub fn generic_jet_spawn_config() -> PlaneConfig {
-    PlaneConfig {
-        wing_area: 20.0,
-        mean_chord: 2.0,
-        wing_span: 10.0,
-        mass: 5000.0,
-        inertia: Vec3::new(10000.0, 40000.0, 45000.0),
-        cl0: 0.0,
-        cl_alpha: 0.0,
-        cl_delta_e: 0.0,
-        cl_max: 1.4,
-        cd0: 0.0,
-        cd_induced: 0.0,
-        cm0: 0.0,
-        cm_alpha: 0.0,
-        cm_q: 0.0,
-        cm_delta_e: 0.0,
-        cl_beta: 0.0,
-        cl_p: 0.0,
-        cl_r: 0.0,
-        cl_delta_a: 0.0,
-        cn_beta: 0.0,
-        cn_r: 0.0,
-        cn_delta_r: 0.0,
-        cy_beta: 0.0,
-        cy_p: 0.0,
-        cy_r: 0.0,
-        cy_delta_r: 0.0,
-        thrust_max: 0.0,
-        powerplant: Default::default(),
-        aileron_limit: 0.4363,
-        elevator_limit: 0.3491,
-        rudder_limit: 0.2618,
-    }
-}
-
 /// Resolve a `SpawnSpec` into the concrete initial `FlightState` a spawned plane
 /// starts with, applying the same defaults `spawn_plane` uses. Shared so callers
 /// that need to construct a controller *before* spawning (e.g. the lifecycle
@@ -101,7 +60,6 @@ pub fn spawn_plane(
     spec: &SpawnSpec,
     controller: Box<dyn FlightController>,
     kind: ControllerKind,
-    cfg: &PlaneConfig,
 ) -> SpawnedPlane {
     let plane_id = PlaneId(ids.0);
     ids.0 += 1;
@@ -113,8 +71,30 @@ pub fn spawn_plane(
         spec,
         controller,
         kind,
-        cfg,
     )
+}
+
+/// A spawn request waiting on its `.plane.ron` asset.
+///
+/// Spawning is asset-driven: the entity exists immediately (so callers can attach
+/// per-kind extras and hold onto its `Entity`), but it carries **only** this component
+/// until `finalize_pending_spawns` has the real [`PlaneConfig`] in hand and can build
+/// `FlightState`, the fuel load, and the Rapier body from it in one step.
+///
+/// Deliberately none of `PlaneId`, `FlightState`, `ActiveController` or `ControllerKind`
+/// live here: every plane-facing system keys off one of those, so a pending entity is
+/// invisible to controllers, physics, the MCP snapshot, and — critically —
+/// `mark_planes_replicated`, which would otherwise ship a half-formed plane to clients.
+#[derive(Component)]
+pub struct PendingPlaneSpawn {
+    pub plane_id: PlaneId,
+    pub spec: SpawnSpec,
+    pub kind: ControllerKind,
+    /// `Box<dyn FlightController>` is not `Clone`, so finalization `take()`s it.
+    pub controller: Option<Box<dyn FlightController>>,
+    pub config: Handle<PlaneConfig>,
+    /// Sanitized, assets-relative. Kept for the `.tuning.ron` sibling lookup and logs.
+    pub config_path: String,
 }
 
 /// Spawn a physics-ready plane entity under an explicit, caller-assigned
@@ -123,10 +103,11 @@ pub fn spawn_plane(
 /// wingmen reference their leader by id, where the id has to be settled
 /// before `WingmanController::leader_id` is baked in.
 ///
-/// `config_path` is the `.plane.ron` asset loaded asynchronously to drive
-/// aerodynamic forces once ready; `cfg` is used immediately for Rapier
-/// `AdditionalMassProperties` (mass/inertia) at spawn time. Pass a `cfg` whose
-/// mass/inertia match `config_path` — they describe the same airframe.
+/// `config_path` is the `.plane.ron` asset this plane is built from. The returned
+/// entity is a [`PendingPlaneSpawn`] and does **not** simulate yet; it becomes a real
+/// plane once the asset loads (see `finalize_pending_spawns`). There is deliberately no
+/// `cfg` parameter and no fallback airframe: mass, inertia, and aerodynamics all come
+/// from the same single read of the same file, so they cannot disagree.
 pub fn spawn_plane_with_id(
     commands: &mut Commands,
     plane_id: PlaneId,
@@ -135,93 +116,25 @@ pub fn spawn_plane_with_id(
     spec: &SpawnSpec,
     controller: Box<dyn FlightController>,
     kind: ControllerKind,
-    cfg: &PlaneConfig,
 ) -> SpawnedPlane {
-    let mut state = initial_state_from_spec(spec);
-    // Opt this plane into the fuel model: fill the tank to the requested fraction of
-    // capacity (default full). The integrator / `consume_fuel` then burn it down.
-    state.consumable_remaining = cfg.powerplant.capacity() * spec.fuel_fraction.unwrap_or(1.0);
-    let position = state.position;
-    let attitude = state.attitude;
-    let linvel = state.velocity;
-    // Body-frame angular velocity → world frame for Rapier.
-    let angvel_world = attitude.mul_vec3(state.angular_velocity);
-
     // Validate before handing the path to Bevy. `FileAssetReader` does a bare
-    // `root_path.join(path)`, so an absolute path escapes the asset root
-    // outright here — a wider hole than the `fs::read` sink, whose `"assets/"`
-    // concat at least neutralizes a leading `/`. A rejected path falls back to
-    // the generic jet, matching `load_spawn_config`, so the body's seeded
-    // mass/inertia and its async aero coefficients stay consistent.
+    // `root_path.join(path)`, so an absolute path escapes the asset root outright.
+    // A rejected path falls back to the default *path* — which is then loaded like
+    // any other, rather than to a hardcoded struct.
     let safe_config_path =
         sanitize_asset_path(config_path).unwrap_or_else(|| DEFAULT_PLANE_CONFIG.to_string());
     let handle: Handle<PlaneConfig> = asset_server.load(safe_config_path.clone());
 
     let entity = commands
-        .spawn((
-            RigidBody::Dynamic,
-            Collider::cuboid(3.0, 0.5, 1.0),
-            // The collider is for ground contact only; all mass comes from the
-            // explicit `AdditionalMassProperties` below (which Rapier *adds* to the
-            // collider-derived mass — default density 1.0 would sneak in ~12 kg the
-            // training integrator never sees).
-            ColliderMassProperties::Mass(0.0),
-            Velocity {
-                linvel,
-                angvel: angvel_world,
-            },
-            ExternalForce::default(),
-            AdditionalMassProperties::MassProperties(MassProperties {
-                local_center_of_mass: Vec3::ZERO,
-                // Empty mass + fuel load (jets); empty mass alone for electric.
-                // `update_plane_mass` keeps this current as fuel burns.
-                mass: cfg
-                    .powerplant
-                    .effective_mass(cfg.mass, state.consumable_remaining),
-                principal_inertia: cfg.inertia,
-                principal_inertia_local_frame: Quat::IDENTITY,
-            }),
-            state,
-            ControlInputs::default(),
-            ActiveController(controller),
-            // Replicated controller-telemetry / -targets views, populated each tick by
-            // `sync_controller_telemetry` / `sync_controller_targets`; replicon carries
-            // them to the client HUD (status display and editable setpoints
-            // respectively — nested here since the spawn bundle is already at Bevy's
-            // 15-element tuple-`Bundle` ceiling).
-            (ControllerTelemetry::default(), ControllerTargets::default()),
+        .spawn(PendingPlaneSpawn {
+            plane_id,
+            spec: spec.clone(),
             kind,
-            // `PlaneIndex` is the display/cycle ordinal used by the camera, map,
-            // and HUD. Deriving it from the already-unique, monotonic `PlaneId`
-            // guarantees every spawned plane is indexed automatically — callers
-            // never have to insert it by hand.
-            (plane_id, PlaneIndex(plane_id.0)),
-            PlaneConfigHandle(handle),
-            Transform::from_translation(position).with_rotation(attitude),
-        ))
+            controller: Some(controller),
+            config: handle,
+            config_path: safe_config_path,
+        })
         .id();
-
-    // Attach the per-config tuning pool so the visual `apply_initial_tuning`
-    // system applies the airframe's PID gains once the asset loads. Skipped when
-    // the config ships no `.tuning.ron` sibling, leaving `build()` defaults.
-    if let Some(tuning_path) = tuning_path_for_config(&safe_config_path) {
-        let tuning_handle: Handle<PlaneTuning> = asset_server.load(tuning_path.clone());
-        commands.entity(entity).insert((
-            PlaneTuningHandle(tuning_handle),
-            SelectedTuningProfile("normal".to_string()),
-            // Replicated companion to the handle so a networked client can rebuild
-            // its own `PlaneTuningHandle` and enumerate profiles.
-            PlaneTuningPath(tuning_path),
-        ));
-    }
-
-    #[cfg(feature = "visual")]
-    commands.entity(entity).insert(PhysicsInterp {
-        prev_pos: position,
-        prev_rot: attitude,
-        curr_pos: position,
-        curr_rot: attitude,
-    });
 
     SpawnedPlane {
         entity,
@@ -229,16 +142,134 @@ pub fn spawn_plane_with_id(
     }
 }
 
-/// Load the `PlaneConfig` for a spawn `config_path` (asset-relative, e.g.
-/// `planes/cargo_jet.plane.ron`) directly from disk so the Rapier body gets the
-/// correct mass/inertia/fuel *at spawn*, before any aero applies. Falls back to
-/// the generic-jet spawn config (with a warning) if the file is missing or
-/// invalid, keeping the `N` hotkey and bad paths robust.
+/// Build the real plane once its `.plane.ron` asset is available.
 ///
-/// Reading synchronously here — rather than waiting on the async asset handle —
-/// is what keeps `cfg` (mass/inertia/fuel) consistent with `config_path`'s
-/// aerodynamics from the first physics step. A mismatched (e.g. generic) inertia
-/// under a heavy airframe's aero moments diverges to a non-finite state.
+/// Runs in `PreUpdate`, which in Bevy 0.18 precedes `RunFixedMainLoop`, so a plane
+/// finalized this frame still takes its first Rapier step in the same frame and no
+/// system ever observes a partially-built plane.
+///
+/// Readiness is `Assets<PlaneConfig>::get`, **not** `AssetServer::is_loaded`, so a test
+/// can satisfy a pending spawn by inserting the asset directly instead of depending on
+/// IO-pool timing.
+pub fn finalize_pending_spawns(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    configs: Res<Assets<PlaneConfig>>,
+    mut pending: Query<(Entity, &mut PendingPlaneSpawn)>,
+) {
+    for (entity, mut pending) in pending.iter_mut() {
+        let Some(cfg) = configs.get(&pending.config) else {
+            // A terminal load failure means this plane can never be built. Drop the
+            // request rather than substituting a different airframe.
+            //
+            // The error text is deliberately NOT echoed: `config_path` can arrive from
+            // any peer that can reach the UDP port, and `ron`'s parse errors quote the
+            // offending token from the file (CLAUDE.md §7). `src/bin/server.rs` runs
+            // without a `LogPlugin`, so this `eprintln!` is the only line that reaches
+            // stderr there.
+            if asset_server.load_state(&pending.config).is_failed() {
+                eprintln!(
+                    "plane config '{}' failed to load; not spawning plane {}. \
+                     (Check the file exists under the asset root — bevy resolves that \
+                     from BEVY_ASSET_ROOT, else CARGO_MANIFEST_DIR, else the directory \
+                     holding the executable, NOT the working directory.)",
+                    pending.config_path, pending.plane_id.0
+                );
+                commands.entity(entity).despawn();
+            }
+            continue;
+        };
+
+        let controller = pending
+            .controller
+            .take()
+            .expect("a pending spawn is finalized exactly once");
+        let plane_id = pending.plane_id;
+
+        let mut state = initial_state_from_spec(&pending.spec);
+        // Opt this plane into the fuel model: fill the tank to the requested fraction of
+        // capacity (default full). `consume_fuel` then burns it down.
+        state.consumable_remaining =
+            cfg.powerplant.capacity() * pending.spec.fuel_fraction.unwrap_or(1.0);
+        let position = state.position;
+        let attitude = state.attitude;
+        let linvel = state.velocity;
+        // Body-frame angular velocity → world frame for Rapier.
+        let angvel_world = attitude.mul_vec3(state.angular_velocity);
+
+        commands
+            .entity(entity)
+            .remove::<PendingPlaneSpawn>()
+            .insert((
+                RigidBody::Dynamic,
+                Collider::cuboid(3.0, 0.5, 1.0),
+                // The collider is for ground contact only; all mass comes from the
+                // explicit `AdditionalMassProperties` below (which Rapier *adds* to the
+                // collider-derived mass — default density 1.0 would sneak in ~12 kg the
+                // training integrator never sees).
+                ColliderMassProperties::Mass(0.0),
+                Velocity {
+                    linvel,
+                    angvel: angvel_world,
+                },
+                ExternalForce::default(),
+                AdditionalMassProperties::MassProperties(MassProperties {
+                    local_center_of_mass: Vec3::ZERO,
+                    // Empty mass + fuel load (jets); empty mass alone for electric.
+                    // `update_plane_mass` keeps this current as fuel burns.
+                    mass: cfg
+                        .powerplant
+                        .effective_mass(cfg.mass, state.consumable_remaining),
+                    principal_inertia: cfg.inertia,
+                    principal_inertia_local_frame: Quat::IDENTITY,
+                }),
+                state,
+                ControlInputs::default(),
+                ActiveController(controller),
+                // Replicated controller-telemetry / -targets views, populated each tick by
+                // `sync_controller_telemetry` / `sync_controller_targets`; replicon carries
+                // them to the client HUD (status display and editable setpoints
+                // respectively — nested here since the bundle is already at Bevy's
+                // 15-element tuple-`Bundle` ceiling).
+                (ControllerTelemetry::default(), ControllerTargets::default()),
+                // Inserted here rather than at request time on purpose: this is the
+                // `Changed<ControllerKind>` tick that drives the tuning and RL-model
+                // rebuild systems in `sim_control.rs`, and it must fire on a plane that
+                // already has its `FlightState` and `ActiveController`.
+                pending.kind,
+                // `PlaneIndex` is the display/cycle ordinal used by the camera, map,
+                // and HUD. Deriving it from the already-unique, monotonic `PlaneId`
+                // guarantees every spawned plane is indexed automatically — callers
+                // never have to insert it by hand.
+                (plane_id, PlaneIndex(plane_id.0)),
+                PlaneConfigHandle(pending.config.clone()),
+                Transform::from_translation(position).with_rotation(attitude),
+            ));
+
+        // Attach the per-config tuning pool so `apply_initial_tuning` applies the
+        // airframe's PID gains once the asset loads. Skipped when the config ships no
+        // `.tuning.ron` sibling, leaving `build()` defaults.
+        if let Some(tuning_path) = tuning_path_for_config(&pending.config_path) {
+            let tuning_handle: Handle<PlaneTuning> = asset_server.load(tuning_path.clone());
+            commands.entity(entity).insert((
+                PlaneTuningHandle(tuning_handle),
+                SelectedTuningProfile("normal".to_string()),
+                // Replicated companion to the handle so a networked client can rebuild
+                // its own `PlaneTuningHandle` and enumerate profiles.
+                PlaneTuningPath(tuning_path),
+            ));
+        }
+
+        #[cfg(feature = "visual")]
+        commands.entity(entity).insert(PhysicsInterp {
+            prev_pos: position,
+            prev_rot: attitude,
+            curr_pos: position,
+            curr_rot: attitude,
+        });
+    }
+}
+
 /// Derive the `.tuning.ron` sibling for a `.plane.ron` config path, returning it
 /// only if the file actually ships on disk (under `assets/`). A spawned plane
 /// carrying this handle + a `SelectedTuningProfile` gets its per-config PID gains
@@ -258,11 +289,6 @@ pub fn tuning_path_for_config(config_path: &str) -> Option<String> {
 
 /// Asset-relative `.plane.ron` used whenever a caller-supplied path is rejected.
 pub const DEFAULT_PLANE_CONFIG: &str = "planes/generic_jet.plane.ron";
-
-/// Upper bound on a `.plane.ron` read. The file is a few dozen coefficients;
-/// this is generous. Bounding the read keeps a hostile path from turning a spawn
-/// into a memory blow-up or a hang on a character device.
-const MAX_PLANE_CONFIG_BYTES: u64 = 256 * 1024;
 
 /// Validate a caller-supplied asset path, returning the canonical
 /// `assets/`-relative form or `None` if it is not one.
@@ -309,46 +335,6 @@ pub fn sanitize_asset_path(path: &str) -> Option<String> {
     Some(parts.join("/"))
 }
 
-pub fn load_spawn_config(config_path: &str) -> PlaneConfig {
-    use std::io::Read;
-
-    let Some(safe_path) = sanitize_asset_path(config_path) else {
-        eprintln!("spawn config rejected (not an assets-relative path); using generic jet");
-        return generic_jet_spawn_config();
-    };
-    let disk_path = format!("assets/{safe_path}");
-
-    // Error text is deliberately *not* echoed. `ron`'s parse errors embed the
-    // offending token from the file being read (`Expected struct PlaneConfig but
-    // found <token>`), which turned this log line into a content-disclosure
-    // channel for whatever path a client supplied.
-    let Ok(file) = std::fs::File::open(&disk_path) else {
-        eprintln!("spawn config '{disk_path}' read failed; using generic jet");
-        return generic_jet_spawn_config();
-    };
-
-    // `take` bounds the read itself, so this also terminates on a fifo or a
-    // character device, which no up-front size check would catch.
-    let mut bytes = Vec::new();
-    if file
-        .take(MAX_PLANE_CONFIG_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .is_err()
-        || bytes.len() as u64 > MAX_PLANE_CONFIG_BYTES
-    {
-        eprintln!("spawn config '{disk_path}' read failed or too large; using generic jet");
-        return generic_jet_spawn_config();
-    }
-
-    match ron::de::from_bytes::<PlaneConfig>(&bytes) {
-        Ok(cfg) => cfg,
-        Err(_) => {
-            eprintln!("spawn config '{disk_path}' parse failed; using generic jet");
-            generic_jet_spawn_config()
-        }
-    }
-}
-
 // Ground-contact detection reads the Rapier context, absent on the thin networked
 // client, which never collides locally.
 #[cfg(any(not(feature = "net"), feature = "server"))]
@@ -374,26 +360,20 @@ pub fn detect_ground_contact(
 mod tests {
     use super::*;
 
+    /// The default a rejected path falls back to is an asset *path*, loaded like any
+    /// other — not a hardcoded struct. This is what lets the spawn path have no
+    /// built-in airframe at all; the end-to-end behaviour lives in
+    /// `tests/core/lifecycle.rs::spawn_defers_until_the_plane_config_asset_is_available`.
     #[test]
-    fn load_spawn_config_reads_real_mass_and_inertia() {
-        // The cargo jet is a heavy airframe; seeding the body from the real
-        // config (not the generic fallback) is what keeps aero/inertia consistent.
-        let cfg = load_spawn_config("planes/cargo_jet.plane.ron");
-        assert_eq!(cfg.mass, 128000.0, "should read the cargo jet's dry mass");
-        assert!(
-            (cfg.inertia.y - 2.46e7).abs() < 1.0,
-            "should read the cargo jet's heavy Iyy, got {}",
-            cfg.inertia.y
-        );
-    }
-
-    #[test]
-    fn load_spawn_config_falls_back_on_missing_file() {
-        let cfg = load_spawn_config("planes/does_not_exist.plane.ron");
+    fn default_plane_config_is_a_real_loadable_asset() {
         assert_eq!(
-            cfg.mass,
-            generic_jet_spawn_config().mass,
-            "missing config falls back to the generic-jet spawn config"
+            sanitize_asset_path(DEFAULT_PLANE_CONFIG),
+            Some(DEFAULT_PLANE_CONFIG.to_string()),
+            "the fallback path must itself survive sanitization"
+        );
+        assert!(
+            std::path::Path::new(&format!("assets/{DEFAULT_PLANE_CONFIG}")).exists(),
+            "the fallback airframe must ship, or a rejected path spawns nothing"
         );
     }
 
@@ -445,8 +425,8 @@ mod tests {
 
     #[test]
     fn sanitize_rejects_absolute_paths() {
-        // `load_spawn_config`'s string concat neutralizes a leading `/`, but
-        // `AssetServer::load` -> `root_path.join("/etc/passwd")` does not.
+        // `AssetServer::load` -> `root_path.join("/etc/passwd")` leaves the asset
+        // root entirely; a lexical reject is the only thing standing in the way.
         for path in ["/etc/passwd", "/planes/generic_jet.plane.ron"] {
             assert_eq!(
                 sanitize_asset_path(path),
@@ -485,20 +465,11 @@ mod tests {
     const TRAVERSAL_TO_REAL_FILE: &str = "planes/../planes/cargo_jet.plane.ron";
 
     #[test]
-    fn load_spawn_config_falls_back_on_traversal_path() {
-        // Must not resolve `..` at all; falls back like a missing file.
-        let cfg = load_spawn_config(TRAVERSAL_TO_REAL_FILE);
-        assert_eq!(
-            cfg.mass,
-            generic_jet_spawn_config().mass,
-            "a `..` path must not be resolved, even back into assets/"
-        );
-    }
-
-    #[test]
-    fn load_spawn_config_falls_back_on_escaping_path() {
-        let cfg = load_spawn_config("../../../../etc/hostname");
-        assert_eq!(cfg.mass, generic_jet_spawn_config().mass);
+    fn sanitize_rejects_traversal_even_back_into_assets() {
+        // Must not resolve `..` at all — `AssetServer::load`'s bare `root_path.join`
+        // would happily walk out of the asset root and back in.
+        assert_eq!(sanitize_asset_path(TRAVERSAL_TO_REAL_FILE), None);
+        assert_eq!(sanitize_asset_path("../../../../etc/hostname"), None);
     }
 
     #[test]

@@ -101,10 +101,15 @@ fn main() {
         };
 
         let plane = &resolved.planes[idx];
-        let cfg = match &plane.config {
-            Some(path) => load_plane_config(path),
-            None => generic_jet_config(),
-        };
+        // One loader, one failure mode: an unreadable airframe aborts the run
+        // (exit 2) instead of silently flying a substitute — same contract as the
+        // training/eval binaries.
+        let cfg = ml_planes::training::load_plane_config_or_exit(
+            plane
+                .config
+                .as_deref()
+                .unwrap_or(ml_planes::training::DEFAULT_PLANE_CONFIG_PATH),
+        );
         let handle = app
             .world_mut()
             .resource_mut::<Assets<PlaneConfig>>()
@@ -239,21 +244,4 @@ fn usage_and_exit() -> ! {
 fn fatal(msg: &str) -> ! {
     eprintln!("{msg}");
     std::process::exit(2);
-}
-
-// ---------------------------------------------------------------------------
-// Config loading
-
-fn load_plane_config(path: &str) -> PlaneConfig {
-    let bytes =
-        std::fs::read(path).unwrap_or_else(|e| panic!("Cannot read plane config '{path}': {e}"));
-    ron::de::from_bytes(&bytes)
-        .unwrap_or_else(|e| panic!("Cannot parse plane config '{path}': {e}"))
-}
-
-/// Fallback config — embeds `assets/planes/generic_jet.plane.ron` at compile time so the
-/// default can never drift from the asset.
-fn generic_jet_config() -> PlaneConfig {
-    const SRC: &str = include_str!("../assets/planes/generic_jet.plane.ron");
-    ron::de::from_str(SRC).expect("embedded generic_jet config is valid RON")
 }

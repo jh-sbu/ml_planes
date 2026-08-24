@@ -128,16 +128,12 @@ mod tests {
     use crate::aerodynamics::engine_thrust;
     use crate::plane::{FuelType, Powerplant};
 
-    /// Generic jet with an explicit jet powerplant: empty mass 3500 kg, 2000 kg fuel.
+    /// The shared frozen test airframe, re-massed to an empty 3500 kg so the 2000 kg
+    /// fuel load is a visible fraction of it (these tests are about burn and mass, not
+    /// aero). Its powerplant and `thrust_max` already match the fixture.
     fn jet_cfg() -> PlaneConfig {
-        let mut cfg = crate::environment::generic_jet_spawn_config();
+        let mut cfg = crate::plane::config::fixture_jet_config();
         cfg.mass = 3500.0;
-        cfg.thrust_max = 60000.0;
-        cfg.powerplant = Powerplant::JetFuel {
-            capacity_kg: 2000.0,
-            tsfc: 2.0e-5,
-            fuel_type: FuelType::JetA,
-        };
         cfg
     }
 

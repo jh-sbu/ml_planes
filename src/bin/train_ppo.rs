@@ -20,6 +20,13 @@
 //!   --reward-config <path>    Load reward/termination profile from <path> instead of the
 //!                             task default (assets/training/<task>.reward.ron). A missing
 //!                             file falls back to the compiled defaults with a warning.
+//!   --plane-config <path>     Airframe (.plane.ron) to train against (default:
+//!                             assets/planes/generic_jet.plane.ron). Unlike the reward
+//!                             and PPO profiles, an unreadable or invalid file is FATAL
+//!                             (exit 2) rather than falling back to a default: the
+//!                             airframe is the plant the policy is fitted to, so a silent
+//!                             substitution would produce a checkpoint for a plane nobody
+//!                             asked for. Recorded in the --log-file CSV header.
 //!   --ppo-config <path>       Load PPO training-loop hyperparameters (gamma, gae_lambda,
 //!                             clip_epsilon, value/entropy coefs, lr, rollout_steps,
 //!                             n_epochs, minibatch, seed) from a RON file. Applies to the MLP
@@ -147,6 +154,16 @@ fn main() {
         .find(|w| w[0] == "--reward-config")
         .map(|w| w[1].clone());
 
+    // The airframe to train against. Unlike --reward-config, an unreadable value is
+    // FATAL (see `load_plane_config_or_exit`): the airframe is the plant, and a run
+    // that silently flew a substitute would yield a checkpoint fitted to a plane
+    // nobody asked for.
+    let plane_config: String = args
+        .windows(2)
+        .find(|w| w[0] == "--plane-config")
+        .map(|w| w[1].clone())
+        .unwrap_or_else(|| ml_planes::training::DEFAULT_PLANE_CONFIG_PATH.to_string());
+
     // Optional PPO hyperparameter override (level_hold / orbit / residual_orbit).
     // Absent → the task's tuned default (`Task::default_ppo_config_path`), else
     // compiled defaults; a missing/invalid file falls back with a warning.
@@ -236,6 +253,7 @@ fn main() {
             init_from,
             log_file,
             reward_config,
+            plane_config,
             ppo_config,
             cli_seed,
             bc_steps,
@@ -253,6 +271,7 @@ fn main() {
             init_from,
             log_file,
             reward_config,
+            plane_config,
             ppo_config,
             cli_seed,
             bc_steps,
@@ -359,6 +378,7 @@ fn run<B>(
     init_from: Option<String>,
     log_file: Option<String>,
     reward_config: Option<String>,
+    plane_config: String,
     ppo_config: Option<String>,
     cli_seed: Option<u64>,
     bc_steps: usize,
@@ -370,9 +390,6 @@ fn run<B>(
     B: burn::tensor::backend::AutodiffBackend,
     B::Device: Default,
 {
-    use bevy::math::Vec3;
-
-    use ml_planes::plane::config::PlaneConfig;
     use ml_planes::training::ppo::CsvLog;
     use ml_planes::training::reward_config::{
         load_reward_config, load_ron_config, HeadingHoldRewardConfig, LevelHoldRewardConfig,
@@ -387,6 +404,7 @@ fn run<B>(
         path: &Option<String>,
         task_name: &str,
         reward_config_path: &str,
+        plane_config_path: &str,
         config_fields: Vec<(&'static str, String)>,
     ) -> Option<CsvLog> {
         let path = path.as_deref()?;
@@ -395,6 +413,7 @@ fn run<B>(
                 let mut comments = vec![
                     ("task", task_name.to_string()),
                     ("reward_config", reward_config_path.to_string()),
+                    ("plane_config", plane_config_path.to_string()),
                 ];
                 comments.extend(config_fields);
                 log.write_comments(&comments).ok();
@@ -408,40 +427,8 @@ fn run<B>(
         }
     }
 
-    // Generic jet values matching assets/planes/generic_jet.plane.ron
-    let cfg = PlaneConfig {
-        wing_area: 20.0,
-        mean_chord: 2.0,
-        wing_span: 10.0,
-        mass: 5000.0,
-        inertia: Vec3::new(10000.0, 40000.0, 45000.0),
-        cl0: 0.1,
-        cl_alpha: 4.5,
-        cl_delta_e: 0.4,
-        cl_max: 1.4,
-        cd0: 0.02,
-        cd_induced: 0.05,
-        cm0: -0.02,
-        cm_alpha: 0.6,
-        cm_q: -14.0,
-        cm_delta_e: -1.2,
-        cl_beta: 0.08,
-        cl_p: -0.45,
-        cl_r: -0.12,
-        cl_delta_a: 0.18,
-        cn_beta: 0.10,
-        cn_r: -0.12,
-        cn_delta_r: -0.10,
-        cy_beta: -0.80,
-        cy_p: 0.05,
-        cy_r: 0.25,
-        cy_delta_r: 0.18,
-        thrust_max: 60000.0,
-        powerplant: Default::default(),
-        aileron_limit: 0.4363,
-        elevator_limit: 0.3491,
-        rudder_limit: 0.2618,
-    };
+    let cfg = ml_planes::training::load_plane_config_or_exit(&plane_config);
+    println!("Loaded plane config from {plane_config}");
 
     // Effective reward-profile path: the CLI override if given, else the task default.
     let reward_path = reward_config.unwrap_or_else(|| task.reward_config_path().to_string());
@@ -499,7 +486,7 @@ fn run<B>(
                     target_speed_range.end()
                 ),
             ));
-            let log = open_log(&log_file, "level_hold", path, log_fields);
+            let log = open_log(&log_file, "level_hold", path, &plane_config, log_fields);
             run_training_loop_bc::<B, _>(
                 plain,
                 save_path,
@@ -551,7 +538,7 @@ fn run<B>(
                     target_heading_range.end().to_degrees()
                 ),
             ));
-            let log = open_log(&log_file, "heading_hold", path, log_fields);
+            let log = open_log(&log_file, "heading_hold", path, &plane_config, log_fields);
             run_training_loop_bc::<B, _>(
                 plain,
                 save_path,
@@ -584,7 +571,7 @@ fn run<B>(
             };
             let mut log_fields = reward_cfg.log_fields();
             log_fields.extend(hp.log_fields());
-            let log = open_log(&log_file, "orbit", path, log_fields);
+            let log = open_log(&log_file, "orbit", path, &plane_config, log_fields);
             run_training_loop_bc::<B, _>(
                 plain,
                 save_path,
@@ -611,7 +598,7 @@ fn run<B>(
             };
             let mut log_fields = reward_cfg.log_fields();
             log_fields.extend(hp.log_fields());
-            let log = open_log(&log_file, "residual_orbit", path, log_fields);
+            let log = open_log(&log_file, "residual_orbit", path, &plane_config, log_fields);
             run_training_loop::<B, _>(
                 plain,
                 save_path,
@@ -634,7 +621,13 @@ fn run<B>(
                     WuOrbitRewardConfig::default()
                 }
             };
-            let log = open_log(&log_file, "lstm_orbit", path, reward_cfg.log_fields());
+            let log = open_log(
+                &log_file,
+                "lstm_orbit",
+                path,
+                &plane_config,
+                reward_cfg.log_fields(),
+            );
             run_lstm_training_loop::<B>(
                 plain,
                 save_path,

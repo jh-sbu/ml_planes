@@ -425,10 +425,33 @@ Planes can be added/removed at runtime via observer commands (`environment/lifec
 - **Automatic indexing:** `spawn_plane` now takes a `config_path: &str` (per-plane
   `.plane.ron`, no longer hardcoded) and inserts `PlaneIndex(plane_id.0)` itself — every
   spawned plane is automatically visible to camera cycling, the map, and the HUD. Callers no
-  longer hand-insert `PlaneIndex`. `generic_jet_spawn_config()` supplies the shared spawn-time
-  mass/inertia. `spawn_plane` allocates the next id from `NextPlaneId`; `spawn_plane_with_id`
-  is the underlying primitive for callers (the scenario spawner) that must pin an explicit,
-  pre-reserved `PlaneId` instead.
+  longer hand-insert `PlaneIndex`. `spawn_plane` allocates the next id from `NextPlaneId`;
+  `spawn_plane_with_id` is the underlying primitive for callers (the scenario spawner) that
+  must pin an explicit, pre-reserved `PlaneId` instead.
+- **Spawning is asset-driven and therefore deferred.** `spawn_plane`/`spawn_plane_with_id`
+  take **no `PlaneConfig`**: they sanitize the path, reserve the `PlaneId`, start the
+  `.plane.ron` load, and park a `PendingPlaneSpawn` on a bare entity.
+  `finalize_pending_spawns` (registered by `PlanePlugin` in `PreUpdate`, which precedes
+  `RunFixedMainLoop`, so the plane still steps that same frame) then builds `FlightState`,
+  the fuel load, the Rapier body, `PlaneId`/`PlaneIndex`/`ControllerKind`, and the tuning
+  handles **in one insert**. Mass, inertia, fuel, and aerodynamics therefore all come from a
+  single read of a single file and cannot disagree — the previous design read the file twice
+  (a synchronous `load_spawn_config` for mass, an async `AssetServer` load for aero) and fell
+  back to a hardcoded zero-aero `generic_jet_spawn_config()` when either failed, so a typo'd
+  path produced a plane with plausible mass and no lift. **There is no fallback airframe:**
+  a config that fails to load logs one line and spawns nothing.
+  - The pending entity deliberately carries *only* `PendingPlaneSpawn` (the id, spec, kind,
+    and boxed controller live inside it). Every plane-facing query keys on `PlaneId`,
+    `FlightState`, or `ActiveController`, so nothing observes a half-built plane — in
+    particular `net::server::mark_planes_replicated`'s `Added<PlaneId>`, which would
+    otherwise ship one to clients. Inserting `ControllerKind` at finalize is also what
+    supplies the `Changed<ControllerKind>` tick that drives `sim_control.rs`'s tuning and
+    RL-model rebuilds, on an entity that already has its controller.
+  - Consequence for tests: a spawn no longer completes on the same frame. Use
+    `tests/common/mod.rs::resolve_pending_spawns(app, cfg)`, which hands the asset over
+    synchronously rather than waiting on a real load — load timing differs by build
+    (`--features visual` pulls `bevy/default`, hence `multi_threaded`; the headless recipes
+    do not), so it is not something to assert on.
 - **Removal cleanup:** `cleanup_orphaned_wingmen` (Update, headless-safe) flips a wingman whose
   `leader_id` is no longer live to `ControllerKind::LevelHold`; the same system also demotes any
   `Wingman`-kind plane whose active controller isn't actually a `WingmanController` (see the
@@ -537,8 +560,9 @@ ScenarioSelect, InGame }` — the original local single-player flow, unchanged. 
   exists — the former hardcoded demo scene is now `assets/scenarios/default.scenario.ron`.
 
 `spawn_resolved_scenario` (`environment/scenario_spawn.rs`) is the live-app counterpart to
-`observe_state`'s hand-spawning: per plane it calls `build_controller`, seeds the Rapier body
-via `load_spawn_config`, spawns through `spawn_plane_with_id` with `ControllerSpec::kind()`, and
+`observe_state`'s hand-spawning: per plane it calls `build_controller`, spawns through
+`spawn_plane_with_id` with `ControllerSpec::kind()` (which defers until the `.plane.ron`
+loads — see Runtime Plane Lifecycle), and
 attaches per-kind extras (`FormationOffset` for wingmen, `SelectedModel` for RL, `FlightPlanHandle`
 for flight plans so `apply_flight_plan` re-installs the `L1Controller` after the tuning rebuild).
 Scenario `config` paths use the observe_state `assets/...` convention and are stripped to the
@@ -877,7 +901,21 @@ path = "src/bin/mcp.rs"
 > `level_hold`, `heading_hold`, `orbit`, `residual_orbit`, `lstm_orbit`. Both `train_ppo` and
 > `train_bc` accept `--seed <u64>` to fix weight init, minibatch shuffling, and (per-env) episode
 > resets for a reproducible run's starting point — see the "Known nondeterminism" note in §6 for
-> what it does and does not guarantee. For `level_hold`/`heading_hold`, `train_ppo`, `train_bc`,
+> what it does and does not guarantee.
+>
+> All three of `train_ppo`, `train_bc`, and `evaluate_policy` (plus
+> `examples/heading_hold_expert_baseline.rs`) accept `--plane-config <path>` — the `.plane.ron`
+> airframe to train/evaluate against, defaulting to `assets/planes/generic_jet.plane.ron`.
+> Unlike `--reward-config`/`--ppo-config`, which warn and fall back to compiled defaults, an
+> unreadable or invalid airframe is **fatal (exit 2)**: a reward profile is a hyperparameter but
+> the airframe is the *plant*, so a silent substitution would yield a checkpoint fitted to a
+> plane nobody asked for. `train_ppo` records the resolved path in its `--log-file` CSV header
+> (`# plane_config=…`) and `evaluate_policy` echoes it as a `plane_config` row, so a run is
+> traceable to its airframe. Loading goes through `training::cli::load_plane_config_or_exit`, a
+> thin wrapper over the existing `reward_config::load_ron_config`. Pass the same airframe a
+> checkpoint was trained with, for the same reason the target ranges must match.
+>
+> For `level_hold`/`heading_hold`, `train_ppo`, `train_bc`,
 > and `evaluate_policy` all accept `--target-alt-range <MIN:MAX|VALUE>` / `--target-speed-range
 > <MIN:MAX|VALUE>` to set the per-episode target-altitude/airspeed envelope the policy is
 > trained/evaluated across (default `500:5000` / `90:140` for **both** `level_hold` and
@@ -1063,6 +1101,25 @@ These are pure math / headless egui only — no window, no GPU (`visual` costs a
 wgpu+winit *link*, not a display at runtime). Since `test-visual` omits `net`, `sim_enabled` holds,
 so it also re-runs the core sim suite and compile-checks the local-sim/`wasm` bin path.
 
+### Plane configs in tests: use the fixture, never a literal
+
+Tests fly `fixtures/generic_jet.plane.ron` — a **frozen snapshot** at the repo root,
+deliberately outside `assets/`. Reach it via `plane::config::fixture_jet_config()`
+(`#[cfg(test)]`, for `src/` unit tests) or `tests/common/mod.rs::generic_jet_config()` (for the
+three integration binaries); both `include_str!` the same file, so neither can drift from it or
+depend on the working directory.
+
+The fixture is **not** kept in sync with `assets/planes/*.plane.ron`, and that is the point:
+retuning a shipped airframe must not silently move a unit test's expected torque. Coverage that
+the shipped airframes stay valid and sign-correct is `tests/core/plane_assets.rs`, which globs
+`assets/planes/` and never reads the fixture.
+
+Do not hand-write a `PlaneConfig` literal in a test. There used to be 18 copies of the same
+31-field struct across the codebase, and `src/aerodynamics/model.rs` had already drifted — still
+`cm_q: -8.0` long after the asset moved to `-14.0`, under a doc comment claiming they matched.
+Adding a `PlaneConfig` field should break every stale config loudly (the struct has no `Default`
+and only `powerplant` is `#[serde(default)]`), which only works if there is one place to fix.
+
 ### Rules
 - All tests must pass with `cargo test --no-default-features`
 - **The complete supported test matrix is `just test-all`** (justfile at repo root): core
@@ -1155,19 +1212,26 @@ so it also re-runs the core sim suite and compile-checks the local-sim/`wasm` bi
 - **Every caller-supplied path must pass `environment::spawner::sanitize_asset_path` before it
   reaches the filesystem.** There is no authentication, so `SpawnPlaneNetCommand.config_path`
   (and the MCP `spawn_plane` tool's) is an arbitrary string from any peer that can reach the UDP
-  port. It lands in *two* sinks — `load_spawn_config`'s `fs::read("assets/" + p)` and
-  `spawn_plane_with_id`'s `AssetServer::load(p)` — and **neither normalizes**: Bevy's
+  port. Since spawning became asset-driven there is exactly **one** sink,
+  `spawn_plane_with_id`'s `AssetServer::load(p)`, and it does **not** normalize: Bevy's
   `FileAssetReader` does a bare `root_path.join(path)`, so an absolute path escapes the asset
-  root outright there, while `..` escapes both. The validator rejects (never rewrites) `..`,
+  root outright and `..` walks out of it. The validator rejects (never rewrites) `..`,
   absolute paths, backslashes, NUL, and Bevy's `source://` / `#label` metacharacters; a rejected
-  path falls back to the generic jet rather than panicking. Validate at the **sink**, not at the
+  path falls back to the `DEFAULT_PLANE_CONFIG` *path* — which is then loaded like any other —
+  rather than to a hardcoded struct, and never panics. Note that collapsing to one sink also
+  dropped `load_spawn_config`'s 256 KB bounded read, which used to cap a hostile path aimed at
+  a fifo or character device; the lexical rejects above are now the whole defence, and Bevy's
+  reader offers no bound to reinstate. Validate at the **sink**, not at the
   command handler, so a future caller cannot reintroduce the hole. `model_path_matches_dir`
   (`controllers/sim_control.rs`) carries the same component walk for `SetModelCommand`, and
   `scenario_spawn::asset_relative_config` for scenario-supplied paths — note its
   `strip_prefix("assets/")` is cosmetic, not validating.
 - **Never interpolate a `ron` parse error into a log for a caller-supplied path.** `ron`'s errors
   embed the offending token from the file (`Expected struct PlaneConfig but found <token>`),
-  which made `load_spawn_config`'s log a content-disclosure channel for any file on disk. This
+  which made the old `load_spawn_config`'s log a content-disclosure channel for any file on
+  disk. `finalize_pending_spawns` logs the *path* and nothing else for the same reason. (The
+  operator-facing `training::cli::load_plane_config_or_exit` deliberately *does* print the
+  parse error — its path comes from a local command line, not a peer.) This
   matters more than it looks: `src/bin/server.rs` runs `MinimalPlugins` with **no `LogPlugin`**,
   so `warn!`/`error!` are silently dropped there and the `eprintln!`s are the only lines that
   reach stderr at all.

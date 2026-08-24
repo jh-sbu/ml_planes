@@ -1,20 +1,36 @@
 //! Runtime plane lifecycle: per-plane config path, spawn/remove commands,
 //! automatic indexing, and removal cleanup.
 
-use crate::common::{build_headless_app, build_headless_app_with, generic_jet_config};
+use crate::common::{
+    build_headless_app, build_headless_app_with, generic_jet_config, resolve_pending_spawns,
+};
 use bevy::prelude::*;
+use bevy_rapier3d::prelude::AdditionalMassProperties;
 #[cfg(feature = "visual")]
 use ml_planes::camera::{systems::recover_camera_on_target_loss, CameraMode};
 use ml_planes::controllers::{
     ActiveController, ControllerKind, FormationOffset, LevelHoldController, PlaneTuning,
     SelectedTuningProfile, WingmanController,
 };
+use ml_planes::environment::PendingPlaneSpawn;
 use ml_planes::environment::{spawn_plane, LifecyclePlugin, RemovePlaneCommand, SpawnPlaneCommand};
 use ml_planes::plane::{
-    FlightState, NextPlaneId, PlaneConfig, PlaneConfigHandle, PlaneIndex, PlaneTuningHandle,
-    PlaneTuningPath,
+    FlightState, NextPlaneId, PlaneConfig, PlaneConfigHandle, PlaneId, PlaneIndex,
+    PlaneTuningHandle, PlaneTuningPath,
 };
 use ml_planes::training::SpawnSpec;
+
+/// Number of finalized planes (entities carrying a `PlaneId`).
+fn count_planes(app: &mut App) -> usize {
+    let world = app.world_mut();
+    world.query::<&PlaneId>().iter(world).count()
+}
+
+/// Number of spawn requests still waiting on their `.plane.ron` asset.
+fn count_pending(app: &mut App) -> usize {
+    let world = app.world_mut();
+    world.query::<&PendingPlaneSpawn>().iter(world).count()
+}
 
 /// Collect the `PlaneIndex` ordinal of every live plane.
 fn plane_indices(app: &mut App) -> Vec<u32> {
@@ -45,7 +61,7 @@ fn spawn_commands_index_planes_and_remove_despawns() {
         Vec3::new(100.0, 0.0, 0.0),
         ControllerKind::Orbit,
     ));
-    app.update();
+    resolve_pending_spawns(&mut app, &generic_jet_config());
 
     let indices = plane_indices(&mut app);
     assert_eq!(indices.len(), 2, "two planes spawned via command");
@@ -85,8 +101,9 @@ fn spawn_plane_uses_supplied_config_path() {
         .expect("spawned plane has PlaneConfigHandle")
         .0
         .clone();
-    let expected: Handle<PlaneConfig> =
-        world.resource::<AssetServer>().load("planes/f16.plane.ron");
+    let expected: Handle<PlaneConfig> = world
+        .resource::<AssetServer>()
+        .load("planes/cargo_jet.plane.ron");
     assert_eq!(
         handle, expected,
         "spawned plane should carry the config handle for the supplied path"
@@ -98,16 +115,14 @@ fn spawn_with_custom_path(
     mut ids: ResMut<NextPlaneId>,
     asset_server: Res<AssetServer>,
 ) {
-    let cfg = generic_jet_config();
     let spawned = spawn_plane(
         &mut commands,
         &mut ids,
         &asset_server,
-        "planes/f16.plane.ron",
+        "planes/cargo_jet.plane.ron",
         &SpawnSpec::default(),
         Box::new(LevelHoldController::new(1000.0, 100.0)),
         ControllerKind::LevelHold,
-        &cfg,
     );
     commands.insert_resource(SpawnedEntity(spawned.entity));
 }
@@ -132,7 +147,7 @@ fn spawn_command_attaches_tuning_for_config_with_sibling() {
         kind: ControllerKind::LevelHold,
         config_path: "planes/cargo_jet.plane.ron".to_string(),
     });
-    app.update();
+    resolve_pending_spawns(&mut app, &generic_jet_config());
 
     let world = app.world_mut();
     let entity = {
@@ -166,38 +181,43 @@ fn spawn_command_attaches_tuning_for_config_with_sibling() {
 /// A config with no `.tuning.ron` sibling must NOT attach tuning components, so
 /// the plane keeps its `build()`-default controller without a dangling handle.
 #[test]
-fn spawn_command_skips_tuning_without_sibling() {
+fn spawn_command_with_unloadable_config_spawns_no_plane() {
+    // Previously a missing/invalid `.plane.ron` silently fell back to a hardcoded
+    // zero-aero "generic jet", so a typo produced a plane that could not fly and gave
+    // no clue why. There is no fallback airframe any more: the request is dropped.
+    //
+    // (The sibling branch this test used to cover — a config with no `.tuning.ron`
+    // next to it attaches no tuning handle — is unit-tested in
+    // `environment::spawner::tests::tuning_path_is_none_without_sibling`, which no
+    // longer needs a plane that spawns from a nonexistent file.)
     let mut app = build_headless_app_with(|app| {
         app.add_plugins(LifecyclePlugin);
     });
     app.update();
 
     app.world_mut().trigger(SpawnPlaneCommand {
-        spec: SpawnSpec {
-            position: Some(Vec3::new(0.0, 1000.0, 0.0)),
-            velocity: Some(Vec3::new(120.0, 0.0, 0.0)),
-            ..Default::default()
-        },
+        spec: SpawnSpec::default(),
         kind: ControllerKind::LevelHold,
         config_path: "planes/no_such_airframe.plane.ron".to_string(),
     });
-    app.update();
 
-    let world = app.world_mut();
-    let entity = {
-        let mut q = world.query_filtered::<Entity, With<PlaneIndex>>();
-        q.iter(world).next().expect("a plane was spawned")
-    };
-    assert!(
-        world.entity(entity).get::<PlaneTuningHandle>().is_none(),
-        "no tuning sibling → no tuning handle"
+    // Give the asset server room to reach a terminal load-failure state.
+    for _ in 0..64 {
+        app.update();
+        if count_pending(&mut app) == 0 {
+            break;
+        }
+    }
+
+    assert_eq!(
+        count_planes(&mut app),
+        0,
+        "an unloadable config must not produce a plane"
     );
-    assert!(
-        world
-            .entity(entity)
-            .get::<SelectedTuningProfile>()
-            .is_none(),
-        "no tuning sibling → no selected profile"
+    assert_eq!(
+        count_pending(&mut app),
+        0,
+        "the pending request must be dropped, not leaked"
     );
 }
 
@@ -222,7 +242,7 @@ fn spawn_command_rejects_traversal_config_path() {
         // Resolves to a real airframe if traversal is not rejected.
         config_path: "planes/../planes/cargo_jet.plane.ron".to_string(),
     });
-    app.update();
+    resolve_pending_spawns(&mut app, &generic_jet_config());
 
     let world = app.world_mut();
     let entity = {
@@ -260,7 +280,7 @@ fn removing_leader_drops_wingman_to_level_hold() {
         app.add_plugins(LifecyclePlugin);
     });
     app.add_systems(Startup, spawn_leader_and_wingman);
-    app.update();
+    resolve_pending_spawns(&mut app, &generic_jet_config());
 
     let (leader, wingman) = {
         let pair = app.world().resource::<LeaderWingman>();
@@ -314,7 +334,6 @@ fn spawn_leader_and_wingman(
     mut ids: ResMut<NextPlaneId>,
     asset_server: Res<AssetServer>,
 ) {
-    let cfg = generic_jet_config();
     let leader_pos = Vec3::new(0.0, 1000.0, 0.0);
     let vel = Vec3::new(100.0, 0.0, 0.0);
     let leader_state = FlightState {
@@ -336,7 +355,6 @@ fn spawn_leader_and_wingman(
         },
         Box::new(LevelHoldController::new(1000.0, 100.0)),
         ControllerKind::LevelHold,
-        &cfg,
     );
 
     let offset = FormationOffset::default();
@@ -361,7 +379,6 @@ fn spawn_leader_and_wingman(
         },
         Box::new(wingman_ctrl),
         ControllerKind::Wingman,
-        &cfg,
     );
 
     commands.insert_resource(LeaderWingman {
@@ -393,4 +410,76 @@ fn camera_recovers_to_free_look_when_followed_plane_removed() {
         matches!(*app.world().resource::<CameraMode>(), CameraMode::FreeLook),
         "camera falls back to free-look when its target is gone"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Deferred, asset-driven spawn (Phase 3)
+
+/// A spawn request is parked until its `.plane.ron` is available, then the whole
+/// physics body is built from the real config in one step. This is what lets
+/// `generic_jet_spawn_config()` — a hand-typed, zero-aero stand-in — go away entirely:
+/// there is no longer a moment where a body exists but its config does not.
+///
+/// The assertion is on the *contract* (no plane without its config; a plane once it
+/// has one), not on how many frames the asset takes — this crate does not enable
+/// bevy's `multi_threaded` feature, so IO-pool timing is not something to pin.
+#[test]
+fn spawn_defers_until_the_plane_config_asset_is_available() {
+    let mut app = build_headless_app_with(|app| {
+        app.add_plugins(LifecyclePlugin);
+    });
+
+    app.world_mut().commands().trigger(SpawnPlaneCommand {
+        spec: SpawnSpec::default(),
+        kind: ControllerKind::LevelHold,
+        config_path: "planes/generic_jet.plane.ron".to_string(),
+    });
+
+    // Satisfy the asset by hand (no filesystem/async timing) and step once.
+    resolve_pending_spawns(&mut app, &generic_jet_config());
+
+    assert_eq!(count_planes(&mut app), 1, "the plane should now exist");
+    assert_eq!(
+        count_pending(&mut app),
+        0,
+        "the pending marker is consumed, never left behind"
+    );
+
+    // A finalized plane is whole: everything a plane-facing system queries on arrives
+    // in the same insert, so nothing can observe a half-built plane.
+    let world = app.world_mut();
+    let mut q = world.query::<(&PlaneId, &FlightState, &ActiveController, &ControllerKind)>();
+    assert_eq!(q.iter(world).count(), 1);
+}
+
+/// The finalized body's mass and inertia come from the *loaded* config, so a heavy
+/// airframe never flies on generic inertia. This used to depend on a synchronous
+/// `load_spawn_config` read agreeing with a separate async load of the same file.
+#[test]
+fn finalized_plane_takes_mass_from_the_loaded_config() {
+    let mut app = build_headless_app_with(|app| {
+        app.add_plugins(LifecyclePlugin);
+    });
+
+    app.world_mut().commands().trigger(SpawnPlaneCommand {
+        spec: SpawnSpec::default(),
+        kind: ControllerKind::LevelHold,
+        config_path: "planes/cargo_jet.plane.ron".to_string(),
+    });
+
+    // The real cargo jet, so the assertion holds whether the hand-inserted asset or
+    // the genuine disk load gets there first.
+    let cargo = ml_planes::training::load_plane_config("assets/planes/cargo_jet.plane.ron")
+        .expect("cargo jet asset loads");
+    resolve_pending_spawns(&mut app, &cargo);
+
+    let world = app.world_mut();
+    let mut q = world.query::<(&PlaneId, &AdditionalMassProperties)>();
+    let (_, mass_props) = q.iter(world).next().expect("plane should be spawned");
+    let AdditionalMassProperties::MassProperties(props) = mass_props else {
+        panic!("spawn should seed explicit MassProperties");
+    };
+    // Dry 128000 kg + a full 90000 kg tank — not the 5000 kg generic-jet default.
+    assert_eq!(props.mass, 218000.0);
+    assert!((props.principal_inertia.y - 2.46e7).abs() < 1.0);
 }

@@ -32,7 +32,7 @@ use crate::training::SpawnSpec;
 #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
 use crate::controllers::SelectedModel;
 
-use super::spawner::{load_spawn_config, sanitize_asset_path, spawn_plane_with_id};
+use super::spawner::{sanitize_asset_path, spawn_plane_with_id};
 
 /// Outcome of [`spawn_resolved_scenario`].
 #[derive(Debug, Default)]
@@ -163,11 +163,9 @@ pub fn spawn_resolved_scenario(
         let plane_id = runtime_id[idx].expect("a surviving plane must have a reserved runtime id");
         let plane = &scenario.planes[idx];
 
-        // Seed the Rapier body from the chosen config synchronously (mass /
-        // inertia / fuel) — a heavy airframe on generic inertia diverges to a
-        // non-finite state. Aero is driven by the async-loaded handle once ready.
+        // Mass, inertia, fuel, and aero all come from this one `.plane.ron` once it
+        // loads (see `finalize_pending_spawns`), so they cannot disagree.
         let config_path = asset_relative_config(&plane.config);
-        let cfg = load_spawn_config(&config_path);
 
         let spec = SpawnSpec {
             position: Some(plane.position),
@@ -185,7 +183,6 @@ pub fn spawn_resolved_scenario(
             &spec,
             controller,
             plane.spec.kind(),
-            &cfg,
         );
 
         // Per-kind extras the generic spawn path can't infer.
