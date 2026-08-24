@@ -8,6 +8,7 @@
 /dist
 /bindings/python/tests/__pycache__/
 /python/ml_planes/__pycache__/
+/python/ml_planes/*.so
 
 # I use a softlink and keep everything in CLAUDE.md
 /AGENTS.md
