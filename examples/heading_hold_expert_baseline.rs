@@ -61,9 +61,6 @@ fn main() {
         DEFAULT_TARGET_HEADING_DEG_MAX,
     );
 
-    // Same airframe contract as the training/eval binaries: default to the shipped
-    // generic jet, and refuse to run on an unreadable override rather than quietly
-    // baselining a different plane than the policy under comparison.
     let plane_config = args
         .windows(2)
         .find(|w| w[0] == "--plane-config")

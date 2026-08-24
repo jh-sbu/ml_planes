@@ -168,14 +168,8 @@ pub struct PlaneConfig {
     pub rudder_limit: f32,   // [rad]
 }
 
-/// The frozen generic-jet airframe every `src/` unit test flies.
-///
-/// Reads `fixtures/generic_jet.plane.ron` via `include_str!`, so it cannot drift from
-/// the fixture and does not depend on the working directory. The fixture is a
-/// **snapshot**, not a mirror: it is deliberately not kept in sync with
-/// `assets/planes/*.plane.ron`, so retuning a shipped airframe never silently moves a
-/// unit test's expected numbers. Integration tests get the same values from
-/// `tests/common/mod.rs::generic_jet_config()`.
+/// Load the frozen test airframe embedded from `fixtures/generic_jet.plane.ron`.
+/// Integration tests load the same file through `tests/common/mod.rs`.
 #[cfg(test)]
 pub(crate) fn fixture_jet_config() -> PlaneConfig {
     const SRC: &str = include_str!("../../fixtures/generic_jet.plane.ron");

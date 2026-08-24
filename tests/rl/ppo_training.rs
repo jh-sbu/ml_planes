@@ -14,8 +14,6 @@ use ml_planes::training::{LevelHoldEnv, OrbitEnv};
 type B = Autodiff<NdArray>;
 const ORBIT_OBS_DIM: usize = 14;
 
-/// The shared frozen test airframe. Delegates to the `tests/common` helper rather
-/// than re-typing the literal — see `fixtures/generic_jet.plane.ron`.
 fn jet_cfg() -> PlaneConfig {
     crate::common::generic_jet_config()
 }

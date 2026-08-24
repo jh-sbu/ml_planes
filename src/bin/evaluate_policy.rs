@@ -73,9 +73,6 @@ fn main() {
         .strip_suffix(".mpk")
         .unwrap_or(&model_path)
         .to_string();
-    // Airframe the policy is evaluated against. Fatal on error (see train_ppo's
-    // --plane-config): evaluating on a substituted plant would silently report
-    // numbers for a plane the checkpoint was never fitted to.
     let plane_config = find_arg(&args, "--plane-config")
         .unwrap_or_else(|| ml_planes::training::DEFAULT_PLANE_CONFIG_PATH.to_string());
     let cfg = ml_planes::training::load_plane_config_or_exit(&plane_config);

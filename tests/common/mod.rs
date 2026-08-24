@@ -58,16 +58,7 @@ pub fn build_headless_app_with(configure: impl FnOnce(&mut App)) -> App {
     app
 }
 
-/// The frozen generic-jet airframe every integration test flies.
-///
-/// Reads `fixtures/generic_jet.plane.ron` via `include_str!` — a **snapshot**, not a
-/// mirror of `assets/planes/generic_jet.plane.ron`. Keeping them separate means
-/// retuning a shipped airframe cannot silently move a test's expected numbers; the
-/// shipped assets are covered on their own by `tests/core/plane_assets.rs`. The
-/// `src/` unit tests get the same values from `plane::config::fixture_jet_config()`.
-///
-/// Inserted into `Assets<PlaneConfig>` synchronously by callers, bypassing async
-/// file loading.
+/// Load the frozen test airframe embedded from `fixtures/generic_jet.plane.ron`.
 #[allow(dead_code)]
 pub fn generic_jet_config() -> PlaneConfig {
     const SRC: &str = include_str!("../../fixtures/generic_jet.plane.ron");

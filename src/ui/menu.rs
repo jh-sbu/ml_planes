@@ -531,9 +531,6 @@ fn despawn_in_game_planes(
     client: Option<ResMut<RenetClient>>,
 ) {
     teardown_connection(&mut commands, &mut local_server, client);
-    // The pending sweep is kept symmetric with the non-net variant even though a client
-    // never spawns locally (`lifecycle_panel` sends `SpawnPlaneNetCommand` instead), so
-    // the two teardown paths can't drift if that ever changes.
     for entity in planes.iter().chain(pending.iter()) {
         commands.entity(entity).despawn();
     }

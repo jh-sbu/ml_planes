@@ -154,10 +154,6 @@ fn main() {
         .find(|w| w[0] == "--reward-config")
         .map(|w| w[1].clone());
 
-    // The airframe to train against. Unlike --reward-config, an unreadable value is
-    // FATAL (see `load_plane_config_or_exit`): the airframe is the plant, and a run
-    // that silently flew a substitute would yield a checkpoint fitted to a plane
-    // nobody asked for.
     let plane_config: String = args
         .windows(2)
         .find(|w| w[0] == "--plane-config")

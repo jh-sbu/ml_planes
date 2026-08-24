@@ -102,9 +102,8 @@ pub struct PendingPlaneSpawn {
 ///
 /// `config_path` is the `.plane.ron` asset this plane is built from. The returned
 /// entity is a [`PendingPlaneSpawn`] and does **not** simulate yet; it becomes a real
-/// plane once the asset loads (see `finalize_pending_spawns`). There is deliberately no
-/// `cfg` parameter and no fallback airframe: mass, inertia, and aerodynamics all come
-/// from the same single read of the same file, so they cannot disagree.
+/// plane once the asset loads (see `finalize_pending_spawns`). There is no fallback
+/// airframe; mass, inertia, and aerodynamics all come from that asset.
 pub fn spawn_plane_with_id(
     commands: &mut Commands,
     plane_id: PlaneId,
@@ -116,8 +115,7 @@ pub fn spawn_plane_with_id(
 ) -> SpawnedPlane {
     // Validate before handing the path to Bevy. `FileAssetReader` does a bare
     // `root_path.join(path)`, so an absolute path escapes the asset root outright.
-    // A rejected path falls back to the default *path* — which is then loaded like
-    // any other, rather than to a hardcoded struct.
+    // Rejected paths load the default asset through the same asset pipeline.
     let safe_config_path =
         sanitize_asset_path(config_path).unwrap_or_else(|| DEFAULT_PLANE_CONFIG.to_string());
     let handle: Handle<PlaneConfig> = asset_server.load(safe_config_path.clone());
@@ -357,10 +355,7 @@ pub fn detect_ground_contact(
 mod tests {
     use super::*;
 
-    /// The default a rejected path falls back to is an asset *path*, loaded like any
-    /// other — not a hardcoded struct. This is what lets the spawn path have no
-    /// built-in airframe at all; the end-to-end behaviour lives in
-    /// `tests/core/lifecycle.rs::spawn_defers_until_the_plane_config_asset_is_available`.
+    /// The fallback must be a valid, loadable asset path.
     #[test]
     fn default_plane_config_is_a_real_loadable_asset() {
         assert_eq!(

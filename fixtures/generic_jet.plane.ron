@@ -1,17 +1,6 @@
-// TEST FIXTURE — frozen generic-jet airframe, used only by the test suite.
-//
-// This file is deliberately NOT kept in sync with `assets/planes/*.plane.ron` and does
-// not necessarily reflect the values the live sim flies. Tests pin numeric expectations
-// against these numbers, so editing them changes what those tests mean; treat a change
-// here as a change to the tests, not as a config update.
-//
-// Coverage that the *shipped* airframes stay valid and sign-correct lives in
-// `tests/core/plane_assets.rs`, which globs `assets/planes/` and never reads this file.
-// That separation is the point: retuning a shipped airframe must not silently move a
-// unit test's expected torque, and conversely this fixture must never be mistaken for
-// a flyable asset.
-//
-// Values below were snapshotted from `assets/planes/generic_jet.plane.ron`.
+// Frozen test airframe, deliberately independent of the flyable assets in `assets/planes/`.
+// Editing it changes test expectations. Shipped airframes are covered separately by
+// `tests/core/plane_assets.rs`.
 (
     // --- Geometry ---
     wing_area: 20.0,        // S  [m²]

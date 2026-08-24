@@ -101,9 +101,6 @@ fn main() {
         };
 
         let plane = &resolved.planes[idx];
-        // One loader, one failure mode: an unreadable airframe aborts the run
-        // (exit 2) instead of silently flying a substitute — same contract as the
-        // training/eval binaries.
         let cfg = ml_planes::training::load_plane_config_or_exit(
             plane
                 .config

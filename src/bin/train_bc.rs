@@ -106,7 +106,6 @@ fn main() {
 
     // Optional reward-profile override; defaults to the task baseline profile.
     let reward_config = find("--reward-config");
-    // Airframe to clone the PID expert on. Fatal on error (see `train_ppo`).
     let plane_config = find("--plane-config")
         .unwrap_or_else(|| ml_planes::training::DEFAULT_PLANE_CONFIG_PATH.to_string());
 

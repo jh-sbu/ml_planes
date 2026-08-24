@@ -178,18 +178,9 @@ fn spawn_command_attaches_tuning_for_config_with_sibling() {
     );
 }
 
-/// A config with no `.tuning.ron` sibling must NOT attach tuning components, so
-/// the plane keeps its `build()`-default controller without a dangling handle.
+/// A plane is not spawned when its config cannot be loaded.
 #[test]
 fn spawn_command_with_unloadable_config_spawns_no_plane() {
-    // Previously a missing/invalid `.plane.ron` silently fell back to a hardcoded
-    // zero-aero "generic jet", so a typo produced a plane that could not fly and gave
-    // no clue why. There is no fallback airframe any more: the request is dropped.
-    //
-    // (The sibling branch this test used to cover — a config with no `.tuning.ron`
-    // next to it attaches no tuning handle — is unit-tested in
-    // `environment::spawner::tests::tuning_path_is_none_without_sibling`, which no
-    // longer needs a plane that spawns from a nonexistent file.)
     let mut app = build_headless_app_with(|app| {
         app.add_plugins(LifecyclePlugin);
     });
@@ -329,12 +320,8 @@ fn wingman_kind_without_wingman_controller_falls_back_to_level_hold() {
     );
 }
 
-/// A leader still waiting on its `.plane.ron` is a plane that *will* exist, not one
-/// that is gone. Spawning became asset-driven, so a `PendingPlaneSpawn` carries no
-/// `PlaneId` — and `cleanup_orphaned_wingmen` reads liveness off `PlaneId`. A wingman
-/// whose config lands first must therefore not be demoted, because the demotion is
-/// one-way: `apply_controller_switch` rebuilds a real `LevelHoldController` and nothing
-/// ever promotes back to `Wingman`.
+/// A leader still waiting on its `.plane.ron` is live for orphan detection. A wingman
+/// whose config lands first must not be demoted because the demotion is one-way.
 ///
 /// The leader here holds a *reserved* handle whose asset is never inserted, which is
 /// what a real load-in-flight looks like to `finalize_pending_spawns` (`configs.get`
@@ -345,8 +332,6 @@ fn wingman_survives_a_leader_still_waiting_on_its_config() {
         app.add_plugins(LifecyclePlugin);
     });
 
-    // The leader: a spawn request parked on its config, exactly as `spawn_plane` leaves
-    // it. Id 1 is reserved up front, so it is already authoritative.
     let leader_id = PlaneId(1);
     let never_loads = app
         .world()
@@ -361,7 +346,6 @@ fn wingman_survives_a_leader_still_waiting_on_its_config() {
         config_path: "planes/generic_jet.plane.ron".to_string(),
     });
 
-    // The wingman: finalized, following the still-pending leader.
     let leader_state = FlightState {
         position: Vec3::new(0.0, 1000.0, 0.0),
         velocity: Vec3::new(100.0, 0.0, 0.0),
@@ -486,12 +470,10 @@ fn camera_recovers_to_free_look_when_followed_plane_removed() {
 }
 
 // ---------------------------------------------------------------------------
-// Deferred, asset-driven spawn (Phase 3)
+// Deferred, asset-driven spawn
 
 /// A spawn request is parked until its `.plane.ron` is available, then the whole
-/// physics body is built from the real config in one step. This is what lets
-/// `generic_jet_spawn_config()` — a hand-typed, zero-aero stand-in — go away entirely:
-/// there is no longer a moment where a body exists but its config does not.
+/// physics body is built from the real config in one step.
 ///
 /// The assertion is on the *contract* (no plane without its config; a plane once it
 /// has one), not on how many frames the asset takes — this crate does not enable
@@ -525,9 +507,7 @@ fn spawn_defers_until_the_plane_config_asset_is_available() {
     assert_eq!(q.iter(world).count(), 1);
 }
 
-/// The finalized body's mass and inertia come from the *loaded* config, so a heavy
-/// airframe never flies on generic inertia. This used to depend on a separate
-/// synchronous read of the file agreeing with the async load of the same file.
+/// The finalized body's mass and inertia come from the loaded config.
 #[test]
 fn finalized_plane_takes_mass_from_the_loaded_config() {
     let mut app = build_headless_app_with(|app| {

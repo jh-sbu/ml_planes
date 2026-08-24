@@ -178,11 +178,6 @@ pub fn compute_aero_forces(
 mod tests {
     use super::*;
 
-    /// The shared frozen test airframe (`fixtures/generic_jet.plane.ron`).
-    ///
-    /// NOTE: this used to be a hand-typed literal that had drifted — it still carried
-    /// `cm_q: -8.0` long after the shipped generic jet moved to -14.0. The fixture is a
-    /// snapshot rather than a live mirror, but at least it is a single one.
     fn jet_config() -> PlaneConfig {
         crate::plane::config::fixture_jet_config()
     }

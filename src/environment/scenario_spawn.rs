@@ -164,8 +164,6 @@ pub fn spawn_resolved_scenario(
         let plane_id = runtime_id[idx].expect("a surviving plane must have a reserved runtime id");
         let plane = &scenario.planes[idx];
 
-        // Mass, inertia, fuel, and aero all come from this one `.plane.ron` once it
-        // loads (see `finalize_pending_spawns`), so they cannot disagree.
         let config_path = asset_relative_config(&plane.config);
 
         let spec = SpawnSpec {

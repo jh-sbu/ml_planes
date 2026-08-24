@@ -93,8 +93,6 @@ mod tests {
     use crate::plane::PlaneConfig;
     use crate::training::{LevelHoldEnv, OrbitEnv};
 
-    /// The shared frozen test airframe (`fixtures/generic_jet.plane.ron`).
-    /// A snapshot, not a mirror of `assets/planes/` — see `fixture_jet_config`.
     fn jet_cfg() -> PlaneConfig {
         crate::plane::config::fixture_jet_config()
     }

@@ -67,10 +67,9 @@ impl Plugin for LifecyclePlugin {
 /// Also demotes a `Wingman`-kind plane whose active controller isn't actually a
 /// `WingmanController`; the kind must not claim formation flight the plane is not doing.
 ///
-/// A leader still parked on its `.plane.ron` counts as **live**. Spawning is
-/// asset-driven, so a [`PendingPlaneSpawn`] carries no `PlaneId` (that is deliberate —
-/// see its docs) yet its id is already reserved, and a wingman whose own config happens
-/// to land first must not be demoted for it. The demotion is one-way: it flips
+/// A leader still parked on its `.plane.ron` counts as **live**. A
+/// [`PendingPlaneSpawn`] carries no `PlaneId`, but its id is already reserved; otherwise
+/// a wingman whose config loads first would be demoted. The demotion is one-way: it flips
 /// `ControllerKind`, `apply_controller_switch` rebuilds a real `LevelHoldController`,
 /// and nothing ever promotes back.
 fn cleanup_orphaned_wingmen(
@@ -107,10 +106,6 @@ fn on_spawn_plane_command(
     // (Wingman/FlightPlan/RL) that need extra context the factory can't provide.
     let state = initial_state_from_spec(&cmd.spec);
     let controller = cmd.kind.build(&state, None, &ControlInputs::default());
-    // The plane is built from the chosen `.plane.ron` once it loads — mass, inertia,
-    // fuel, and aerodynamics all from the same single read, so a heavy airframe can
-    // never end up flying on generic inertia (which diverges to a non-finite state and
-    // panics the physics step). See `finalize_pending_spawns`.
     spawn_plane(
         &mut commands,
         &mut ids,
