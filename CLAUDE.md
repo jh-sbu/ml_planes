@@ -599,10 +599,23 @@ Training environments (`LevelHoldEnv`, `OrbitEnv`, `ResidualOrbitEnv`, `WuOrbitE
 - `training/flight_env.rs::integrate_state()` provides 6-DOF Euler integration
 - Aerodynamics: shared `compute_aero_forces()` from `aerodynamics/`
 - Result: deterministic rollouts, fast vectorized training, no ECS overhead
-- `VecEnv` wraps any `TrainingEnv` to run N parallel episodes (seeds offset via `offset_rng_seed()`).
+- `VecEnv` wraps any `TrainingEnv` to run N parallel episodes (`VecEnv::set_rng_seed(base)` seeds
+  the pool, spacing sub-envs `ENV_SEED_STRIDE` apart).
   `step_batch` returns one `StepOutcome` per env and, unlike Gymnasium's vector envs, does **not**
   auto-reset — the caller resets explicitly via `reset_at`. That is deliberate: it keeps the
   terminal observation reachable for truncation bootstrapping (below)
+- **Seeding contract:** `set_rng_seed(seed)` (absolute) is the required trait primitive;
+  `offset_rng_seed(offset)` is a default impl over it (`set_rng_seed(rng_seed() + offset)`).
+  Absolute seeding is what a Gymnasium-style `reset(seed=...)` needs and what the Python bindings
+  will marshal — an *offset* cannot express it, because every `reset()` advances the seed by 1
+  before drawing, so the base an offset is relative to moves. That same `+1` means
+  `set_rng_seed(s)` then `reset()` draws from `s + 1`: the guarantee is that the same `s`
+  reproduces the same episode, not that the stream literally starts at `s`. Both methods are
+  **required** (no defaulted no-op) so a new env cannot silently ship as unseedable.
+  `PpoTrainer`/`LstmPpoTrainer` deliberately keep seeding their pools through `offset_rng_seed`
+  on freshly-cloned template envs — switching them to the absolute form would change which
+  episodes every existing `--seed` value draws, invalidating reproduction of past seeded runs
+  (pinned by `ppo::trainer::tests::seeded_env_pool_is_offset_from_the_template_not_absolute`)
 - Integration step is **64 Hz**, read from the shared `ml_planes::plane::PHYSICS_DT` — the *same*
   constant the live sim's Rapier fixed schedule, Bevy's `Time<Fixed>`, and the replicon server
   tick use. The Euler integrator and Rapier are still different integrators, but they no longer

@@ -77,8 +77,26 @@ pub trait TrainingEnv: Send + Sync + 'static {
     fn observation_dim(&self) -> usize;
     fn action_dim(&self) -> usize;
 
+    /// The env's current deterministic-variation seed.
+    fn rng_seed(&self) -> u64;
+
+    /// Reset deterministic episode variation to an absolute seed.
+    ///
+    /// This is the primitive a Gymnasium-style `reset(seed=...)` needs: the same
+    /// `seed` must reproduce the same episode no matter how many resets came
+    /// before it. [`Self::offset_rng_seed`] cannot express that on its own,
+    /// because every `reset()` advances the seed an offset would be relative to.
+    ///
+    /// Note that `reset()` advances the seed *before* drawing, so `set_rng_seed(s)`
+    /// followed by `reset()` runs the episode drawn from `s + 1`. The guarantee is
+    /// reproducibility — the same `s` always yields the same episode sequence — not
+    /// that the RNG stream literally begins at `s`.
+    fn set_rng_seed(&mut self, seed: u64);
+
     /// Shift deterministic episode variation for cloned vectorized envs.
-    fn offset_rng_seed(&mut self, _offset: u64) {}
+    fn offset_rng_seed(&mut self, offset: u64) {
+        self.set_rng_seed(self.rng_seed().wrapping_add(offset));
+    }
 }
 
 #[cfg(test)]

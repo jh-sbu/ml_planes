@@ -279,9 +279,13 @@ impl HeadingHoldEnv {
 }
 
 impl TrainingEnv for HeadingHoldEnv {
-    fn offset_rng_seed(&mut self, offset: u64) {
-        self.rng_seed = self.rng_seed.wrapping_add(offset);
-        self.rng = Lcg::new(self.rng_seed);
+    fn rng_seed(&self) -> u64 {
+        self.rng_seed
+    }
+
+    fn set_rng_seed(&mut self, seed: u64) {
+        self.rng_seed = seed;
+        self.rng = Lcg::new(seed);
     }
 
     fn reset(&mut self) -> (Observation, SpawnSpec) {
@@ -866,5 +870,41 @@ mod tests {
                 other => panic!("expected ControllerTargets::HeadingHold, got {other:?}"),
             }
         }
+    }
+
+    /// Gymnasium's `reset(seed=s)` needs an *absolute* seed: the same `s` must
+    /// reproduce the same episode regardless of how many resets came before it.
+    /// `offset_rng_seed` cannot express that, because every `reset()` advances the
+    /// very seed the offset is relative to.
+    #[test]
+    fn set_rng_seed_is_history_independent() {
+        let mut a = HeadingHoldEnv::new(0.0, 1000.0, 120.0, jet_cfg());
+        let mut b = HeadingHoldEnv::new(0.0, 1000.0, 120.0, jet_cfg());
+        a.reset();
+        for _ in 0..5 {
+            b.reset();
+        }
+
+        a.set_rng_seed(1234);
+        b.set_rng_seed(1234);
+        let (obs_a, spec_a) = a.reset();
+        let (obs_b, spec_b) = b.reset();
+
+        assert_eq!(obs_a, obs_b, "the same absolute seed must yield the same episode");
+        assert_eq!(format!("{spec_a:?}"), format!("{spec_b:?}"));
+    }
+
+    /// `offset_rng_seed` keeps its additive meaning once `set_rng_seed` becomes the
+    /// primitive — the vectorized trainers seed their env pools through it.
+    #[test]
+    fn offset_rng_seed_stays_additive_over_set_rng_seed() {
+        let mut env = HeadingHoldEnv::new(0.0, 1000.0, 120.0, jet_cfg());
+        env.set_rng_seed(100);
+        env.offset_rng_seed(7);
+        assert_eq!(env.rng_seed(), 107);
+
+        let mut direct = HeadingHoldEnv::new(0.0, 1000.0, 120.0, jet_cfg());
+        direct.set_rng_seed(107);
+        assert_eq!(env.reset().0, direct.reset().0);
     }
 }

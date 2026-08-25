@@ -1,5 +1,14 @@
 use crate::training::{Observation, StepOutcome, TrainingEnv};
 
+/// Seed spacing between neighbouring envs in a pool.
+///
+/// Each `reset()` advances an env's seed by 1, so this is how many episodes a
+/// given env can run before its seed walks onto its neighbour's starting value
+/// and the two begin drawing identical episodes. That is a correlation in the
+/// rollout batch rather than a correctness bug, and 1000 episodes is far past
+/// any shipped run length — but it is a ceiling, not an impossibility.
+pub const ENV_SEED_STRIDE: u64 = 1_000;
+
 /// Wraps a pool of independent environments for batched rollout collection.
 ///
 /// Each call to `step_batch` steps all N environments in sequence (no parallelism
@@ -24,6 +33,17 @@ impl<E: TrainingEnv> VecEnv<E> {
 
     pub fn reset_at(&mut self, i: usize) -> Observation {
         self.envs[i].reset().0
+    }
+
+    /// Seed every sub-env deterministically from one absolute base seed, spacing
+    /// them [`ENV_SEED_STRIDE`] apart so each still draws a distinct episode.
+    ///
+    /// The batch counterpart of [`TrainingEnv::set_rng_seed`], and what a
+    /// Gymnasium-style vectorized `reset(seed=...)` maps onto.
+    pub fn set_rng_seed(&mut self, base: u64) {
+        for (i, env) in self.envs.iter_mut().enumerate() {
+            env.set_rng_seed(base.wrapping_add(i as u64 * ENV_SEED_STRIDE));
+        }
     }
 
     /// Apply a closure to every environment mutably.
@@ -111,5 +131,41 @@ mod tests {
         let obs_after_reset = vec.reset_at(0);
         assert_eq!(obs_after_reset.len(), 13);
         assert!(obs_after_reset.iter().all(|v| v.is_finite()));
+    }
+
+    fn level_hold_pool(cfg: &PlaneConfig, n: usize) -> VecEnv<LevelHoldEnv> {
+        VecEnv::new(
+            (0..n)
+                .map(|_| LevelHoldEnv::new(1000.0, 80.0, cfg.clone()))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn set_rng_seed_spaces_sub_envs_by_one_stride() {
+        let mut pool = level_hold_pool(&jet_cfg(), 3);
+        pool.set_rng_seed(500);
+        for i in 0..3 {
+            assert_eq!(
+                pool.envs[i].rng_seed(),
+                500 + i as u64 * ENV_SEED_STRIDE,
+                "env {i} should sit one stride past its predecessor"
+            );
+        }
+    }
+
+    /// The batch form of the absolute-seed guarantee: a base seed reproduces the
+    /// whole batch, no matter what the pool did beforehand.
+    #[test]
+    fn same_base_seed_reproduces_the_same_batch() {
+        let cfg = jet_cfg();
+        let mut a = level_hold_pool(&cfg, 3);
+        let mut b = level_hold_pool(&cfg, 3);
+        a.reset_all();
+        a.reset_all();
+
+        a.set_rng_seed(77);
+        b.set_rng_seed(77);
+        assert_eq!(a.reset_all(), b.reset_all());
     }
 }

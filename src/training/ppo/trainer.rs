@@ -13,7 +13,7 @@ use super::{
     buffer::{RolloutBuffer, RolloutStep},
     model::ActorCritic,
 };
-use crate::training::{BcDataset, LevelHoldEnv, Observation, TrainingEnv, VecEnv};
+use crate::training::{BcDataset, LevelHoldEnv, Observation, TrainingEnv, VecEnv, ENV_SEED_STRIDE};
 
 // ---------------------------------------------------------------------------
 // Trainer
@@ -116,10 +116,10 @@ where
                 .map(|i| {
                     let mut e = template_env.clone();
                     match seed {
-                        Some(s) => e.offset_rng_seed(s.wrapping_add(i as u64 * 1_000)),
+                        Some(s) => e.offset_rng_seed(s.wrapping_add(i as u64 * ENV_SEED_STRIDE)),
                         None => {
                             if i > 0 {
-                                e.offset_rng_seed(i as u64 * 1_000);
+                                e.offset_rng_seed(i as u64 * ENV_SEED_STRIDE);
                             }
                         }
                     }
@@ -600,6 +600,52 @@ mod tests {
 
     fn jet_cfg() -> PlaneConfig {
         crate::plane::config::fixture_jet_config()
+    }
+
+    fn env_pool_seeds<E: TrainingEnv>(envs: &mut VecEnv<E>) -> Vec<u64> {
+        let mut seeds = Vec::new();
+        envs.for_each_env_mut(|e| seeds.push(e.rng_seed()));
+        seeds
+    }
+
+    /// The trainer seeds its env pool through `offset_rng_seed`, *not* the new
+    /// absolute `set_rng_seed`, and that must stay true: switching it would change
+    /// which episodes every existing `--seed` value draws, silently invalidating
+    /// reproduction of past seeded runs. Pins the resulting seeds — a clone of the
+    /// template (default seed 42), offset by `seed + i * ENV_SEED_STRIDE`.
+    #[test]
+    fn seeded_env_pool_is_offset_from_the_template_not_absolute() {
+        let env = LevelHoldEnv::new(1000.0, 80.0, jet_cfg());
+        assert_eq!(env.rng_seed(), 42, "template env's default seed");
+
+        let mut trainer = {
+            let _guard = super::super::rng_lock();
+            PpoTrainer::<B, _>::with_n_envs_seeded(env, 3, Default::default(), Some(7))
+        };
+
+        assert_eq!(
+            env_pool_seeds(&mut trainer.envs),
+            vec![
+                42 + 7,
+                42 + 7 + ENV_SEED_STRIDE,
+                42 + 7 + 2 * ENV_SEED_STRIDE
+            ],
+        );
+    }
+
+    /// Same pin for the unseeded path, where env 0 is deliberately left untouched.
+    #[test]
+    fn unseeded_env_pool_leaves_the_first_env_at_the_template_seed() {
+        let env = LevelHoldEnv::new(1000.0, 80.0, jet_cfg());
+        let mut trainer = {
+            let _guard = super::super::rng_lock();
+            PpoTrainer::<B, _>::with_n_envs(env, 3, Default::default())
+        };
+
+        assert_eq!(
+            env_pool_seeds(&mut trainer.envs),
+            vec![42, 42 + ENV_SEED_STRIDE, 42 + 2 * ENV_SEED_STRIDE],
+        );
     }
 
     #[test]

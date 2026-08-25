@@ -96,6 +96,14 @@ mod tests {
         fn action_dim(&self) -> usize {
             1
         }
+
+        // This double has no RNG at all — every episode is the same fixed-length
+        // ramp — so there is no seed to report or set.
+        fn rng_seed(&self) -> u64 {
+            0
+        }
+
+        fn set_rng_seed(&mut self, _seed: u64) {}
     }
 
     #[test]

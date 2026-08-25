@@ -22,7 +22,7 @@ use super::{
     lstm_buffer::{LstmRolloutBuffer, LstmRolloutStep},
     lstm_model::{LstmActorCritic, LstmHiddenState, LSTM_HIDDEN},
 };
-use crate::training::{CurriculumEnv, Observation, TrainingEnv, VecEnv};
+use crate::training::{CurriculumEnv, Observation, TrainingEnv, VecEnv, ENV_SEED_STRIDE};
 
 // ---------------------------------------------------------------------------
 // Metrics
@@ -115,10 +115,10 @@ where
                 .map(|i| {
                     let mut e = template_env.clone();
                     match seed {
-                        Some(s) => e.offset_rng_seed(s.wrapping_add(i as u64 * 1_000)),
+                        Some(s) => e.offset_rng_seed(s.wrapping_add(i as u64 * ENV_SEED_STRIDE)),
                         None => {
                             if i > 0 {
-                                e.offset_rng_seed(i as u64 * 1_000);
+                                e.offset_rng_seed(i as u64 * ENV_SEED_STRIDE);
                             }
                         }
                     }

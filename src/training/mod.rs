@@ -61,6 +61,6 @@ pub use ppo::{
 };
 pub use ppo_config::PpoHyperparams;
 pub use reward_config::{HeadingHoldRewardConfig, LevelHoldRewardConfig, OrbitRewardConfig};
-pub use vec_env::VecEnv;
+pub use vec_env::{VecEnv, ENV_SEED_STRIDE};
 pub use wu_orbit_env::WuOrbitEnv;
 pub use wu_orbit_reward::{CurriculumStage, WuOrbitRewardConfig};
