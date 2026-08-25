@@ -890,7 +890,10 @@ mod tests {
         let (obs_a, spec_a) = a.reset();
         let (obs_b, spec_b) = b.reset();
 
-        assert_eq!(obs_a, obs_b, "the same absolute seed must yield the same episode");
+        assert_eq!(
+            obs_a, obs_b,
+            "the same absolute seed must yield the same episode"
+        );
         assert_eq!(format!("{spec_a:?}"), format!("{spec_b:?}"));
     }
 

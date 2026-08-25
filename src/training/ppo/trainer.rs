@@ -618,10 +618,10 @@ mod tests {
         let env = LevelHoldEnv::new(1000.0, 80.0, jet_cfg());
         assert_eq!(env.rng_seed(), 42, "template env's default seed");
 
-        let mut trainer = {
-            let _guard = super::super::rng_lock();
-            PpoTrainer::<B, _>::with_n_envs_seeded(env, 3, Default::default(), Some(7))
-        };
+        // No `rng_lock()` here: the constructor takes it internally, and these
+        // assertions read the per-env `Lcg` seeds, not the backend RNG.
+        let mut trainer =
+            PpoTrainer::<B, _>::with_n_envs_seeded(env, 3, Default::default(), Some(7));
 
         assert_eq!(
             env_pool_seeds(&mut trainer.envs),
@@ -637,10 +637,7 @@ mod tests {
     #[test]
     fn unseeded_env_pool_leaves_the_first_env_at_the_template_seed() {
         let env = LevelHoldEnv::new(1000.0, 80.0, jet_cfg());
-        let mut trainer = {
-            let _guard = super::super::rng_lock();
-            PpoTrainer::<B, _>::with_n_envs(env, 3, Default::default())
-        };
+        let mut trainer = PpoTrainer::<B, _>::with_n_envs(env, 3, Default::default());
 
         assert_eq!(
             env_pool_seeds(&mut trainer.envs),

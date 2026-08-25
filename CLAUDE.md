@@ -610,8 +610,9 @@ Training environments (`LevelHoldEnv`, `OrbitEnv`, `ResidualOrbitEnv`, `WuOrbitE
   will marshal — an *offset* cannot express it, because every `reset()` advances the seed by 1
   before drawing, so the base an offset is relative to moves. That same `+1` means
   `set_rng_seed(s)` then `reset()` draws from `s + 1`: the guarantee is that the same `s`
-  reproduces the same episode, not that the stream literally starts at `s`. Both methods are
-  **required** (no defaulted no-op) so a new env cannot silently ship as unseedable.
+  reproduces the same episode, not that the stream literally starts at `s`. `rng_seed()` and
+  `set_rng_seed()` are the two **required** (body-less) trait methods — `offset_rng_seed`'s old
+  defaulted no-op is gone — so a new env cannot silently ship as unseedable.
   `PpoTrainer`/`LstmPpoTrainer` deliberately keep seeding their pools through `offset_rng_seed`
   on freshly-cloned template envs — switching them to the absolute form would change which
   episodes every existing `--seed` value draws, invalidating reproduction of past seeded runs
