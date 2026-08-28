@@ -17,9 +17,10 @@ is a short list of gaps in the *Rust library*, all of which must close before a 
 written without duplicating logic on the Python side — which is precisely the divergence
 CLAUDE.md §3's constraint (b) exists to prevent.
 
-This plan covers those prerequisites and ends with a single vertical slice that proves them
-sufficient. The full binding surface (all five envs, a `VecEnv` wrapper, a Gymnasium adapter)
-is a **follow-on plan**, not this one.
+This plan covers those prerequisites and ends with a single unexported proof slice that
+demonstrates them sufficient. The full binding surface (all five envs, a `VecEnv` wrapper, a
+Gymnasium adapter) is a **follow-on plan**, not this one, and Phase 5 ships no public Python
+API — see its preamble.
 
 ### Decisions locked with the user
 
@@ -255,18 +256,28 @@ still green). `just test-training` green; `cargo fmt`.
 
 ---
 
-## Phase 5 — Vertical Slice + Rust/Python Parity Test
+## Phase 5 — Proof Slice (not the binding surface) + Rust/Python Parity Test
 
 One env reachable from Python, and the test that makes constraint (b) enforceable rather than
-aspirational. This is the gate that proves Phases 1–4 were sufficient.
+aspirational. This is the gate that proves Phases 1–4 were sufficient — **it is not the
+binding**. The binding surface (all five envs, `VecEnv`, a Gymnasium adapter, and the
+`reset()`-shape decision below) remains the follow-on plan's, and nothing here may pre-empt it.
 
-### 5a. The `Env` class
+Concretely, the slice stays **provisional and unexported**: the class lives in `_core` only,
+is not re-exported from `python/ml_planes/__init__.py`, and carries a docstring saying it is a
+parity harness whose signatures may change without notice. Publishing it as public API would
+silently settle exactly the question "Deferred decisions" leaves open — a public
+`Env.reset() -> Vec<f32>` *is* the reset-shape decision, and the follow-on plan would then have
+to break it or wrap around it rather than decide it freely.
+
+### 5a. The `_Env` proof class
 
 `bindings/python/src/lib.rs` — marshalling only, no simulation logic:
 
-- `#[pyclass] struct Env { inner: Box<dyn TrainingEnv> }`, constructed from
+- `#[pyclass] struct _Env { inner: Box<dyn TrainingEnv> }`, constructed from
   `training::task::make_env` with a task name and a `.plane.ron` path (loaded through the
-  existing `training::cli::load_plane_config`).
+  existing `training::cli::load_plane_config`). Underscore-prefixed on purpose: it is the
+  harness, not the API.
 - `reset(&mut self) -> Vec<f32>` — **observation only.** See "Deferred decisions": returning
   the observation alone commits to nothing about how `SpawnSpec` or a reset-time `info` will
   eventually be surfaced.
@@ -278,7 +289,8 @@ aspirational. This is the gate that proves Phases 1–4 were sufficient.
   CLAUDE.md warns about at the Python boundary. `info` is a dict built from Phase 2's `extra`
   plus `episode_step`.
 - `observation_dim()`, `action_dim()`, `seed(u64)` (→ `set_rng_seed`), `rng_seed()`.
-- Re-export from `python/ml_planes/__init__.py`; keep `_core` private.
+- **No re-export from `python/ml_planes/__init__.py`.** The parity test reaches it as
+  `ml_planes._core._Env`; the public package surface is unchanged by this plan.
 
 ### 5b. The parity test
 
@@ -310,9 +322,13 @@ that it depends on a fresh `.so`, same as everything else in that lane.
   the property the whole separate-crate arrangement exists to protect;
 - `just test-training` and `just test-visual` green;
 - `just py-test` green, including the parity test;
-- one env constructible from Python by task name, producing rollouts bit-identical to Rust;
+- one env constructible from Python by task name through the unexported `_core._Env` harness,
+  producing rollouts bit-identical to Rust — the public `ml_planes` package surface unchanged;
 - `cargo fmt`; CLAUDE.md §2/§3 updated to describe the task registry and the `info` vocabulary,
-  and to drop "env wrappers not yet implemented" down to what is actually still missing.
+  and to record that the library prerequisites are closed and a parity harness exists.
+  **Leave "env wrappers not yet implemented" in place** — it is still true: this plan ships no
+  public wrapper, and clearing that note is the follow-on binding plan's milestone, not this
+  one's.
 
 ---
 
@@ -326,8 +342,9 @@ binding crate, so this is a shape question, not a dependency one. Options on the
 as a separate read-only accessor.
 
 Deferred to the follow-on binding plan by explicit decision. Phase 5a is written to avoid
-prejudging it: `Env.reset()` returns the observation alone, so no Python-visible contract has
-to be broken whichever way the decision lands. **Do not** add a partial `SpawnSpec` mapping in
+prejudging it twice over: `_Env.reset()` returns the observation alone, and `_Env` is not
+re-exported, so there is no public Python-visible contract to break whichever way the decision
+lands. **Do not** add a partial `SpawnSpec` mapping in
 this plan's slice "just to have something".
 
 ---
