@@ -6,6 +6,7 @@
 /.cargo
 /training_logs
 /dist
+/.pytest_cache/
 /bindings/python/tests/__pycache__/
 /python/ml_planes/__pycache__/
 /python/ml_planes/*.so

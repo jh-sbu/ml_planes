@@ -34,9 +34,16 @@ fn save_stale_model(obs_dim: usize, tag: &str) -> std::path::PathBuf {
     path
 }
 
+/// Frozen policy fixtures, deliberately outside the gitignored `models/`.
+///
+/// These are `include_bytes!`, i.e. **compile-time** dependencies: pointing them
+/// at `models/` made this whole test binary fail to build on a fresh clone, since
+/// `models/` is run output and is not tracked. They are pinned to the current
+/// observation dims (level-hold 13, orbit 14) and only need regenerating when a
+/// dim changes — which is exactly the failure the forward-pass tests below catch.
 const ORBIT_MPK: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/models/orbit/ppo_orbit_1.mpk"
+    "/fixtures/models/orbit/ppo_orbit_1.mpk"
 ));
 
 #[test]

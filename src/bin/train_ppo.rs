@@ -70,6 +70,7 @@ fn main() {
     #[cfg(feature = "wgpu")]
     use burn::backend::Wgpu;
     use burn::backend::{Autodiff, NdArray};
+    use ml_planes::training::task::Task;
     use ml_planes::training::Backend;
 
     let plain = std::env::args().any(|a| a == "--plain");
@@ -196,10 +197,7 @@ fn main() {
                 std::process::exit(2);
             })
         })
-        .unwrap_or(
-            ml_planes::training::level_hold_env::DEFAULT_TARGET_ALT_MIN
-                ..=ml_planes::training::level_hold_env::DEFAULT_TARGET_ALT_MAX,
-        );
+        .unwrap_or_else(|| task.default_target_alt_range());
     let target_speed_range = args
         .windows(2)
         .find(|w| w[0] == "--target-speed-range")
@@ -209,16 +207,7 @@ fn main() {
                 std::process::exit(2);
             })
         })
-        .unwrap_or_else(|| match task {
-            Task::HeadingHold => {
-                ml_planes::training::heading_hold_env::DEFAULT_TARGET_AIRSPEED_MIN
-                    ..=ml_planes::training::heading_hold_env::DEFAULT_TARGET_AIRSPEED_MAX
-            }
-            _ => {
-                ml_planes::training::level_hold_env::DEFAULT_TARGET_AIRSPEED_MIN
-                    ..=ml_planes::training::level_hold_env::DEFAULT_TARGET_AIRSPEED_MAX
-            }
-        });
+        .unwrap_or_else(|| task.default_target_speed_range());
 
     // heading_hold only: target heading CHANGE [deg], converted to radians at the boundary
     // (CLI/HUD convention is degrees; the env stores radians).
@@ -231,10 +220,7 @@ fn main() {
                 std::process::exit(2);
             })
         })
-        .unwrap_or(
-            ml_planes::training::heading_hold_env::DEFAULT_TARGET_HEADING_DEG_MIN
-                ..=ml_planes::training::heading_hold_env::DEFAULT_TARGET_HEADING_DEG_MAX,
-        );
+        .unwrap_or_else(|| task.default_target_heading_range_deg());
     let target_heading_range =
         target_heading_range.start().to_radians()..=target_heading_range.end().to_radians();
 
@@ -280,81 +266,14 @@ fn main() {
 }
 
 #[cfg(feature = "training")]
-#[derive(Clone, Copy)]
-enum Task {
-    LevelHold,
-    HeadingHold,
-    Orbit,
-    ResidualOrbit,
-    LstmOrbit,
-}
-
-#[cfg(feature = "training")]
-impl Task {
-    fn parse(value: &str) -> Result<Self, String> {
-        match value {
-            "level_hold" => Ok(Self::LevelHold),
-            "heading_hold" => Ok(Self::HeadingHold),
-            "orbit" => Ok(Self::Orbit),
-            "residual_orbit" => Ok(Self::ResidualOrbit),
-            "lstm_orbit" => Ok(Self::LstmOrbit),
-            other => Err(format!(
-                "Unsupported --task '{other}'. Use 'level_hold', 'heading_hold', 'orbit', 'residual_orbit', or 'lstm_orbit'."
-            )),
-        }
-    }
-
-    fn reward_config_path(self) -> &'static str {
-        match self {
-            Self::LevelHold => "assets/training/level_hold.reward.ron",
-            Self::HeadingHold => "assets/training/heading_hold.reward.ron",
-            Self::Orbit | Self::ResidualOrbit => "assets/training/orbit.reward.ron",
-            Self::LstmOrbit => "assets/training/wu_orbit.reward.ron",
-        }
-    }
-
-    /// Per-task default `--ppo-config` path, loaded when `--ppo-config` is
-    /// not passed on the CLI. `None` means the task has no tuned default and
-    /// falls back to `PpoHyperparams::default()` (mirrors
-    /// `assets/training/default.ppo.ron`).
-    fn default_ppo_config_path(self) -> Option<&'static str> {
-        match self {
-            Self::LevelHold => Some("assets/training/level_hold.ppo.ron"),
-            Self::HeadingHold => Some("assets/training/heading_hold.ppo.ron"),
-            Self::Orbit | Self::ResidualOrbit | Self::LstmOrbit => None,
-        }
-    }
-
-    fn model_dir(self) -> &'static str {
-        match self {
-            Self::LevelHold => "level_hold",
-            Self::HeadingHold => "heading_hold",
-            Self::Orbit => "orbit",
-            Self::ResidualOrbit => "orbit_residual",
-            Self::LstmOrbit => "lstm_orbit",
-        }
-    }
-
-    fn default_stem(self) -> &'static str {
-        match self {
-            Self::LevelHold => "ppo_level_hold",
-            Self::HeadingHold => "ppo_heading_hold",
-            Self::Orbit => "ppo_orbit",
-            Self::ResidualOrbit => "ppo_orbit_residual",
-            Self::LstmOrbit => "ppo_lstm_orbit",
-        }
-    }
-}
-
-#[cfg(feature = "training")]
-fn save_path_for(task: Task, output_stem: Option<String>) -> String {
+fn save_path_for(task: ml_planes::training::task::Task, output_stem: Option<String>) -> String {
     let dir = task.model_dir();
     match output_stem {
         Some(stem) => format!("models/{dir}/{stem}"),
         None => {
             let mut n = 1u32;
             loop {
-                let candidate = format!("models/{dir}/{}_{n}", task.default_stem());
+                let candidate = format!("models/{dir}/{}_{n}", task.ppo_default_stem());
                 if !std::path::Path::new(&format!("{candidate}.mpk")).exists() {
                     break candidate;
                 }
@@ -369,7 +288,7 @@ fn save_path_for(task: Task, output_stem: Option<String>) -> String {
 fn run<B>(
     plain: bool,
     save_path: String,
-    task: Task,
+    task: ml_planes::training::task::Task,
     total_timesteps: usize,
     init_from: Option<String>,
     log_file: Option<String>,
@@ -391,10 +310,8 @@ fn run<B>(
         load_reward_config, load_ron_config, HeadingHoldRewardConfig, LevelHoldRewardConfig,
         OrbitRewardConfig,
     };
-    use ml_planes::training::{
-        HeadingHoldEnv, LevelHoldEnv, OrbitEnv, PpoHyperparams, ResidualOrbitEnv, WuOrbitEnv,
-        WuOrbitRewardConfig,
-    };
+    use ml_planes::training::task::{self, EnvSpec, Task};
+    use ml_planes::training::{PpoHyperparams, WuOrbitRewardConfig};
 
     fn open_log(
         path: &Option<String>,
@@ -425,6 +342,15 @@ fn run<B>(
 
     let cfg = ml_planes::training::load_plane_config_or_exit(&plane_config);
     println!("Loaded plane config from {plane_config}");
+
+    // Everything the env needs except its reward profile, whose type varies per
+    // task and whose loading is this binary's own warn-and-default business.
+    let spec = EnvSpec {
+        target_alt_range: target_alt_range.clone(),
+        target_speed_range: target_speed_range.clone(),
+        target_heading_range: target_heading_range.clone(),
+        ..EnvSpec::defaults_for(task, cfg)
+    };
 
     // Effective reward-profile path: the CLI override if given, else the task default.
     let reward_path = reward_config.unwrap_or_else(|| task.reward_config_path().to_string());
@@ -488,12 +414,7 @@ fn run<B>(
                 save_path,
                 total_timesteps,
                 init_from,
-                LevelHoldEnv::with_target_ranges(
-                    target_alt_range,
-                    target_speed_range,
-                    cfg,
-                    reward_cfg,
-                ),
+                task::level_hold_env(&spec, reward_cfg),
                 log,
                 &hp,
                 bc_steps,
@@ -540,13 +461,7 @@ fn run<B>(
                 save_path,
                 total_timesteps,
                 init_from,
-                HeadingHoldEnv::with_target_ranges(
-                    target_heading_range,
-                    target_alt_range,
-                    target_speed_range,
-                    cfg,
-                    reward_cfg,
-                ),
+                task::heading_hold_env(&spec, reward_cfg),
                 log,
                 &hp,
                 bc_steps,
@@ -573,7 +488,7 @@ fn run<B>(
                 save_path,
                 total_timesteps,
                 init_from,
-                OrbitEnv::with_reward_config(1000.0, 100.0, 1000.0, cfg, reward_cfg),
+                task::orbit_env(&spec, reward_cfg),
                 log,
                 &hp,
                 bc_steps,
@@ -600,7 +515,7 @@ fn run<B>(
                 save_path,
                 total_timesteps,
                 init_from,
-                ResidualOrbitEnv::with_reward_config(1000.0, 100.0, 1000.0, cfg, reward_cfg),
+                task::residual_orbit_env(&spec, reward_cfg),
                 log,
                 &hp,
             )
@@ -629,7 +544,7 @@ fn run<B>(
                 save_path,
                 total_timesteps,
                 init_from,
-                WuOrbitEnv::with_reward_config(1000.0, 100.0, 3000.0, cfg, reward_cfg),
+                task::wu_orbit_env(&spec, reward_cfg),
                 log,
                 hp.seed,
             )

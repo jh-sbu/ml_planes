@@ -46,19 +46,20 @@ fn main() {
 #[cfg(feature = "inference")]
 fn main() {
     use burn::backend::NdArray;
-    use ml_planes::training::eval_metrics::MetricFamily;
     use ml_planes::training::reward_config::{
         HeadingHoldRewardConfig, LevelHoldRewardConfig, OrbitRewardConfig,
     };
+    use ml_planes::training::task::{self, EnvSpec, Task};
     use ml_planes::training::wu_orbit_reward::WuOrbitRewardConfig;
-    use ml_planes::training::{
-        HeadingHoldEnv, LevelHoldEnv, OrbitEnv, ResidualOrbitEnv, WuOrbitEnv,
-    };
 
     type B = NdArray;
 
     let args: Vec<String> = std::env::args().collect();
-    let task = find_arg(&args, "--task").unwrap_or_else(|| "orbit".to_string());
+    let task = Task::parse(&find_arg(&args, "--task").unwrap_or_else(|| "orbit".to_string()))
+        .unwrap_or_else(|e| {
+            eprintln!("{e}");
+            std::process::exit(2);
+        });
     let model_path = find_arg(&args, "--model").unwrap_or_else(|| {
         eprintln!("--model <path> is required; pass the path without or with .mpk");
         std::process::exit(2);
@@ -92,125 +93,82 @@ fn main() {
     let mut reported_target_alt_range: Option<std::ops::RangeInclusive<f32>> = None;
     let mut reported_target_speed_range: Option<std::ops::RangeInclusive<f32>> = None;
     let mut reported_target_heading_range_deg: Option<std::ops::RangeInclusive<f32>> = None;
-    let metrics = match task.as_str() {
-        "level_hold" => {
-            let reward_cfg: LevelHoldRewardConfig =
-                load_task_reward(&args, "assets/training/level_hold.reward.ron");
+    // The registry supplies the reward profile, the default envelope, and the
+    // metric family, so the only thing that varies per arm here is the reward
+    // config's *type* and the policy architecture.
+    let defaults = EnvSpec::defaults_for(task, cfg);
+    let alt_range =
+        parse_target_range(&args, "--target-alt-range", task.default_target_alt_range());
+    let speed_range = parse_target_range(
+        &args,
+        "--target-speed-range",
+        task.default_target_speed_range(),
+    );
+    let heading_range_deg = parse_target_range(
+        &args,
+        "--target-heading-range",
+        task.default_target_heading_range_deg(),
+    );
+    let spec = EnvSpec {
+        target_alt_range: alt_range.clone(),
+        target_speed_range: speed_range.clone(),
+        target_heading_range: heading_range_deg.start().to_radians()
+            ..=heading_range_deg.end().to_radians(),
+        ..defaults
+    };
+
+    let metrics = match task {
+        Task::LevelHold => {
+            let reward_cfg: LevelHoldRewardConfig = load_task_reward(&args, task);
             let max_steps = parse_u32(&args, "--max-steps", reward_cfg.max_episode_steps);
-            let alt_range = parse_target_range(
-                &args,
-                "--target-alt-range",
-                ml_planes::training::level_hold_env::DEFAULT_TARGET_ALT_MIN,
-                ml_planes::training::level_hold_env::DEFAULT_TARGET_ALT_MAX,
-            );
-            let speed_range = parse_target_range(
-                &args,
-                "--target-speed-range",
-                ml_planes::training::level_hold_env::DEFAULT_TARGET_AIRSPEED_MIN,
-                ml_planes::training::level_hold_env::DEFAULT_TARGET_AIRSPEED_MAX,
-            );
-            let mut env = LevelHoldEnv::with_target_ranges(
-                alt_range.clone(),
-                speed_range.clone(),
-                cfg,
-                reward_cfg,
-            );
+            let mut env = task::level_hold_env(&spec, reward_cfg);
             env.max_episode_steps = max_steps;
             reported_target_alt_range = Some(alt_range);
             reported_target_speed_range = Some(speed_range);
             let mut policy = load_ff_policy::<B>(&path, env_obs_dim(&env));
-            run_eval(
-                env,
-                episodes,
-                max_steps,
-                &mut policy,
-                MetricFamily::LevelHold,
-            )
+            run_eval(env, episodes, max_steps, &mut policy, task.metric_family())
         }
-        "heading_hold" => {
-            let reward_cfg: HeadingHoldRewardConfig =
-                load_task_reward(&args, "assets/training/heading_hold.reward.ron");
+        Task::HeadingHold => {
+            let reward_cfg: HeadingHoldRewardConfig = load_task_reward(&args, task);
             let max_steps = parse_u32(&args, "--max-steps", reward_cfg.max_episode_steps);
-            let alt_range = parse_target_range(
-                &args,
-                "--target-alt-range",
-                ml_planes::training::level_hold_env::DEFAULT_TARGET_ALT_MIN,
-                ml_planes::training::level_hold_env::DEFAULT_TARGET_ALT_MAX,
-            );
-            let speed_range = parse_target_range(
-                &args,
-                "--target-speed-range",
-                ml_planes::training::heading_hold_env::DEFAULT_TARGET_AIRSPEED_MIN,
-                ml_planes::training::heading_hold_env::DEFAULT_TARGET_AIRSPEED_MAX,
-            );
-            let heading_range_deg = parse_target_range(
-                &args,
-                "--target-heading-range",
-                ml_planes::training::heading_hold_env::DEFAULT_TARGET_HEADING_DEG_MIN,
-                ml_planes::training::heading_hold_env::DEFAULT_TARGET_HEADING_DEG_MAX,
-            );
-            let heading_range =
-                heading_range_deg.start().to_radians()..=heading_range_deg.end().to_radians();
-            let mut env = HeadingHoldEnv::with_target_ranges(
-                heading_range,
-                alt_range.clone(),
-                speed_range.clone(),
-                cfg,
-                reward_cfg,
-            );
+            let mut env = task::heading_hold_env(&spec, reward_cfg);
             env.max_episode_steps = max_steps;
             reported_target_alt_range = Some(alt_range);
             reported_target_speed_range = Some(speed_range);
             reported_target_heading_range_deg = Some(heading_range_deg);
             let mut policy = load_ff_policy::<B>(&path, env_obs_dim(&env));
-            run_eval(
-                env,
-                episodes,
-                max_steps,
-                &mut policy,
-                MetricFamily::HeadingHold,
-            )
+            run_eval(env, episodes, max_steps, &mut policy, task.metric_family())
         }
-        "orbit" => {
-            let reward_cfg: OrbitRewardConfig =
-                load_task_reward(&args, "assets/training/orbit.reward.ron");
+        Task::Orbit => {
+            let reward_cfg: OrbitRewardConfig = load_task_reward(&args, task);
             let max_steps = parse_u32(&args, "--max-steps", reward_cfg.max_episode_steps);
-            let mut env = OrbitEnv::with_reward_config(1000.0, 100.0, 1000.0, cfg, reward_cfg);
+            let mut env = task::orbit_env(&spec, reward_cfg);
             env.max_episode_steps = max_steps;
             let mut policy = load_ff_policy::<B>(&path, env_obs_dim(&env));
-            run_eval(env, episodes, max_steps, &mut policy, MetricFamily::Orbit)
+            run_eval(env, episodes, max_steps, &mut policy, task.metric_family())
         }
-        "residual_orbit" => {
-            let reward_cfg: OrbitRewardConfig =
-                load_task_reward(&args, "assets/training/orbit.reward.ron");
+        Task::ResidualOrbit => {
+            let reward_cfg: OrbitRewardConfig = load_task_reward(&args, task);
             let max_steps = parse_u32(&args, "--max-steps", reward_cfg.max_episode_steps);
-            let mut env =
-                ResidualOrbitEnv::with_reward_config(1000.0, 100.0, 1000.0, cfg, reward_cfg);
+            let mut env = task::residual_orbit_env(&spec, reward_cfg);
             env.max_episode_steps = max_steps;
             let mut policy = load_ff_policy::<B>(&path, env_obs_dim(&env));
-            run_eval(env, episodes, max_steps, &mut policy, MetricFamily::Orbit)
+            run_eval(env, episodes, max_steps, &mut policy, task.metric_family())
         }
-        "lstm_orbit" => {
-            let reward_cfg: WuOrbitRewardConfig =
-                load_task_reward(&args, "assets/training/wu_orbit.reward.ron");
+        Task::LstmOrbit => {
+            let reward_cfg: WuOrbitRewardConfig = load_task_reward(&args, task);
             let max_steps = parse_u32(&args, "--max-steps", reward_cfg.max_episode_steps);
-            let mut env = WuOrbitEnv::with_reward_config(1000.0, 100.0, 3000.0, cfg, reward_cfg);
+            let mut env = task::wu_orbit_env(&spec, reward_cfg);
             env.max_episode_steps = max_steps;
             env.advance_to_stage(curriculum_stage);
             reported_stage = Some(env.curriculum_stage.name());
             let mut policy = load_lstm_policy::<B>(&path, env_obs_dim(&env));
-            run_eval(env, episodes, max_steps, &mut policy, MetricFamily::Orbit)
-        }
-        other => {
-            eprintln!(
-                "Unsupported --task '{other}'. Use 'level_hold', 'heading_hold', 'orbit', 'residual_orbit', or 'lstm_orbit'."
-            );
-            std::process::exit(2);
+            run_eval(env, episodes, max_steps, &mut policy, task.metric_family())
         }
     };
 
     // Common core — identical keys for every task.
-    println!("task,{task}");
+    println!("task,{}", task.as_str());
     println!("model,{path}.mpk");
     println!("plane_config,{plane_config}");
     if let Some(stage) = reported_stage {
@@ -238,12 +196,13 @@ fn main() {
 /// Load a task's reward config from `--reward-config` or the supplied default
 /// path, falling back to compiled defaults on any error.
 #[cfg(feature = "inference")]
-fn load_task_reward<T>(args: &[String], default_path: &str) -> T
+fn load_task_reward<T>(args: &[String], task: ml_planes::training::task::Task) -> T
 where
     T: serde::de::DeserializeOwned + Default,
 {
     use ml_planes::training::reward_config::load_reward_config;
-    let path = find_arg(args, "--reward-config").unwrap_or_else(|| default_path.to_string());
+    let path =
+        find_arg(args, "--reward-config").unwrap_or_else(|| task.reward_config_path().to_string());
     load_reward_config(&path).unwrap_or_else(|e| {
         eprintln!("Warning: could not load {path}: {e}. Using defaults.");
         T::default()
@@ -509,8 +468,7 @@ fn parse_usize(args: &[String], key: &str, default: usize) -> usize {
 fn parse_target_range(
     args: &[String],
     key: &str,
-    default_min: f32,
-    default_max: f32,
+    default: std::ops::RangeInclusive<f32>,
 ) -> std::ops::RangeInclusive<f32> {
     find_arg(args, key)
         .map(|v| {
@@ -519,7 +477,7 @@ fn parse_target_range(
                 std::process::exit(2);
             })
         })
-        .unwrap_or(default_min..=default_max)
+        .unwrap_or(default)
 }
 
 #[cfg(feature = "inference")]

@@ -8,9 +8,9 @@
 //!
 //! **Observation space** — Wu's Eq. (4) is a 12-state cruise vector targeting a
 //! waypoint (`[δh, δψ, δv, h, φ, θ, vN, vE, vD, ωψ, ωφ, ωθ]`).  This environment
-//! uses the repo's 13-dim orbit observation (`build_orbit_observation`): radial error,
+//! uses the repo's 14-dim orbit observation (`build_orbit_observation`): radial error,
 //! guidance heading error, bank feedforward, altitude error, speed error, α, pitch, q,
-//! roll, p, β, r, vertical speed.  The orbit-specific guidance terms (radial/heading
+//! roll, p, β, r, vertical speed, fuel fraction.  The orbit-specific guidance terms (radial/heading
 //! error, bank feedforward) have no Wu equivalent; the 12-state cruise vector would
 //! not encode the information needed to close a circular orbit loop.
 //!
@@ -366,7 +366,6 @@ impl TrainingEnv for WuOrbitEnv {
         self.prev_heading_err = terms.guidance_heading_error;
         let info = StepInfo {
             episode_step: self.episode_step,
-            ..Default::default()
         };
         StepOutcome {
             obs,

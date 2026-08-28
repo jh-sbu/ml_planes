@@ -84,7 +84,6 @@ mod tests {
                 end: (self.step >= self.episode_steps).then_some(TerminationReason::Timeout),
                 info: StepInfo {
                     episode_step: self.step,
-                    ..Default::default()
                 },
             }
         }

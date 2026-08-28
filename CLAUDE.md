@@ -12,8 +12,16 @@
 - **Python bindings (SCAFFOLDED; env wrappers not yet implemented):** a native extension module
   exposing the `training::` environments (`TrainingEnv`/`VecEnv`) to Python so PyTorch can drive
   them as a Gymnasium-style env. In-process FFI (PyO3/`abi3` + maturin) — still no IPC, no
-  sockets, no Python in the simulator itself. Today the wiring is in place (build, import, and a
-  `physics_dt()` passthrough proving the crate links) and nothing else. See the scope-decision
+  sockets, no Python in the simulator itself. The library prerequisites are **closed**:
+  `Box<dyn TrainingEnv>` is a `TrainingEnv` (a `#[pyclass]` cannot be generic), the task registry
+  lives in `training::task` instead of three binaries, and `VecEnv` takes flat batched actions
+  plus per-index absolute seeds. The module itself still exposes only `physics_dt()` and the
+  unexported `_core._Env` **parity harness** — deliberately not the wrapper: `_Env` is not
+  re-exported from the `ml_planes` package, its signatures may change, and it exists so
+  `bindings/python/tests/test_parity.py` can prove a Python rollout is bit-identical to a Rust
+  one. Designing the real surface (all five envs, a `VecEnv` wrapper, a Gymnasium adapter, and
+  what `reset()` returns beside the observation) is the next piece of work, and nothing shipped
+  so far pre-empts it. See the scope-decision
   row in §3 for the boundary this must respect: Python is an **additional consumer** of the envs,
   never a dependency of the Rust crate's own build, tests, or training stack.
   `cargo test --no-default-features` and the whole `just test-all` matrix must stay Python-free
@@ -75,6 +83,8 @@ src/
     flight_env.rs   # shared 6-DOF Euler integrator (integrate_state); pub(crate)-private
     level_hold_env.rs, heading_hold_env.rs, orbit_env.rs, orbit_residual_env.rs, wu_orbit_env.rs
     vec_env.rs      # VecEnv<E> — N parallel episodes
+    task.rs         # Task registry — name → env/profiles/model dir/defaults;
+                    #   EnvSpec + the five concrete constructors + erased make_env
     reward_config.rs, wu_orbit_reward.rs, ppo_config.rs   # RON-backed configs
     bc.rs           # behavior cloning (DemonstrationEnv, collect_demonstrations, BcDataset)
     eval.rs, eval_metrics.rs   # evaluate_policy, EvaluationSummary, TaskMetrics
@@ -107,8 +117,12 @@ bindings/python/
   Cargo.toml          # ml_planes_py: own [workspace] + Cargo.lock; cdylib+rlib; pyo3 abi3-py312
                       #   path-depends on ml_planes with default-features = false
   src/lib.rs          # #[pymodule] fn _core — marshalling only, no sim logic
+  examples/           # reference_rollout.rs — plain-cargo Rust rollout printed as JSON;
+                      #   the reference half of the parity test (maturin adds
+                      #   pyo3/extension-module, so `cargo run --example` still links)
   tests/              # pytest suite (testpaths in pyproject); kept out of python/ so maturin
-                      #   never packages it into the wheel
+                      #   never packages it into the wheel. test_parity.py shells out to the
+                      #   example above and demands bit-identical rollouts
 python/ml_planes/     # the Python package; re-exports from the private `._core`
 ```
 
@@ -152,7 +166,9 @@ tree under `bindings/python/target` (gitignored as a safety net for bare `maturi
 | `WingmanController` | struct | Formation flight; holds a fixed offset in the leader's body frame via a heading-damped lateral cascade (cross-track → heading → bank) |
 | `AscentController` | struct | Climbs to target altitude then latches to level hold |
 | `L1Controller` | struct | Follows a preset `FlightPlan` (waypoint sequences + orbit circles) via L1 nonlinear lateral guidance; built from the plan asset by `apply_flight_plan` |
-| `VecEnv<E>` | struct | Wraps any `TrainingEnv` to run N parallel episodes (seeds offset per env) |
+| `VecEnv<E>` | struct | Wraps any `TrainingEnv` to run N parallel episodes (seeds offset per env). `step_batch` takes one flat env-major `n * action_dim()` buffer |
+| `Task` | enum (`training/task.rs`) | The task registry: `level_hold`/`heading_hold`/`orbit`/`residual_orbit`/`lstm_orbit` → shipped reward + PPO profile paths, `models/` subdirectory, PPO and BC output stems, `MetricFamily`, recurrence, and the default target envelope + orbit geometry. This mapping used to live three times, privately, in `train_ppo`/`train_bc`/`evaluate_policy`; all three now consume it, and `tests/core/training_task.rs` pins every default against the literal those binaries used, because a default that shifts here silently changes what all future runs train on. **`default_target_heading_range_deg()` is degrees; `EnvSpec.target_heading_range` is radians** — convert at the boundary |
+| `EnvSpec` / `OrbitGeometry` | structs (`training/task.rs`) | Resolved env-construction inputs (airframe, target ranges, orbit circle) minus the reward profile, whose type varies per task. `EnvSpec::defaults_for(task, cfg)` is the envelope a bare `train_ppo --task <t>` trains across. Feeds the five concrete `task::*_env(&spec, reward)` constructors and the erased `task::make_env(task, &spec, reward_path)`, which is the bindings' single entry point — it delegates to the same five, so a Python-built env cannot diverge from a Rust-built one. Unlike the binaries, `make_env` **errors** on an unreadable reward profile instead of warning: a binary has an operator watching stderr, a library call does not. It also erases `CurriculumEnv`, so `lstm_orbit` arrives fixed at its first stage |
 | `DemonstrationEnv` / `BcDataset` | trait / struct | Behavior cloning: `collect_demonstrations()` rolls out a PID expert into a supervised dataset for `train_bc` pretraining |
 | `EvaluationSummary` / `TaskMetrics` | structs | Policy-evaluation output from `evaluate_policy` (success rate + per-metric families) |
 | `ControllerTelemetry` | ECS component (enum) | Read-only **derived** per-controller status (`Orbit { radial_error }`, `FlightPlan { leg, status }`, `Ascent`, `Wingman`, `None`, …) the server snapshots off the active controller each tick and **replicates**, so the thin client — which never steps a controller — can show it on the HUD. Default `None` (`controllers/telemetry.rs`). The *settable* half of controller state lives in `ControllerTargets`, not here — see its row below |
@@ -600,10 +616,26 @@ Training environments (`LevelHoldEnv`, `OrbitEnv`, `ResidualOrbitEnv`, `WuOrbitE
 - Aerodynamics: shared `compute_aero_forces()` from `aerodynamics/`
 - Result: deterministic rollouts, fast vectorized training, no ECS overhead
 - `VecEnv` wraps any `TrainingEnv` to run N parallel episodes (`VecEnv::set_rng_seed(base)` seeds
-  the pool, spacing sub-envs `ENV_SEED_STRIDE` apart).
-  `step_batch` returns one `StepOutcome` per env and, unlike Gymnasium's vector envs, does **not**
+  the pool, spacing sub-envs `ENV_SEED_STRIDE` apart; `set_rng_seed_at(i, seed)` seeds one
+  sub-env absolutely, leaving its neighbours alone).
+  `step_batch` takes **one flat `n * action_dim()` buffer**, env-major — the shape both trainers
+  already hold and the shape a contiguous `(N, action_dim)` array marshals as — and asserts its
+  length in release, since zipping a short slice would otherwise step only the first few envs and
+  return a silently truncated batch. It returns one `StepOutcome` per env and, unlike Gymnasium's
+  vector envs, does **not**
   auto-reset — the caller resets explicitly via `reset_at`. That is deliberate: it keeps the
   terminal observation reachable for truncation bootstrapping (below)
+- `Box<dyn TrainingEnv>` **is** a `TrainingEnv` (`env.rs`), so a heterogeneous `VecEnv` works and
+  a caller that cannot be generic — a `#[pyclass]` — can still hold any env. It forwards
+  `offset_rng_seed` explicitly even though that method has a default body: without the arm the
+  default runs on the box and silently bypasses an inner env's override. There is deliberately no
+  `clone_box` shim; `PpoTrainer` requires `E: TrainingEnv + Clone` and the Rust trainers stay
+  monomorphized, because a vtable call in the PPO rollout loop buys nothing
+- **`StepInfo` carries `episode_step` and nothing else.** It used to declare a public
+  `extra: HashMap<String, f32>` that nothing ever wrote or read. If a per-step diagnostics
+  channel is wanted, design it against a real consumer and against
+  `eval_metrics::MetricFamily`/`TaskMetrics`, which already owns a per-task metric vocabulary —
+  do not reinstate a second, parallel one by reflex
 - **Seeding contract:** `set_rng_seed(seed)` (absolute) is the required trait primitive;
   `offset_rng_seed(offset)` is a default impl over it (`set_rng_seed(rng_seed() + offset)`).
   Absolute seeding is what a Gymnasium-style `reset(seed=...)` needs and what the Python bindings
@@ -837,7 +869,7 @@ that ships a non-default target) `tests/core/scenario.rs`.
 | Compressibility | Ignored. Low-Mach assumption throughout. |
 | Structural limits | Not modeled. |
 | ML runtime | Pure Rust (`burn`) for everything the simulator and the in-repo training binaries do — no Python, no IPC, no C extensions on that path, and that stays non-negotiable. |
-| Python bindings | **SCAFFOLDED (env wrappers not yet implemented).** A **separate, non-workspace crate** — `bindings/python` (`ml_planes_py`, `crate-type = ["cdylib", "rlib"]`) — exposes the `training::` envs (`TrainingEnv`, `VecEnv`, `Observation`/`StepOutcome`, the `*.reward.ron` configs) through PyO3 as an importable extension module, so a PyTorch training loop can step the same 6-DOF envs the Rust PPO trainer uses. **Deviation from the original plan:** this was going to be a `python` *crate feature* on `ml_planes` itself. It is not, for two reasons — (i) the `cdylib` crate-type would then be declared on the root `[lib]`, so **every** `cargo build`/`just test-all` would link a shared object it never uses, and (ii) `pyo3` would sit in the root dependency graph and `Cargo.lock` even when the feature is off. A separate crate that path-depends on `ml_planes` (`default-features = false` — the `training` envs are ungated, so the bindings pull in neither burn nor rendering) makes constraint (a) below structural rather than a matter of discipline: there is no feature combination of the root crate that can reach `pyo3`. It carries its own `[workspace]` table and `Cargo.lock` so a future workspace at the repo root cannot silently absorb it. Constraints: (a) **optional and off by default** — no `pyo3` in a default/`training`/`server` build, and the existing test matrix must pass with no Python present; (b) **bindings only, no logic** — the wrapper marshals to/from the existing traits and adds no reward, termination, or physics behavior of its own, so Rust-side and Python-side rollouts of the same env are the same env (a divergence here is the failure mode this row exists to prevent); (c) the Rust `burn` PPO/BC track stays the supported in-repo path — Python is a second consumer, not a replacement, and `train_ppo`/`train_bc`/`evaluate_policy` keep working unchanged. Policy interchange between the two stacks (`.mpk` ↔ PyTorch checkpoints) is **not** implied by the bindings and is a separate, currently-undecided question. |
+| Python bindings | **SCAFFOLDED (env wrappers not yet implemented).** A **separate, non-workspace crate** — `bindings/python` (`ml_planes_py`, `crate-type = ["cdylib", "rlib"]`) — exposes the `training::` envs (`TrainingEnv`, `VecEnv`, `Observation`/`StepOutcome`, the `*.reward.ron` configs) through PyO3 as an importable extension module, so a PyTorch training loop can step the same 6-DOF envs the Rust PPO trainer uses. **Deviation from the original plan:** this was going to be a `python` *crate feature* on `ml_planes` itself. It is not, for two reasons — (i) the `cdylib` crate-type would then be declared on the root `[lib]`, so **every** `cargo build`/`just test-all` would link a shared object it never uses, and (ii) `pyo3` would sit in the root dependency graph and `Cargo.lock` even when the feature is off. A separate crate that path-depends on `ml_planes` (`default-features = false` — the `training` envs are ungated, so the bindings pull in neither burn nor rendering) makes constraint (a) below structural rather than a matter of discipline: there is no feature combination of the root crate that can reach `pyo3`. It carries its own `[workspace]` table and `Cargo.lock` so a future workspace at the repo root cannot silently absorb it. Constraints: (a) **optional and off by default** — no `pyo3` in a default/`training`/`server` build, and the existing test matrix must pass with no Python present; (b) **bindings only, no logic** — the wrapper marshals to/from the existing traits and adds no reward, termination, or physics behavior of its own, so Rust-side and Python-side rollouts of the same env are the same env (a divergence here is the failure mode this row exists to prevent); (c) the Rust `burn` PPO/BC track stays the supported in-repo path — Python is a second consumer, not a replacement, and `train_ppo`/`train_bc`/`evaluate_policy` keep working unchanged. Policy interchange between the two stacks (`.mpk` ↔ PyTorch checkpoints) is **not** implied by the bindings and is a separate, currently-undecided question. Constraint (b) is now **enforced rather than asserted**: `bindings/python/examples/reference_rollout.rs` prints a Rust rollout as JSON and `test_parity.py` replays those exact actions through `_core._Env`, comparing observations and rewards with `==` (never `pytest.approx` — both sides run identical Rust on identical inputs, so a tolerance could only hide the divergence the test exists to catch). The example widens each `f32` to `f64` before printing, because Python parses JSON numbers as `f64` and `float("0.1")` is not the widened `f32` 0.1. |
 | Reward/termination tuning | Configuration lives in `assets/training/*.reward.ron`; PPO hyperparameters live in `assets/training/*.ppo.ron`. `Default` implementations mirror baseline files so tests need no file I/O; a missing or invalid override warns and falls back to compiled defaults. See "Training Strategies and Evaluation" for the experiment workflow. |
 | Multi-agent | Architecture must support one `Box<dyn FlightController>` per plane entity. Exact multi-agent training strategy deferred. Cross-plane state is read via the per-tick `ControllerContext` snapshot (`plane/context.rs`), whose `find`/`others` do a **linear scan** — deliberately, since `N` is small, the snapshot is rebuilt every tick, and the only per-tick peer lookup (`WingmanController`'s leader) is not hot. Massive scenarios (hundreds/thousands of agents each doing per-tick peer lookups) are **deferred but not out of scope**; if they land, build an `id → index` map once in phase 1 of `run_flight_controllers` and pass it alongside the slice. `find`/`others` encapsulate access, so that stays a local change — see the `ControllerContext` doc comment. |
 
@@ -1060,6 +1092,10 @@ the binary + a module filter, e.g. `cargo test --no-default-features --test core
 **`tests/core/` (core sim, `--no-default-features`):**
 - `pid_convergence` — pure PID closed-loop step response
 - `spawn_reset` — `TrainingEnv::reset()` produces correct initial `FlightState`
+- `training_task` — the `training::task` registry: name round-trip, every shipped reward/PPO
+  profile path exists on disk, `make_env` builds all five tasks at their documented obs dims, and
+  **behavior-preservation pins** asserting every default envelope and both orbit geometries
+  against the literals `train_ppo`/`train_bc`/`evaluate_policy` used before the registry existed
 - `training_assets` — every shipped `assets/training/*.reward.ron` profile parses into its
   config struct (the structs have no `#[serde(default)]`, and the training binaries downgrade
   a parse failure to a warning + compiled defaults, so a stale profile otherwise trains the
@@ -1091,12 +1127,14 @@ the binary + a module filter, e.g. `cargo test --no-default-features --test core
 
 **`tests/rl/` (`inference`/`training`; the whole binary compiles out without an RL backend):**
 
-> **Checkpoint fixture requirement:** `rl_inference` and `rl_sim_control` use `include_bytes!`
-> for `models/orbit/ppo_orbit_1.mpk` and `models/level_hold/ppo_level_hold.mpk`. These are
-> compile-time dependencies, so the RL test binary cannot compile when either fixture is absent.
-> The durable fix is to construct fixtures in the tests (the existing `save_stale_model` helper
-> is the pattern) or commit purpose-built fixtures under a tracked path. Do not satisfy the test
-> contract by retraining into gitignored `models/`, which would leave fresh clones broken.
+> **Checkpoint fixtures:** `rl_inference` and `rl_sim_control` `include_bytes!` two frozen
+> policies from **`fixtures/models/`** — `orbit/ppo_orbit_1.mpk` and
+> `level_hold/ppo_level_hold.mpk` — tracked in git alongside `fixtures/generic_jet.plane.ron`
+> and for the same reason. They are *compile-time* dependencies, so pointing them at the
+> gitignored `models/` (as they used to) made the whole RL test binary fail to build on a fresh
+> clone. Never point them back there. They are pinned to the current observation dims
+> (level-hold 13, orbit 14) and only need regenerating when a dim changes — which the
+> forward-pass tests in `rl_inference` will tell you loudly.
 
 - `rl_inference` — RL controller load + deterministic inference (`inference`/`training`-gated),
   incl. the level-hold and heading-hold obs-matches-env and stale-dimension guards, and each RL
@@ -1165,7 +1203,9 @@ a required `PlaneConfig` field breaks loudly in one place (the struct has no `De
   installed** (§3); folding the binding tests in would destroy exactly the property it exists to
   certify. Run `just py-test` after touching `bindings/python`, `python/`, or the `training::`
   API the bindings marshal — and remember it rebuilds the extension first, because a stale `.so`
-  otherwise reports the *previous* commit's behavior as green.
+  otherwise reports the *previous* commit's behavior as green. It includes the Rust/Python parity
+  suite (`test_parity.py`), which is what makes §3's constraint (b) a test rather than a promise;
+  it also compiles the binding crate's `reference_rollout` example on first run.
 - **Sim-dependent tests require the sim chain (`sim_enabled` cfg).** The 6-DOF FixedUpdate chain
   in `PlanePlugin` compiles in only under `any(not(feature = "net"), feature = "server")`. A
   `net`-without-`server` build (e.g. bare `--features mcp`, since `mcp` enables `net` but not

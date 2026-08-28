@@ -16,6 +16,7 @@ mod scenario;
 mod sim_control;
 mod spawn_reset;
 mod training_assets;
+mod training_task;
 
 // 6-DOF sim chain required; compiles out on net-without-server builds (see build.rs).
 #[cfg(sim_enabled)]

@@ -70,5 +70,9 @@ py-build:
     CARGO_TARGET_DIR=target uv run maturin develop --uv
 
 # Binding tests (pytest). Rebuilds first so it can't run against a stale .so.
+# Includes the Rust/Python parity suite, which shells out to the binding crate's
+# `reference_rollout` example and demands bit-identical rollouts on both sides —
+# so it depends on a fresh .so exactly like everything else in this lane, and it
+# will also compile that example on first run.
 py-test: py-build
     CARGO_TARGET_DIR=target uv run pytest

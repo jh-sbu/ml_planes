@@ -10,7 +10,7 @@
 //! unit-tested headlessly (the binary itself is `--features training` only and
 //! not directly testable). The two observation layouts handled:
 //!
-//! - **Orbit family** (`orbit`, `residual_orbit`, `lstm_orbit`; 13-dim
+//! - **Orbit family** (`orbit`, `residual_orbit`, `lstm_orbit`; 14-dim
 //!   `build_orbit_observation`): `[radial/500, heading/0.5, bank_ff, alt/200,
 //!   speed/50, ...]`.
 //! - **Level-hold family** (13-dim `level_hold_observation`): `[alt_err/200,
@@ -28,7 +28,7 @@ use crate::training::heading_hold_env::HEADING_ERROR_OBS_SCALE as HEADING_ERROR_
 /// Which observation layout a checkpoint's task uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MetricFamily {
-    /// 13-dim orbit observation (orbit / residual_orbit / lstm_orbit).
+    /// 14-dim orbit observation (orbit / residual_orbit / lstm_orbit).
     Orbit,
     /// 13-dim level-hold observation.
     LevelHold,

@@ -14,6 +14,7 @@ pub mod orbit_residual_env;
 pub mod ppo;
 pub mod ppo_config;
 pub mod reward_config;
+pub mod task;
 pub mod vec_env;
 pub mod wu_orbit_env;
 pub mod wu_orbit_reward;
@@ -61,6 +62,7 @@ pub use ppo::{
 };
 pub use ppo_config::PpoHyperparams;
 pub use reward_config::{HeadingHoldRewardConfig, LevelHoldRewardConfig, OrbitRewardConfig};
+pub use task::{EnvSpec, OrbitGeometry, Task};
 pub use vec_env::{VecEnv, ENV_SEED_STRIDE};
 pub use wu_orbit_env::WuOrbitEnv;
 pub use wu_orbit_reward::{CurriculumStage, WuOrbitRewardConfig};

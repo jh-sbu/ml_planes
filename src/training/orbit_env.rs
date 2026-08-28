@@ -1,9 +1,10 @@
 //! Training environment for direct-control circular orbit.
 //!
-//! Observation (dim = 13, normalized):
+//! Observation (dim = ORBIT_OBS_DIM = 14, normalized):
 //!   [radial_err/500, heading_err/0.5, bank_ff/60deg,
 //!    alt_err/200, speed_err/50, alpha/0.5, pitch/0.5, pitch_rate/1,
-//!    roll/0.5, roll_rate/1, beta/0.5, yaw_rate/1, vertical_speed/30]
+//!    roll/0.5, roll_rate/1, beta/0.5, yaw_rate/1, vertical_speed/30,
+//!    fuel_fraction]
 //!
 //! Action (dim = 4, each in [-1, 1]):
 //!   [elevator, throttle_norm, aileron, rudder]
@@ -304,7 +305,6 @@ impl TrainingEnv for OrbitEnv {
         }
         let info = StepInfo {
             episode_step: self.episode_step,
-            ..Default::default()
         };
 
         StepOutcome {

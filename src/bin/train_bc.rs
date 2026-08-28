@@ -50,6 +50,7 @@ fn main() {
     #[cfg(feature = "wgpu")]
     use burn::backend::Wgpu;
     use burn::backend::{Autodiff, NdArray};
+    use ml_planes::training::task::Task;
     use ml_planes::training::Backend;
 
     let args: Vec<String> = std::env::args().collect();
@@ -65,6 +66,15 @@ fn main() {
             eprintln!("{e}");
             std::process::exit(2);
         });
+    // The registry knows all five tasks; behavior cloning needs a PID expert to
+    // roll out, which is exactly the set with a `bc_default_stem`.
+    if task.bc_default_stem().is_none() {
+        eprintln!(
+            "Unsupported --task '{}'. Behavior cloning supports 'level_hold', 'heading_hold', or 'orbit'.",
+            task.as_str()
+        );
+        std::process::exit(2);
+    }
 
     let steps: usize = find("--steps")
         .map(|v| {
@@ -125,10 +135,7 @@ fn main() {
                 std::process::exit(2);
             })
         })
-        .unwrap_or(
-            ml_planes::training::level_hold_env::DEFAULT_TARGET_ALT_MIN
-                ..=ml_planes::training::level_hold_env::DEFAULT_TARGET_ALT_MAX,
-        );
+        .unwrap_or_else(|| task.default_target_alt_range());
     let target_speed_range = find("--target-speed-range")
         .map(|v| {
             ml_planes::training::parse_f32_range(&v).unwrap_or_else(|e| {
@@ -136,16 +143,7 @@ fn main() {
                 std::process::exit(2);
             })
         })
-        .unwrap_or_else(|| match task {
-            Task::HeadingHold => {
-                ml_planes::training::heading_hold_env::DEFAULT_TARGET_AIRSPEED_MIN
-                    ..=ml_planes::training::heading_hold_env::DEFAULT_TARGET_AIRSPEED_MAX
-            }
-            _ => {
-                ml_planes::training::level_hold_env::DEFAULT_TARGET_AIRSPEED_MIN
-                    ..=ml_planes::training::level_hold_env::DEFAULT_TARGET_AIRSPEED_MAX
-            }
-        });
+        .unwrap_or_else(|| task.default_target_speed_range());
 
     let target_heading_range = find("--target-heading-range")
         .map(|v| {
@@ -154,10 +152,7 @@ fn main() {
                 std::process::exit(2);
             })
         })
-        .unwrap_or(
-            ml_planes::training::heading_hold_env::DEFAULT_TARGET_HEADING_DEG_MIN
-                ..=ml_planes::training::heading_hold_env::DEFAULT_TARGET_HEADING_DEG_MAX,
-        );
+        .unwrap_or_else(|| task.default_target_heading_range_deg());
     let target_heading_range =
         target_heading_range.start().to_radians()..=target_heading_range.end().to_radians();
 
@@ -193,60 +188,17 @@ fn main() {
 }
 
 #[cfg(feature = "training")]
-#[derive(Clone, Copy)]
-enum Task {
-    LevelHold,
-    HeadingHold,
-    Orbit,
-}
-
-#[cfg(feature = "training")]
-impl Task {
-    fn parse(value: &str) -> Result<Self, String> {
-        match value {
-            "level_hold" => Ok(Self::LevelHold),
-            "heading_hold" => Ok(Self::HeadingHold),
-            "orbit" => Ok(Self::Orbit),
-            other => Err(format!(
-                "Unsupported --task '{other}'. Behavior cloning supports 'level_hold', 'heading_hold', or 'orbit'."
-            )),
-        }
-    }
-
-    fn reward_config_path(self) -> &'static str {
-        match self {
-            Self::LevelHold => "assets/training/level_hold.reward.ron",
-            Self::HeadingHold => "assets/training/heading_hold.reward.ron",
-            Self::Orbit => "assets/training/orbit.reward.ron",
-        }
-    }
-
-    fn model_dir(self) -> &'static str {
-        match self {
-            Self::LevelHold => "level_hold",
-            Self::HeadingHold => "heading_hold",
-            Self::Orbit => "orbit",
-        }
-    }
-
-    fn default_stem(self) -> &'static str {
-        match self {
-            Self::LevelHold => "bc_level_hold",
-            Self::HeadingHold => "bc_heading_hold",
-            Self::Orbit => "bc_orbit",
-        }
-    }
-}
-
-#[cfg(feature = "training")]
-fn save_path_for(task: Task, output_stem: Option<String>) -> String {
+fn save_path_for(task: ml_planes::training::task::Task, output_stem: Option<String>) -> String {
     let dir = task.model_dir();
     match output_stem {
         Some(stem) => format!("models/{dir}/{stem}"),
         None => {
             let mut n = 1u32;
             loop {
-                let candidate = format!("models/{dir}/{}_{n}", task.default_stem());
+                let candidate = format!(
+                    "models/{dir}/{}_{n}",
+                    task.bc_default_stem().expect("BC-capable task")
+                );
                 if !std::path::Path::new(&format!("{candidate}.mpk")).exists() {
                     break candidate;
                 }
@@ -259,7 +211,7 @@ fn save_path_for(task: Task, output_stem: Option<String>) -> String {
 #[cfg(feature = "training")]
 #[allow(clippy::too_many_arguments)]
 fn run<B>(
-    task: Task,
+    task: ml_planes::training::task::Task,
     steps: usize,
     bc_epochs: usize,
     minibatch: usize,
@@ -280,9 +232,8 @@ fn run<B>(
     use ml_planes::training::reward_config::{
         load_reward_config, HeadingHoldRewardConfig, LevelHoldRewardConfig, OrbitRewardConfig,
     };
-    use ml_planes::training::{
-        collect_demonstrations, DemonstrationEnv, HeadingHoldEnv, LevelHoldEnv, OrbitEnv,
-    };
+    use ml_planes::training::task::{self, EnvSpec, Task};
+    use ml_planes::training::{collect_demonstrations, DemonstrationEnv};
 
     let cfg = ml_planes::training::load_plane_config_or_exit(&plane_config);
     println!("Loaded plane config from {plane_config}");
@@ -306,33 +257,31 @@ fn run<B>(
         println!("Seed: {s} (weight init, minibatch shuffling)");
     }
 
+    let spec = EnvSpec {
+        target_alt_range,
+        target_speed_range,
+        target_heading_range,
+        ..EnvSpec::defaults_for(task, cfg)
+    };
+
     match task {
         Task::LevelHold => {
             let reward_cfg: LevelHoldRewardConfig = load_or_default(path);
-            let env = LevelHoldEnv::with_target_ranges(
-                target_alt_range,
-                target_speed_range,
-                cfg,
-                reward_cfg,
-            );
+            let env = task::level_hold_env(&spec, reward_cfg);
             pretrain::<B, _>(env, steps, bc_epochs, minibatch, &save_path, seed);
         }
         Task::HeadingHold => {
             let reward_cfg: HeadingHoldRewardConfig = load_or_default(path);
-            let env = HeadingHoldEnv::with_target_ranges(
-                target_heading_range,
-                target_alt_range,
-                target_speed_range,
-                cfg,
-                reward_cfg,
-            );
+            let env = task::heading_hold_env(&spec, reward_cfg);
             pretrain::<B, _>(env, steps, bc_epochs, minibatch, &save_path, seed);
         }
         Task::Orbit => {
             let reward_cfg: OrbitRewardConfig = load_or_default(path);
-            let env = OrbitEnv::with_reward_config(1000.0, 100.0, 1000.0, cfg, reward_cfg);
+            let env = task::orbit_env(&spec, reward_cfg);
             pretrain::<B, _>(env, steps, bc_epochs, minibatch, &save_path, seed);
         }
+        // Rejected at argument-parse time; `bc_default_stem` is the gate.
+        Task::ResidualOrbit | Task::LstmOrbit => unreachable!("not BC-capable"),
     }
 
     #[allow(clippy::too_many_arguments)]

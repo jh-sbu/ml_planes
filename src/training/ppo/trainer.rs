@@ -231,18 +231,7 @@ where
                 .expect("log_prob data");
             let value_data = value_t.into_data().to_vec::<f32>().expect("value data");
 
-            let actions: Vec<[f32; 4]> = (0..n)
-                .map(|i| {
-                    [
-                        action_data[i * 4],
-                        action_data[i * 4 + 1],
-                        action_data[i * 4 + 2],
-                        action_data[i * 4 + 3],
-                    ]
-                })
-                .collect();
-
-            let mut outcomes = self.envs.step_batch(&actions);
+            let mut outcomes = self.envs.step_batch(&action_data);
 
             for (i, outcome) in outcomes.iter_mut().enumerate() {
                 let done = outcome.done();
@@ -258,7 +247,8 @@ where
                     // observations right after this loop, so `obs_batch[i]` is dead
                     // after this read — move it out instead of cloning it.
                     obs: std::mem::take(&mut obs_batch[i]),
-                    action: actions[i],
+                    // One row of the flat action buffer `step_batch` was handed.
+                    action: action_data[i * 4..][..4].try_into().expect("action row"),
                     log_prob: log_prob_data[i],
                     reward: outcome.reward,
                     value: value_data[i],

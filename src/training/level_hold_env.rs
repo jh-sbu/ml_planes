@@ -344,7 +344,6 @@ impl TrainingEnv for LevelHoldEnv {
         let reward = self.compute_reward();
         let info = StepInfo {
             episode_step: self.episode_step,
-            ..Default::default()
         };
 
         StepOutcome {

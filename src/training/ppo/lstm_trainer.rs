@@ -251,18 +251,7 @@ where
             let new_p_hidden = LstmHiddenState::unbatch_from_burn(new_p_state, n);
             let new_v_hidden = LstmHiddenState::unbatch_from_burn(new_v_state, n);
 
-            let actions: Vec<[f32; 4]> = (0..n)
-                .map(|i| {
-                    [
-                        action_data[i * 4],
-                        action_data[i * 4 + 1],
-                        action_data[i * 4 + 2],
-                        action_data[i * 4 + 3],
-                    ]
-                })
-                .collect();
-
-            let mut outcomes = self.envs.step_batch(&actions);
+            let mut outcomes = self.envs.step_batch(&action_data);
             let dones: Vec<bool> = outcomes.iter().map(|o| o.done()).collect();
 
             for (i, outcome) in outcomes.iter_mut().enumerate() {
@@ -276,7 +265,8 @@ where
                 }
                 per_env[i].push(LstmRolloutStep {
                     obs: obs_batch[i].clone(),
-                    action: actions[i],
+                    // One row of the flat action buffer `step_batch` was handed.
+                    action: action_data[i * 4..][..4].try_into().expect("action row"),
                     log_prob: log_prob_data[i],
                     reward: outcome.reward,
                     value: value_data[i],
