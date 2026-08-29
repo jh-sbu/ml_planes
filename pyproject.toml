@@ -8,6 +8,12 @@ version = "0.1.0"
 description = "Python bindings for the ml_planes 6-DOF flight training environments"
 requires-python = ">=3.12"
 classifiers = ["Programming Language :: Rust"]
+# numpy is a *runtime* requirement, not a dev one: rust-numpy loads the NumPy
+# C-API capsule on demand and panics if the module is absent, so every array the
+# extension returns depends on it. gymnasium deliberately stays out of here — the
+# adapter in `ml_planes.gym` imports it lazily, so the core Env/VecEnv path works
+# without it.
+dependencies = ["numpy>=1.26"]
 
 [tool.maturin]
 manifest-path = "bindings/python/Cargo.toml"
@@ -19,4 +25,4 @@ features = ["pyo3/extension-module"]
 testpaths = ["bindings/python/tests"]
 
 [dependency-groups]
-dev = ["maturin>=1.14.1", "pytest>=9.1.1", "torch>=2.13.0"]
+dev = ["maturin>=1.14.1", "pytest>=9.1.1", "torch>=2.13.0", "gymnasium>=1.0"]

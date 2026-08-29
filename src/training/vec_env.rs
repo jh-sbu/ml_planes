@@ -1,4 +1,4 @@
-use crate::training::{Observation, StepOutcome, TrainingEnv};
+use crate::training::{Observation, SpawnSpec, StepOutcome, TrainingEnv};
 
 /// Seed spacing between neighbouring envs in a pool.
 ///
@@ -28,11 +28,31 @@ impl<E: TrainingEnv> VecEnv<E> {
     }
 
     pub fn reset_all(&mut self) -> Vec<Observation> {
-        self.envs.iter_mut().map(|e| e.reset().0).collect()
+        self.reset_all_with_specs()
+            .into_iter()
+            .map(|(obs, _)| obs)
+            .collect()
     }
 
     pub fn reset_at(&mut self, i: usize) -> Observation {
-        self.envs[i].reset().0
+        self.reset_at_with_spec(i).0
+    }
+
+    /// [`Self::reset_all`], keeping the [`SpawnSpec`] each env reports.
+    ///
+    /// The plain accessors drop it, which is all the Rust trainers ever needed.
+    /// A Gymnasium-style `reset()` returns `(obs, info)` though, and the spawn
+    /// state is what belongs in that `info` — so the bindings need the half the
+    /// trainers throw away. Kept as a separate method rather than widening
+    /// `reset_all`'s return type, so the four in-tree trainer call sites stay put.
+    pub fn reset_all_with_specs(&mut self) -> Vec<(Observation, SpawnSpec)> {
+        self.envs.iter_mut().map(|e| e.reset()).collect()
+    }
+
+    /// [`Self::reset_at`], keeping the [`SpawnSpec`]. Panics if `i` is out of
+    /// range, like the other indexed accessors here.
+    pub fn reset_at_with_spec(&mut self, i: usize) -> (Observation, SpawnSpec) {
+        self.envs[i].reset()
     }
 
     /// Seed every sub-env deterministically from one absolute base seed, spacing
@@ -236,6 +256,46 @@ mod tests {
             batch[1].obs,
             solo_b.step_batch(&[-1.0, -0.5, 0.0, 0.0])[0].obs
         );
+    }
+
+    /// The spawn spec is what a Gymnasium-style `reset()` reports alongside the
+    /// observation, and `reset_all`/`reset_at` drop it on the floor. The bindings
+    /// need it per-env, so the pool has to be able to hand it back.
+    #[test]
+    fn reset_all_with_specs_keeps_the_spawn_spec() {
+        let mut pool = level_hold_pool(&jet_cfg(), 3);
+        pool.set_rng_seed(21);
+        let out = pool.reset_all_with_specs();
+
+        assert_eq!(out.len(), 3);
+        for (obs, spec) in &out {
+            assert_eq!(obs.len(), 13);
+            assert!(spec.position.is_some(), "level hold spawns at a position");
+            assert!(spec.velocity.is_some());
+        }
+    }
+
+    /// The observation half must be exactly what the plain accessor returns, or
+    /// the two paths are different resets wearing the same name.
+    #[test]
+    fn reset_with_specs_matches_the_plain_accessors() {
+        let cfg = jet_cfg();
+        let mut a = level_hold_pool(&cfg, 2);
+        let mut b = level_hold_pool(&cfg, 2);
+        a.set_rng_seed(33);
+        b.set_rng_seed(33);
+
+        let plain = a.reset_all();
+        let with_specs = b.reset_all_with_specs();
+        assert_eq!(
+            plain,
+            with_specs
+                .iter()
+                .map(|(o, _)| o.clone())
+                .collect::<Vec<_>>()
+        );
+
+        assert_eq!(a.reset_at(1), b.reset_at_with_spec(1).0);
     }
 
     /// The pool a `#[pyclass]` needs: two *different* concrete env types behind

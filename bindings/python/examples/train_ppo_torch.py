@@ -1,0 +1,370 @@
+#!/usr/bin/env python3
+"""Reference PyTorch PPO over the ml_planes environments.
+
+This is the end-to-end demonstration that the bindings are usable, not a
+replacement for anything: the Rust `burn` track (`train_ppo`, `train_bc`,
+`evaluate_policy`) remains the supported in-repo path (CLAUDE.md §3, constraint
+(c)). Python is a second consumer of the same environments.
+
+    just py-train level_hold --total-steps 2000000 --num-envs 16
+
+At those settings a CPU run does ~19k env-steps/s and takes mean episode return
+from roughly -2000 to -80 over 2M steps, with the value loss falling several
+orders of magnitude and entropy declining as the policy sharpens. That is a
+working training curve, not a tuned result — for policy quality use the Rust
+`evaluate_policy` and the train-evaluate-optimize workflow.
+
+Lives in the binding crate's `examples/` because cargo ignores `.py` there and
+maturin only packages `python/`, so it ships in neither the crate nor the wheel.
+
+The one detail worth reading before adapting this loop is `compute_gae`. The
+environments distinguish a *failure* (absorbing — bootstrap 0) from a *timeout*
+(the step limit cut a still-flying episode short — bootstrap `gamma * V(s')`),
+and the value target differs between them. Collapsing the two into one `done`
+teaches the critic that an ordinary in-flight state is worth nothing, and since
+the observation carries no time feature, that state is indistinguishable from
+any other. This mirrors `src/training/ppo/buffer.rs::compute_gae` on the Rust
+side; keep the two in agreement.
+
+Checkpoints are plain PyTorch `.pt` files. Interchange with the Rust `.mpk`
+format is deliberately not attempted — CLAUDE.md §3 records it as a separate,
+undecided question.
+"""
+
+from __future__ import annotations
+
+import argparse
+import time
+from dataclasses import dataclass
+
+import numpy as np
+import torch
+import torch.nn as nn
+
+import ml_planes
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    p.add_argument("--task", default="level_hold", choices=sorted(ml_planes.TASKS))
+    p.add_argument("--num-envs", type=int, default=16)
+    p.add_argument("--total-steps", type=int, default=1_000_000,
+                   help="environment steps summed across all envs")
+    p.add_argument("--rollout-steps", type=int, default=256,
+                   help="steps per env per update")
+    # These defaults mirror `assets/training/level_hold.ppo.ron`, so a Python run
+    # and a `train_ppo --task level_hold` run start from the same
+    # hyperparameters. `--minibatch-size` is the one deviation: the shipped
+    # profile uses 64, which costs ~16x the optimizer steps per update and is
+    # painful in Python. Pass `--minibatch-size 64` to match it exactly.
+    p.add_argument("--epochs", type=int, default=4)
+    p.add_argument("--minibatch-size", type=int, default=256)
+    p.add_argument("--lr", type=float, default=3e-4)
+    p.add_argument("--gamma", type=float, default=0.99)
+    p.add_argument("--gae-lambda", type=float, default=0.95)
+    p.add_argument("--clip", type=float, default=0.1)
+    p.add_argument("--ent-coef", type=float, default=0.0)
+    p.add_argument("--vf-coef", type=float, default=0.5)
+    p.add_argument("--max-grad-norm", type=float, default=0.5)
+    p.add_argument("--hidden", type=int, default=128)
+    p.add_argument("--log-std-init", type=float, default=-0.5)
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--device", default="cpu")
+    p.add_argument("--plane-config", default=None,
+                   help="airframe .plane.ron; must match what a checkpoint was trained on")
+    p.add_argument("--reward-config", default=None)
+    p.add_argument("--out", default=None, help="checkpoint path (.pt)")
+    p.add_argument("--log-every", type=int, default=1)
+    return p.parse_args()
+
+
+def layer_init(layer: nn.Linear, gain: float = np.sqrt(2)) -> nn.Linear:
+    """Orthogonal weights, zero bias — the standard PPO initialization.
+
+    The gain on the *final* actor layer matters more than it looks. Left at the
+    default, the initial policy emits large means on a [-1, 1] action space, so
+    almost every sampled action saturates at the clamp, every episode looks alike
+    and there is nothing for the advantage to discriminate. A gain of 0.01 starts
+    the policy near zero-mean instead.
+    """
+    nn.init.orthogonal_(layer.weight, gain)
+    nn.init.constant_(layer.bias, 0.0)
+    return layer
+
+
+class ActorCritic(nn.Module):
+    """MLP actor-critic with a state-independent log-std, matching the shape of
+    the Rust `ActorCritic` closely enough to be comparable."""
+
+    def __init__(
+        self, obs_dim: int, action_dim: int, hidden: int, log_std_init: float = -0.5
+    ) -> None:
+        super().__init__()
+        self.actor = nn.Sequential(
+            layer_init(nn.Linear(obs_dim, hidden)), nn.Tanh(),
+            layer_init(nn.Linear(hidden, hidden)), nn.Tanh(),
+            layer_init(nn.Linear(hidden, action_dim), gain=0.01),
+        )
+        self.critic = nn.Sequential(
+            layer_init(nn.Linear(obs_dim, hidden)), nn.Tanh(),
+            layer_init(nn.Linear(hidden, hidden)), nn.Tanh(),
+            layer_init(nn.Linear(hidden, 1), gain=1.0),
+        )
+        # std = exp(-0.5) ~ 0.61: wide enough to explore a [-1, 1] action space,
+        # narrow enough that a sample is not usually clipped.
+        self.log_std = nn.Parameter(torch.full((action_dim,), log_std_init))
+
+    def distribution(self, obs: torch.Tensor) -> torch.distributions.Normal:
+        return torch.distributions.Normal(self.actor(obs), self.log_std.exp())
+
+    def value(self, obs: torch.Tensor) -> torch.Tensor:
+        return self.critic(obs).squeeze(-1)
+
+    @torch.no_grad()
+    def act(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        dist = self.distribution(obs)
+        action = dist.sample()
+        return action, dist.log_prob(action).sum(-1), self.value(obs)
+
+    def evaluate(
+        self, obs: torch.Tensor, action: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        dist = self.distribution(obs)
+        return (
+            dist.log_prob(action).sum(-1),
+            dist.entropy().sum(-1),
+            self.value(obs),
+        )
+
+
+@dataclass
+class Rollout:
+    obs: torch.Tensor            # (T, N, D)
+    actions: torch.Tensor        # (T, N, A)
+    log_probs: torch.Tensor      # (T, N)
+    values: torch.Tensor         # (T, N)
+    rewards: torch.Tensor        # (T, N)
+    dones: torch.Tensor          # (T, N) — episode boundary, either reason
+    bootstrap: torch.Tensor      # (T, N) — gamma * V(s') where a timeout cut it short
+
+
+def compute_gae(
+    rollout: Rollout, last_values: torch.Tensor, gamma: float, lam: float
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Generalized advantage estimation with truncation bootstrapping.
+
+    Mirrors `src/training/ppo/buffer.rs::compute_gae`:
+
+    * `dones` resets the advantage carry at *every* episode boundary, failure or
+      timeout alike — it really is a boundary either way.
+    * `bootstrap` is non-zero only where the episode was *truncated*, and adds
+      the `gamma * V(s')` the value target would otherwise be missing. A failure
+      is absorbing, so its bootstrap stays 0.
+    """
+    T, N = rollout.rewards.shape
+    advantages = torch.zeros_like(rollout.rewards)
+    carry = torch.zeros(N, device=rollout.rewards.device)
+
+    for t in reversed(range(T)):
+        not_done = 1.0 - rollout.dones[t]
+        next_value = last_values if t == T - 1 else rollout.values[t + 1]
+        # A finished episode contributes no next-state value of its own; the
+        # truncation bootstrap supplies it where one is owed.
+        next_value = next_value * not_done + rollout.bootstrap[t]
+
+        delta = rollout.rewards[t] + gamma * next_value - rollout.values[t]
+        carry = delta + gamma * lam * not_done * carry
+        advantages[t] = carry
+
+    return advantages, advantages + rollout.values
+
+
+def collect(
+    venv: ml_planes.VecEnv,
+    model: ActorCritic,
+    obs_np: np.ndarray,
+    steps: int,
+    device: torch.device,
+    gamma: float,
+    episode_returns: np.ndarray,
+    finished: list[float],
+) -> tuple[Rollout, np.ndarray, torch.Tensor]:
+    n, obs_dim, action_dim = venv.num_envs, venv.observation_dim, venv.action_dim
+
+    buf_obs = torch.zeros(steps, n, obs_dim, device=device)
+    buf_actions = torch.zeros(steps, n, action_dim, device=device)
+    buf_logp = torch.zeros(steps, n, device=device)
+    buf_values = torch.zeros(steps, n, device=device)
+    buf_rewards = torch.zeros(steps, n, device=device)
+    buf_dones = torch.zeros(steps, n, device=device)
+    buf_bootstrap = torch.zeros(steps, n, device=device)
+
+    for t in range(steps):
+        obs = torch.from_numpy(obs_np).to(device)
+        action, log_prob, value = model.act(obs)
+
+        buf_obs[t], buf_actions[t] = obs, action
+        buf_logp[t], buf_values[t] = log_prob, value
+
+        # Store the RAW sampled action, and clip only what is flown. The policy
+        # is a Gaussian over an unbounded space; clipping is the environment's.
+        # Storing the clipped value instead would pair it with the raw action's
+        # log-prob, so the PPO ratio would not be 1 on the first epoch and the
+        # surrogate objective would be measuring a mismatch rather than a policy
+        # change.
+        next_obs, rewards, terminated, truncated, _ = venv.step(
+            action.clamp(-1.0, 1.0).cpu().numpy().astype(np.float32)
+        )
+
+        buf_rewards[t] = torch.from_numpy(rewards).to(device)
+        done = terminated | truncated
+        buf_dones[t] = torch.from_numpy(done.astype(np.float32)).to(device)
+
+        episode_returns += rewards
+
+        # Only a timeout gets a bootstrap: it cut a still-flying episode short at
+        # an arbitrary wall clock, so V(s') at the terminal observation is real.
+        if truncated.any():
+            with torch.no_grad():
+                terminal_values = model.value(torch.from_numpy(next_obs).to(device))
+            buf_bootstrap[t] = (
+                gamma
+                * terminal_values
+                * torch.from_numpy(truncated.astype(np.float32)).to(device)
+            )
+
+        # No auto-reset, so restart finished episodes explicitly — after the
+        # terminal observation above has already been used.
+        for i in np.flatnonzero(done):
+            finished.append(float(episode_returns[i]))
+            episode_returns[i] = 0.0
+            next_obs[i], _ = venv.reset_at(int(i))
+
+        obs_np = next_obs
+
+    with torch.no_grad():
+        last_values = model.value(torch.from_numpy(obs_np).to(device))
+
+    return (
+        Rollout(buf_obs, buf_actions, buf_logp, buf_values,
+                buf_rewards, buf_dones, buf_bootstrap),
+        obs_np,
+        last_values,
+    )
+
+
+def update(
+    model: ActorCritic,
+    optimizer: torch.optim.Optimizer,
+    rollout: Rollout,
+    advantages: torch.Tensor,
+    returns: torch.Tensor,
+    args: argparse.Namespace,
+) -> dict[str, float]:
+    obs = rollout.obs.reshape(-1, rollout.obs.shape[-1])
+    actions = rollout.actions.reshape(-1, rollout.actions.shape[-1])
+    old_log_probs = rollout.log_probs.reshape(-1)
+    flat_adv = advantages.reshape(-1)
+    flat_ret = returns.reshape(-1)
+    flat_adv = (flat_adv - flat_adv.mean()) / (flat_adv.std() + 1e-8)
+
+    total = obs.shape[0]
+    stats = {"policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0}
+    batches = 0
+
+    for _ in range(args.epochs):
+        for idx in torch.randperm(total, device=obs.device).split(args.minibatch_size):
+            log_probs, entropy, values = model.evaluate(obs[idx], actions[idx])
+            ratio = (log_probs - old_log_probs[idx]).exp()
+
+            unclipped = ratio * flat_adv[idx]
+            clipped = ratio.clamp(1 - args.clip, 1 + args.clip) * flat_adv[idx]
+            policy_loss = -torch.min(unclipped, clipped).mean()
+            value_loss = ((values - flat_ret[idx]) ** 2).mean()
+            entropy_bonus = entropy.mean()
+
+            loss = policy_loss + args.vf_coef * value_loss - args.ent_coef * entropy_bonus
+
+            optimizer.zero_grad()
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+            optimizer.step()
+
+            stats["policy_loss"] += policy_loss.item()
+            stats["value_loss"] += value_loss.item()
+            stats["entropy"] += entropy_bonus.item()
+            batches += 1
+
+    return {k: v / max(batches, 1) for k, v in stats.items()}
+
+
+def main() -> None:
+    args = parse_args()
+    torch.manual_seed(args.seed)
+    device = torch.device(args.device)
+
+    env_kwargs = {}
+    if args.plane_config:
+        env_kwargs["plane_config"] = args.plane_config
+    if args.reward_config:
+        env_kwargs["reward_config"] = args.reward_config
+
+    venv = ml_planes.VecEnv(args.task, args.num_envs, seed=args.seed, **env_kwargs)
+    model = ActorCritic(
+        venv.observation_dim, venv.action_dim, args.hidden, args.log_std_init
+    ).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, eps=1e-5)
+
+    print(
+        f"task={args.task} obs_dim={venv.observation_dim} action_dim={venv.action_dim} "
+        f"num_envs={args.num_envs} device={device} dt={ml_planes.physics_dt():.6f}s"
+    )
+
+    obs_np, _ = venv.reset()
+    episode_returns = np.zeros(args.num_envs, dtype=np.float64)
+    finished: list[float] = []
+
+    steps_per_update = args.rollout_steps * args.num_envs
+    updates = max(args.total_steps // steps_per_update, 1)
+    start = time.time()
+
+    for it in range(1, updates + 1):
+        rollout, obs_np, last_values = collect(
+            venv, model, obs_np, args.rollout_steps, device,
+            args.gamma, episode_returns, finished,
+        )
+        advantages, returns = compute_gae(
+            rollout, last_values, args.gamma, args.gae_lambda
+        )
+        stats = update(model, optimizer, rollout, advantages, returns, args)
+
+        if it % args.log_every == 0 or it == updates:
+            steps_done = it * steps_per_update
+            recent = finished[-100:]
+            mean_return = float(np.mean(recent)) if recent else float("nan")
+            sps = steps_done / max(time.time() - start, 1e-9)
+            print(
+                f"update {it:4d}/{updates}  steps {steps_done:>9,}  "
+                f"return {mean_return:10.2f}  episodes {len(finished):>5}  "
+                f"policy {stats['policy_loss']:+.4f}  value {stats['value_loss']:.4f}  "
+                f"entropy {stats['entropy']:+.3f}  {sps:,.0f} steps/s",
+                flush=True,
+            )
+
+    if args.out:
+        torch.save(
+            {
+                "model": model.state_dict(),
+                "task": args.task,
+                "observation_dim": venv.observation_dim,
+                "action_dim": venv.action_dim,
+                "hidden": args.hidden,
+                "args": vars(args),
+            },
+            args.out,
+        )
+        print(f"saved {args.out}")
+
+
+if __name__ == "__main__":
+    main()

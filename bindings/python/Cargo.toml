@@ -28,3 +28,8 @@ pyo3 = { version = "0.29", features = ["abi3-py312"] }
 # No default features: the training envs are ungated in `ml_planes::training`,
 # so the bindings need neither burn nor bevy rendering.
 ml_planes = { path = "../..", default-features = false }
+# rust-numpy tracks pyo3's version exactly; it declares no `extension-module`
+# feature of its own and rides on pyo3's through feature unification. Always
+# reach ndarray as `numpy::ndarray::…` rather than depending on it directly, so a
+# future ndarray bump in the root crate cannot produce two incompatible views.
+numpy = "0.29"

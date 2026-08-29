@@ -9,19 +9,22 @@
 - Rendering: `bevy` + `bevy_egui` HUD (feature-flagged off for training)
 - Aerodynamics: custom coefficient-based model (coefficient tables in `.plane.ron` assets)
 - ML: `burn` (pure Rust; no Python, no IPC *in the simulator or the in-repo training loop*). CPU `ndarray` backend at inference (the `inference` feature) and, by default, at training too (the `training` feature adds `autodiff`); GPU `wgpu` training is opt-in via the `wgpu` feature
-- **Python bindings (SCAFFOLDED; env wrappers not yet implemented):** a native extension module
-  exposing the `training::` environments (`TrainingEnv`/`VecEnv`) to Python so PyTorch can drive
-  them as a Gymnasium-style env. In-process FFI (PyO3/`abi3` + maturin) — still no IPC, no
-  sockets, no Python in the simulator itself. The library prerequisites are **closed**:
-  `Box<dyn TrainingEnv>` is a `TrainingEnv` (a `#[pyclass]` cannot be generic), the task registry
-  lives in `training::task` instead of three binaries, and `VecEnv` takes flat batched actions
-  plus per-index absolute seeds. The module itself still exposes only `physics_dt()` and the
-  unexported `_core._Env` **parity harness** — deliberately not the wrapper: `_Env` is not
-  re-exported from the `ml_planes` package, its signatures may change, and it exists so
-  `bindings/python/tests/test_parity.py` can prove a Python rollout is bit-identical to a Rust
-  one. Designing the real surface (all five envs, a `VecEnv` wrapper, a Gymnasium adapter, and
-  what `reset()` returns beside the observation) is the next piece of work, and nothing shipped
-  so far pre-empts it. See the scope-decision
+- **Python bindings (IMPLEMENTED):** a native extension module exposing the `training::`
+  environments to Python so PyTorch can drive them. In-process FFI (PyO3/`abi3` + maturin) —
+  still no IPC, no sockets, no Python in the simulator itself. The surface is
+  `ml_planes.Env` (one env), `ml_planes.VecEnv` (N envs, flat env-major batched actions),
+  `ml_planes.TASKS`, and `physics_dt()`, marshalled through **numpy** (`rust-numpy`, pinned to
+  pyo3's version) so `torch.from_numpy` is zero-copy. `ml_planes.gym` adds a Gymnasium adapter
+  (`MlPlanesEnv` + `register()` for `MlPlanes/<Task>-v0`); it imports gymnasium **lazily**, so
+  gymnasium stays optional and the core env path works without it.
+  `bindings/python/examples/train_ppo_torch.py` is a reference PyTorch PPO loop over `VecEnv`.
+  Settled API decisions: `reset()` returns Gymnasium's **`(obs, info)`** with `info["spawn"]`
+  carrying the `SpawnSpec`; `step()` returns the five-tuple with `terminated`/`truncated` kept
+  apart; and **nothing auto-resets** on either side of the boundary, which is what keeps the
+  terminal observation readable for truncation bootstrapping. Deliberately *not* implemented: a
+  `gymnasium.vector.VectorEnv` adapter (its auto-reset contradicts the above — drive `VecEnv`
+  directly) and `.mpk` ↔ `.pt` policy interchange (a separate, undecided question).
+  See the scope-decision
   row in §3 for the boundary this must respect: Python is an **additional consumer** of the envs,
   never a dependency of the Rust crate's own build, tests, or training stack.
   `cargo test --no-default-features` and the whole `just test-all` matrix must stay Python-free
@@ -116,14 +119,24 @@ uv.lock               # committed — the venv is reproducible with `just py-syn
 bindings/python/
   Cargo.toml          # ml_planes_py: own [workspace] + Cargo.lock; cdylib+rlib; pyo3 abi3-py312
                       #   path-depends on ml_planes with default-features = false
-  src/lib.rs          # #[pymodule] fn _core — marshalling only, no sim logic
+  src/lib.rs          # #[pymodule] fn _core — Env, VecEnv, TASKS, physics_dt.
+                      #   Marshalling only, no sim logic. numpy in / numpy out.
   examples/           # reference_rollout.rs — plain-cargo Rust rollout printed as JSON;
                       #   the reference half of the parity test (maturin adds
-                      #   pyo3/extension-module, so `cargo run --example` still links)
+                      #   pyo3/extension-module, so `cargo run --example` still links).
+                      #   `--n-envs N` drives a VecEnv instead, giving the batched path a
+                      #   reference for env-major actions + ENV_SEED_STRIDE.
+                      #   train_ppo_torch.py — reference PyTorch PPO loop (cargo ignores .py
+                      #   here and maturin packages only python/, so it ships in neither)
   tests/              # pytest suite (testpaths in pyproject); kept out of python/ so maturin
-                      #   never packages it into the wheel. test_parity.py shells out to the
-                      #   example above and demands bit-identical rollouts
+                      #   never packages it into the wheel. test_env / test_vec_env /
+                      #   test_gym (skips without gymnasium) / test_train_ppo_torch /
+                      #   test_parity, which shells out to the example above and demands
+                      #   bit-identical rollouts for all five tasks and the batched path
 python/ml_planes/     # the Python package; re-exports from the private `._core`
+  __init__.py         # Env, VecEnv, TASKS, physics_dt. Does NOT import .gym — that is what
+                      #   keeps gymnasium optional
+  gym.py              # Gymnasium adapter; imports gymnasium lazily, raising a clear error
 ```
 
 **Workflow — always `uv run`, never an activated venv.** `uv run` resolves `.venv` from the repo
@@ -135,6 +148,12 @@ the `.so` is stale until rebuilt — the first thing to suspect when a Python-si
 impossible. The `py-*` recipes export `CARGO_TARGET_DIR=target` because the binding crate is its
 own workspace and would otherwise build a second, full ~2 GB copy of the bevy/rapier dependency
 tree under `bindings/python/target` (gitignored as a safety net for bare `maturin` invocations).
+`just py-train <task> [args]` runs the reference PyTorch PPO loop.
+
+**numpy is a runtime dependency of the wheel** (`[project] dependencies` in `pyproject.toml`),
+not a dev one: rust-numpy loads the NumPy C-API capsule on demand and *panics* if the module is
+absent, so every array the extension returns depends on it. **gymnasium is not** — it lives in
+the dev group and `ml_planes.gym` imports it lazily, so `import ml_planes` works without it.
 
 ### Key Types
 
@@ -869,7 +888,7 @@ that ships a non-default target) `tests/core/scenario.rs`.
 | Compressibility | Ignored. Low-Mach assumption throughout. |
 | Structural limits | Not modeled. |
 | ML runtime | Pure Rust (`burn`) for everything the simulator and the in-repo training binaries do — no Python, no IPC, no C extensions on that path, and that stays non-negotiable. |
-| Python bindings | **SCAFFOLDED (env wrappers not yet implemented).** A **separate, non-workspace crate** — `bindings/python` (`ml_planes_py`, `crate-type = ["cdylib", "rlib"]`) — exposes the `training::` envs (`TrainingEnv`, `VecEnv`, `Observation`/`StepOutcome`, the `*.reward.ron` configs) through PyO3 as an importable extension module, so a PyTorch training loop can step the same 6-DOF envs the Rust PPO trainer uses. **Deviation from the original plan:** this was going to be a `python` *crate feature* on `ml_planes` itself. It is not, for two reasons — (i) the `cdylib` crate-type would then be declared on the root `[lib]`, so **every** `cargo build`/`just test-all` would link a shared object it never uses, and (ii) `pyo3` would sit in the root dependency graph and `Cargo.lock` even when the feature is off. A separate crate that path-depends on `ml_planes` (`default-features = false` — the `training` envs are ungated, so the bindings pull in neither burn nor rendering) makes constraint (a) below structural rather than a matter of discipline: there is no feature combination of the root crate that can reach `pyo3`. It carries its own `[workspace]` table and `Cargo.lock` so a future workspace at the repo root cannot silently absorb it. Constraints: (a) **optional and off by default** — no `pyo3` in a default/`training`/`server` build, and the existing test matrix must pass with no Python present; (b) **bindings only, no logic** — the wrapper marshals to/from the existing traits and adds no reward, termination, or physics behavior of its own, so Rust-side and Python-side rollouts of the same env are the same env (a divergence here is the failure mode this row exists to prevent); (c) the Rust `burn` PPO/BC track stays the supported in-repo path — Python is a second consumer, not a replacement, and `train_ppo`/`train_bc`/`evaluate_policy` keep working unchanged. Policy interchange between the two stacks (`.mpk` ↔ PyTorch checkpoints) is **not** implied by the bindings and is a separate, currently-undecided question. Constraint (b) is now **enforced rather than asserted**: `bindings/python/examples/reference_rollout.rs` prints a Rust rollout as JSON and `test_parity.py` replays those exact actions through `_core._Env`, comparing observations and rewards with `==` (never `pytest.approx` — both sides run identical Rust on identical inputs, so a tolerance could only hide the divergence the test exists to catch). The example widens each `f32` to `f64` before printing, because Python parses JSON numbers as `f64` and `float("0.1")` is not the widened `f32` 0.1. |
+| Python bindings | **IMPLEMENTED.** A **separate, non-workspace crate** — `bindings/python` (`ml_planes_py`, `crate-type = ["cdylib", "rlib"]`) — exposes the `training::` envs (`TrainingEnv`, `VecEnv`, `Observation`/`StepOutcome`, the `*.reward.ron` configs) through PyO3 as an importable extension module, so a PyTorch training loop can step the same 6-DOF envs the Rust PPO trainer uses. **Deviation from the original plan:** this was going to be a `python` *crate feature* on `ml_planes` itself. It is not, for two reasons — (i) the `cdylib` crate-type would then be declared on the root `[lib]`, so **every** `cargo build`/`just test-all` would link a shared object it never uses, and (ii) `pyo3` would sit in the root dependency graph and `Cargo.lock` even when the feature is off. A separate crate that path-depends on `ml_planes` (`default-features = false` — the `training` envs are ungated, so the bindings pull in neither burn nor rendering) makes constraint (a) below structural rather than a matter of discipline: there is no feature combination of the root crate that can reach `pyo3`. It carries its own `[workspace]` table and `Cargo.lock` so a future workspace at the repo root cannot silently absorb it. Constraints: (a) **optional and off by default** — no `pyo3` in a default/`training`/`server` build, and the existing test matrix must pass with no Python present; (b) **bindings only, no logic** — the wrapper marshals to/from the existing traits and adds no reward, termination, or physics behavior of its own, so Rust-side and Python-side rollouts of the same env are the same env (a divergence here is the failure mode this row exists to prevent); (c) the Rust `burn` PPO/BC track stays the supported in-repo path — Python is a second consumer, not a replacement, and `train_ppo`/`train_bc`/`evaluate_policy` keep working unchanged. Policy interchange between the two stacks (`.mpk` ↔ PyTorch checkpoints) is **not** implied by the bindings and is a separate, currently-undecided question. Constraint (b) is now **enforced rather than asserted**: `bindings/python/examples/reference_rollout.rs` prints a Rust rollout as JSON and `test_parity.py` replays those exact actions through the **public** `Env`/`VecEnv`, comparing observations and rewards with `==` (never `pytest.approx` — both sides run identical Rust on identical inputs, so a tolerance could only hide the divergence the test exists to catch). It covers all five tasks plus the batched path, where `--n-envs` gives every sub-env a distinct action stream so a transposed action buffer or a wrong seed stride shows up as a divergence rather than as a plausible-looking run. The example widens each `f32` to `f64` before printing, because Python parses JSON numbers as `f64` and `float("0.1")` is not the widened `f32` 0.1. The no-auto-reset contract crosses the boundary intact — `VecEnv.step` never restarts a finished sub-env, so a trainer can read the terminal observation and bootstrap before calling `reset_at`. Two dependencies follow from the numpy marshalling: `numpy` is a **runtime** requirement of the wheel, while `gymnasium` stays **optional** (lazy import in `ml_planes.gym`), and neither reaches the root crate. |
 | Reward/termination tuning | Configuration lives in `assets/training/*.reward.ron`; PPO hyperparameters live in `assets/training/*.ppo.ron`. `Default` implementations mirror baseline files so tests need no file I/O; a missing or invalid override warns and falls back to compiled defaults. See "Training Strategies and Evaluation" for the experiment workflow. |
 | Multi-agent | Architecture must support one `Box<dyn FlightController>` per plane entity. Exact multi-agent training strategy deferred. Cross-plane state is read via the per-tick `ControllerContext` snapshot (`plane/context.rs`), whose `find`/`others` do a **linear scan** — deliberately, since `N` is small, the snapshot is rebuilt every tick, and the only per-tick peer lookup (`WingmanController`'s leader) is not hot. Massive scenarios (hundreds/thousands of agents each doing per-tick peer lookups) are **deferred but not out of scope**; if they land, build an `id → index` map once in phase 1 of `run_flight_controllers` and pass it alongside the slice. `find`/`others` encapsulate access, so that stays a local change — see the `ControllerContext` doc comment. |
 
@@ -944,12 +963,17 @@ name = "ml_planes_mcp"     # required-features = ["mcp"] — MCP control client
 path = "src/bin/mcp.rs"
 ```
 
-> **`pyo3` is deliberately absent from this manifest.** The Python extension module is a
-> separate crate (`bindings/python/Cargo.toml`, own `[workspace]` and `Cargo.lock`) that
-> path-depends on `ml_planes` — see the layout block in §2 and the scope-decision row in §3.
-> No feature of the root crate pulls in `pyo3`, and `cargo metadata` here lists `ml_planes`
-> alone. Python-side dependencies (`maturin`, `pytest`, `torch`) live in `pyproject.toml`'s
-> `[dependency-groups] dev` and are locked in `uv.lock`.
+> **`pyo3` and `numpy` are deliberately absent from this manifest.** The Python extension
+> module is a separate crate (`bindings/python/Cargo.toml`, own `[workspace]` and `Cargo.lock`)
+> that path-depends on `ml_planes` — see the layout block in §2 and the scope-decision row in
+> §3. No feature of the root crate pulls in either, `cargo metadata` here lists `ml_planes`
+> alone, and the root `Cargo.lock` contains neither name. The `numpy` **crate** (rust-numpy) is
+> pinned to pyo3's version — they release in lockstep, so bumping one means bumping both; reach
+> ndarray through `numpy::ndarray::…` rather than depending on it directly, so a future ndarray
+> bump in the root crate cannot produce two incompatible view types. Python-side dependencies
+> live in `pyproject.toml`: the `numpy` **package** in `[project] dependencies` (a runtime
+> requirement — see §2), and `maturin`/`pytest`/`torch`/`gymnasium` in `[dependency-groups] dev`,
+> all locked in `uv.lock`.
 
 > `burn` features are selected per crate-feature (`default-features = false`): `ndarray` =
 > CPU backend (enabled by `inference`, used in production, WASM, and as the default training
@@ -1205,7 +1229,13 @@ a required `PlaneConfig` field breaks loudly in one place (the struct has no `De
   API the bindings marshal — and remember it rebuilds the extension first, because a stale `.so`
   otherwise reports the *previous* commit's behavior as green. It includes the Rust/Python parity
   suite (`test_parity.py`), which is what makes §3's constraint (b) a test rather than a promise;
-  it also compiles the binding crate's `reference_rollout` example on first run.
+  it also compiles the binding crate's `reference_rollout` example on first run. The lane is:
+  `test_core` (module wiring), `test_env` / `test_vec_env` (shapes, dtypes, error types, seeding,
+  the env-major action layout, and that `ENV_SEED_STRIDE` holds across the boundary),
+  `test_gym` (skips wholesale without gymnasium, and asserts `import ml_planes` does not pull it
+  in), `test_parity` (all five tasks + the batched path), and `test_train_ppo_torch` (a tiny
+  subprocess smoke run of the reference loop). Note that `Env.observation_dim`/`action_dim`/
+  `task`/`rng_seed` are **properties**, not methods.
 - **Sim-dependent tests require the sim chain (`sim_enabled` cfg).** The 6-DOF FixedUpdate chain
   in `PlanePlugin` compiles in only under `any(not(feature = "net"), feature = "server")`. A
   `net`-without-`server` build (e.g. bare `--features mcp`, since `mcp` enables `net` but not

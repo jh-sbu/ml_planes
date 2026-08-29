@@ -76,3 +76,11 @@ py-build:
 # will also compile that example on first run.
 py-test: py-build
     CARGO_TARGET_DIR=target uv run pytest
+
+# Reference PyTorch PPO loop over the bindings (bindings/python/examples).
+# The Rust `train_ppo` remains the supported in-repo training path; this exists
+# to demonstrate the bindings end-to-end, not to replace it.
+#   just py-train level_hold --total-steps 200000 --num-envs 16
+py-train task="level_hold" *ARGS:
+    CARGO_TARGET_DIR=target uv run python bindings/python/examples/train_ppo_torch.py \
+        --task {{task}} {{ARGS}}
