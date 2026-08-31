@@ -24,7 +24,9 @@ use pyo3::types::PyDict;
 use std::ops::RangeInclusive;
 
 use ml_planes::training::task::{self, EnvSpec, Task};
-use ml_planes::training::{SpawnSpec, StepOutcome, TerminationReason, TrainingEnv, VecEnv};
+use ml_planes::training::{
+    EvalError, EvalRun, SpawnSpec, StepOutcome, TerminationReason, TrainingEnv, VecEnv,
+};
 
 /// Fixed physics timestep in seconds, from `ml_planes::plane::PHYSICS_DT`.
 #[pyfunction]
@@ -681,11 +683,148 @@ impl PyVecEnv {
     }
 }
 
+/// Accumulates an evaluation report, using the same Rust code
+/// `src/bin/evaluate_policy.rs` does.
+///
+/// This exists so the two evaluators cannot drift. The obs-index -> physical
+/// units mapping, the settled-tail window, the success criterion and the core
+/// aggregation all live in `ml_planes::training::eval::EvalRun`; a Python
+/// evaluator supplies steps and gets the same numbers the Rust binary would
+/// report for the same episodes.
+///
+/// A **slot** is one in-flight episode's bookkeeping, defaulting to one per
+/// episode — the shape a Python evaluator stepping N envs already has. Pass
+/// `slots=1` to accumulate sequentially, which is what the parity test needs to
+/// match the Rust binary's float summation order exactly.
+#[pyclass(name = "EvalRun", module = "ml_planes")]
+struct PyEvalRun {
+    inner: EvalRun,
+    task: Task,
+}
+
+/// Map an accumulator error onto the right Python exception.
+///
+/// A bad slot is an index error, everything else a value error — and none of
+/// them may reach Python as a Rust panic, which pyo3 would surface as an
+/// uncatchable `PanicException`.
+fn eval_err(e: EvalError) -> PyErr {
+    match e {
+        EvalError::SlotOutOfRange(_) => PyIndexError::new_err(e.to_string()),
+        _ => PyValueError::new_err(e.to_string()),
+    }
+}
+
+#[pymethods]
+impl PyEvalRun {
+    /// `task` is one of `ml_planes.TASKS`; it selects the observation layout the
+    /// metrics are read back through.
+    ///
+    /// `max_steps` must be the same per-episode budget the environments were
+    /// built with (`Env(..., max_episode_steps=...)`), or the success criterion
+    /// counts against a budget the envs do not share.
+    #[new]
+    #[pyo3(signature = (task, *, episodes, max_steps, slots = None))]
+    fn new(task: &str, episodes: usize, max_steps: u32, slots: Option<usize>) -> PyResult<Self> {
+        let task = parse_task(task)?;
+        // Both would otherwise produce a report of zeros that reads as a
+        // working evaluation rather than as an error.
+        if episodes == 0 {
+            return Err(PyValueError::new_err(
+                "an evaluation needs at least one episode",
+            ));
+        }
+        if max_steps == 0 {
+            return Err(PyValueError::new_err("max_steps must be at least 1"));
+        }
+        let slots = slots.unwrap_or(episodes);
+        if slots == 0 {
+            return Err(PyValueError::new_err("slots must be at least 1"));
+        }
+        Ok(Self {
+            inner: EvalRun::new(task.metric_family(), episodes, max_steps, slots),
+            task,
+        })
+    }
+
+    /// Record one environment step for `slot`: the post-step observation and the
+    /// reward it earned. Whether the step falls in the settled tail window is
+    /// decided by the accumulator from the slot's own step count, never here.
+    fn record(
+        &mut self,
+        slot: usize,
+        obs: PyArrayLike1<'_, f32, AllowTypeChange>,
+        reward: f32,
+    ) -> PyResult<()> {
+        let view = obs.as_array();
+        let owned = action_vec(view);
+        self.inner.record(slot, &owned, reward).map_err(eval_err)
+    }
+
+    /// Close the episode in flight on `slot`, with its terminal observation.
+    fn finish(&mut self, slot: usize, obs: PyArrayLike1<'_, f32, AllowTypeChange>) -> PyResult<()> {
+        let view = obs.as_array();
+        let owned = action_vec(view);
+        self.inner.finish(slot, &owned).map_err(eval_err)
+    }
+
+    /// The finished report: the common core, then the task-specific rows in the
+    /// same order `evaluate_policy` prints them.
+    ///
+    /// Values are plain floats — precision is the caller's concern, exactly as
+    /// it is for the Rust binary, which applies its own formatting.
+    fn report<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        // `EvalRun::try_report` consumes the run, so hand it a fresh empty one
+        // and take ownership of the real one. A failed report puts the original
+        // back, leaving the object usable.
+        let placeholder = EvalRun::new(self.task.metric_family(), 1, 1, 1);
+        let taken = std::mem::replace(&mut self.inner, placeholder);
+        let report = match taken.try_report() {
+            Ok(r) => r,
+            Err(e) => return Err(eval_err(e)),
+        };
+
+        let d = PyDict::new(py);
+        d.set_item("episodes", report.episodes)?;
+        d.set_item("success_rate", report.success_rate)?;
+        d.set_item("mean_return", report.mean_return)?;
+        d.set_item("mean_length_steps", report.mean_length_steps)?;
+        for row in report.rows {
+            d.set_item(row.key, row.value)?;
+        }
+        Ok(d)
+    }
+
+    #[getter]
+    fn is_complete(&self) -> bool {
+        self.inner.is_complete()
+    }
+
+    #[getter]
+    fn finished_episodes(&self) -> usize {
+        self.inner.finished_episodes()
+    }
+
+    #[getter]
+    fn task(&self) -> &'static str {
+        self.task.as_str()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "EvalRun(task='{}', finished_episodes={}, complete={})",
+            self.task.as_str(),
+            self.inner.finished_episodes(),
+            self.inner.is_complete()
+        )
+    }
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(physics_dt, m)?)?;
     m.add_class::<PyEnv>()?;
     m.add_class::<PyVecEnv>()?;
+    m.add_class::<PyEvalRun>()?;
     // From `Task::ALL`, so Python never hardcodes the five names.
     m.add(
         "TASKS",

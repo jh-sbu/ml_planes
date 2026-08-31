@@ -87,7 +87,9 @@ def parse_args() -> argparse.Namespace:
                    help="skip training and deterministically evaluate a .pt checkpoint")
     p.add_argument("--eval-episodes", type=int, default=64)
     p.add_argument("--eval-max-steps", type=int, default=3200)
-    p.add_argument("--eval-seed", type=int, default=1_000_000)
+    p.add_argument("--eval-seed", type=int, default=None,
+                   help="base episode seed; defaults to the env's own starting seed, "
+                        "which makes the episode set identical to evaluate_policy's")
     p.add_argument("--eval-json", default=None,
                    help="optional path for machine-readable evaluation metrics")
     return p.parse_args()
@@ -419,10 +421,16 @@ def update(
 
 @torch.no_grad()
 def evaluate_checkpoint(args: argparse.Namespace) -> dict[str, float | int | str]:
+    """Deterministically evaluate a .pt checkpoint.
+
+    The metrics themselves come from `ml_planes.EvalRun`, which is the same Rust
+    accumulator `src/bin/evaluate_policy.rs` drives. This function only supplies
+    steps: it does not know what the tail window is, how success is defined, or
+    which observation index holds the altitude error. It used to know all three,
+    hardcoded for level_hold, and they drifted from the Rust side.
+    """
     checkpoint = torch.load(args.eval_only, map_location=args.device, weights_only=False)
     task = checkpoint["task"]
-    if task != "level_hold":
-        raise ValueError("the Python metric evaluator currently supports level_hold only")
     saved_args = checkpoint.get("args", {})
     arch = checkpoint.get("arch", saved_args.get("arch", "mlp"))
     hidden = checkpoint.get("hidden", saved_args.get("hidden", 128))
@@ -438,10 +446,17 @@ def evaluate_checkpoint(args: argparse.Namespace) -> dict[str, float | int | str
     # `success_rate` silently counts the wrong thing for every profile that does
     # not.
     env_kwargs["max_episode_steps"] = args.eval_max_steps
-    envs = [
-        ml_planes.Env(task, seed=args.eval_seed + i * 1000, **env_kwargs)
-        for i in range(args.eval_episodes)
-    ]
+    envs = [ml_planes.Env(task, **env_kwargs) for _ in range(args.eval_episodes)]
+
+    # Episode i must draw from `base + i + 1`, because reset() advances the seed
+    # before drawing. That reproduces the exact episode set `evaluate_policy`
+    # walks with a single env reset i+1 times, which is what makes these numbers
+    # comparable to a Rust eval report. The base is *discovered* rather than
+    # hardcoded: it is 42 for the level-hold family and 4242 for the orbit one.
+    base_seed = envs[0].rng_seed if args.eval_seed is None else args.eval_seed
+    for i, env in enumerate(envs):
+        env.seed(base_seed + i)
+
     model = build_model(
         arch,
         checkpoint["observation_dim"],
@@ -452,17 +467,13 @@ def evaluate_checkpoint(args: argparse.Namespace) -> dict[str, float | int | str
     model.load_state_dict(checkpoint["model"])
     model.eval()
 
-    episode_returns = np.zeros(args.eval_episodes, dtype=np.float64)
+    # One slot per episode — the default — so slot index and env index coincide.
+    run = ml_planes.EvalRun(
+        task, episodes=args.eval_episodes, max_steps=args.eval_max_steps
+    )
     lengths = np.zeros(args.eval_episodes, dtype=np.int64)
     finished = np.zeros(args.eval_episodes, dtype=bool)
-    successes = 0
-    step_errors: list[np.ndarray] = []
-    tail_errors: list[np.ndarray] = []
-    final_alt_errors: list[float] = []
-    tail_start = args.eval_max_steps - int(args.eval_max_steps * 0.2)
-
     observations = [env.reset()[0] for env in envs]
-    error_scales = np.array([200.0, 50.0, 0.5, 0.5], dtype=np.float32)
 
     while not finished.all():
         active = np.flatnonzero(~finished)
@@ -473,36 +484,17 @@ def evaluate_checkpoint(args: argparse.Namespace) -> dict[str, float | int | str
         for row, i in enumerate(active):
             obs, reward, terminated, truncated, _ = envs[i].step(actions[row])
             observations[i] = obs
-            episode_returns[i] += reward
             lengths[i] += 1
-            errors = np.abs(obs[[0, 1, 4, 6]]) * error_scales
-            step_errors.append(errors)
-            if lengths[i] > tail_start:
-                tail_errors.append(errors)
+            run.record(int(i), obs, reward)
             if terminated or truncated or lengths[i] >= args.eval_max_steps:
                 finished[i] = True
-                successes += int(lengths[i] >= args.eval_max_steps)
-                final_alt_errors.append(abs(float(obs[0])) * 200.0)
+                run.finish(int(i), obs)
 
-    mean_errors = np.mean(step_errors, axis=0) if step_errors else np.zeros(4)
-    mean_tail = np.mean(tail_errors, axis=0) if tail_errors else np.zeros(4)
     metrics: dict[str, float | int | str] = {
         "checkpoint": str(Path(args.eval_only)),
+        "task": task,
         "architecture": arch,
-        "episodes": args.eval_episodes,
-        "success_rate": successes / max(args.eval_episodes, 1),
-        "mean_return": float(np.mean(episode_returns)) if len(episode_returns) else 0.0,
-        "mean_length_steps": float(np.mean(lengths)) if len(lengths) else 0.0,
-        "mean_abs_altitude_m": float(mean_errors[0]),
-        "mean_abs_speed_mps": float(mean_errors[1]),
-        "mean_abs_roll_rad": float(mean_errors[2]),
-        "mean_abs_beta_rad": float(mean_errors[3]),
-        "mean_tail_abs_altitude_m": float(mean_tail[0]),
-        "mean_tail_abs_speed_mps": float(mean_tail[1]),
-        "mean_tail_abs_roll_rad": float(mean_tail[2]),
-        "mean_tail_abs_beta_rad": float(mean_tail[3]),
-        "mean_final_abs_altitude_m": float(np.mean(final_alt_errors))
-        if final_alt_errors else 0.0,
+        **run.report(),
     }
     for key, value in metrics.items():
         print(f"{key},{value}")

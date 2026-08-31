@@ -59,6 +59,18 @@ enum Source {
 }
 
 impl Source {
+    /// Highest observation index this source reads.
+    fn max_index(&self) -> usize {
+        match *self {
+            Source::Scaled { obs_index, .. } => obs_index,
+            Source::CircularError {
+                sin_index,
+                cos_index,
+                ..
+            } => sin_index.max(cos_index),
+        }
+    }
+
     fn value(&self, obs: &[f32]) -> f32 {
         match *self {
             Source::Scaled { obs_index, scale } => obs[obs_index].abs() * scale,
@@ -80,6 +92,22 @@ struct MetricSpec {
 }
 
 impl MetricFamily {
+    /// Highest observation index any of this family's metrics reads.
+    ///
+    /// Callers that accept an observation from outside the crate (the Python
+    /// bindings) use this to reject a short one up front: every `Source` here
+    /// indexes the slice directly, so a stale or hand-built observation would
+    /// otherwise panic deep inside the accumulator.
+    pub fn max_obs_index(self) -> usize {
+        self.step_specs()
+            .iter()
+            .chain(self.tail_specs())
+            .chain(self.final_specs())
+            .map(|spec| spec.source.max_index())
+            .max()
+            .unwrap_or(0)
+    }
+
     /// Per-step (mean-over-all-steps) metrics, in stable output order.
     fn step_specs(self) -> &'static [MetricSpec] {
         match self {

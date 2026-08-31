@@ -6,6 +6,7 @@ mod common;
 
 mod controller_targets;
 mod controller_telemetry;
+mod eval_run;
 mod lifecycle;
 mod orbit_tune_sync;
 mod physics_timestep;

@@ -26,7 +26,7 @@ pub use cli::{
     load_plane_config, load_plane_config_or_exit, parse_f32_range, DEFAULT_PLANE_CONFIG_PATH,
 };
 pub use env::{Observation, SpawnSpec, StepInfo, StepOutcome, TerminationReason, TrainingEnv};
-pub use eval::{evaluate_policy, EvaluationSummary};
+pub use eval::{EvalError, EvalReport, EvalRun, TAIL_FRACTION};
 pub use eval_metrics::{MetricFamily, TaskMetrics};
 
 #[cfg(feature = "inference")]

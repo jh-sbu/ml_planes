@@ -14,11 +14,15 @@ finished episode — that is deliberate, and mirrors the Rust side: it keeps the
 terminal observation readable so a truncated episode's value can be bootstrapped
 before `reset_at` restarts it.
 
+`EvalRun` accumulates an evaluation report using the same Rust code
+`src/bin/evaluate_policy.rs` does, so a Python evaluator and the native one
+cannot drift apart on what `success_rate` or `mean_tail_abs_*` mean.
+
 The Gymnasium adapter lives in `ml_planes.gym` and is **not** imported here, so
 gymnasium stays an optional dependency of this package.
 """
 
 from . import _core
-from ._core import TASKS, Env, VecEnv, physics_dt
+from ._core import TASKS, Env, EvalRun, VecEnv, physics_dt
 
-__all__ = ["TASKS", "Env", "VecEnv", "physics_dt"]
+__all__ = ["TASKS", "Env", "EvalRun", "VecEnv", "physics_dt"]

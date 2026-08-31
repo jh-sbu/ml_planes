@@ -1,123 +1,281 @@
-use crate::training::{Observation, TrainingEnv};
+//! The shared evaluation accumulator.
+//!
+//! Turning a rollout into an evaluation report takes more than the obs-index →
+//! physical-units mapping in [`crate::training::eval_metrics`]: it also needs
+//! the settled-tail window, the success criterion, and the core aggregation.
+//! Those three rules used to live privately inside `src/bin/evaluate_policy.rs`
+//! and were then re-implemented by hand, in Python, in
+//! `bindings/python/examples/train_ppo_torch.py`. The copies drifted — most
+//! visibly into two different episode-sampling schemes, which put ~15% between
+//! the two evaluators' `mean_return` for one and the same policy.
+//!
+//! [`EvalRun`] is the single implementation both stacks now drive, so the rules
+//! cannot diverge again. It deliberately does **not** own the environments or
+//! the loop: the Rust binary steps one env sequentially and Python steps a set
+//! of them with one batched forward, and neither shape needs to change for the
+//! measurement to be shared.
+//!
+//! A **slot** is one in-flight episode's bookkeeping. `slots = 1` reproduces the
+//! binary's sequential walk; `slots = episodes` gives each episode its own.
+//! Because the accumulator owns each slot's step counter, the caller never
+//! computes `in_tail` or "was this a success" for itself — which is precisely
+//! the arithmetic the Python copy got to re-derive before.
 
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct EvaluationSummary {
-    pub episodes: usize,
-    pub mean_return: f32,
-    pub mean_length: f32,
-    pub success_rate: f32,
+use crate::training::eval_metrics::{MetricFamily, MetricRow, TaskMetrics};
+
+/// Fraction of an episode's step budget treated as the settled "tail window"
+/// for the `mean_tail_abs_*` metrics.
+///
+/// The window is a fraction of the *budget*, not of the episode's realised
+/// length: an episode that ends early never settled, so it contributes no tail
+/// samples at all.
+pub const TAIL_FRACTION: f32 = 0.2;
+
+/// Misuse of an [`EvalRun`]. Every variant is something a caller can hit from
+/// Python, so none of them may be a panic — pyo3 turns a panic into an
+/// uncatchable `PanicException` rather than a normal exception.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvalError {
+    /// Slot index beyond the pool the run was built with.
+    SlotOutOfRange(usize),
+    /// Every declared episode has already been finished.
+    AllEpisodesFinished,
+    /// `finish` on a slot that has recorded no steps. A zero-length episode is
+    /// a caller bug rather than a datapoint: it would drag `mean_length_steps`
+    /// down and score as a non-success.
+    EmptyEpisode(usize),
+    /// The observation is too short for the metric family's highest read index.
+    ObservationTooShort { got: usize, need: usize },
+    /// `report` before every declared episode finished.
+    Incomplete { finished: usize, expected: usize },
 }
 
-pub fn evaluate_policy<E, F>(
-    mut env: E,
-    episodes: usize,
+impl std::fmt::Display for EvalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SlotOutOfRange(i) => write!(f, "slot {i} is out of range for this run"),
+            Self::AllEpisodesFinished => {
+                write!(f, "every declared episode has already been finished")
+            }
+            Self::EmptyEpisode(i) => {
+                write!(f, "slot {i} finished an episode with no recorded steps")
+            }
+            Self::ObservationTooShort { got, need } => write!(
+                f,
+                "observation of length {got} is too short for this task; need at least {need}"
+            ),
+            Self::Incomplete { finished, expected } => write!(
+                f,
+                "only {finished} of {expected} episodes finished; the report is not ready"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for EvalError {}
+
+/// A finished evaluation: the common core every task reports, plus the
+/// task-specific tracking-error rows in stable order.
+///
+/// Values are plain floats. Precision is a presentation concern — each
+/// [`MetricRow`] already carries the number of decimals it should print at, and
+/// a JSON or dict consumer wants a number rather than a pre-rounded string.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EvalReport {
+    pub episodes: usize,
+    pub success_rate: f32,
+    pub mean_return: f32,
+    pub mean_length_steps: f32,
+    pub rows: Vec<MetricRow>,
+}
+
+/// One in-flight episode.
+#[derive(Debug, Clone, Copy, Default)]
+struct Slot {
+    steps: u32,
+    ep_return: f32,
+}
+
+/// Accumulates an evaluation across episodes, owning every rule that turns
+/// observations into a report. See the module docs for the slot model.
+pub struct EvalRun {
+    metrics: TaskMetrics,
+    family: MetricFamily,
     max_steps: u32,
-    mut policy: F,
-) -> EvaluationSummary
-where
-    E: TrainingEnv,
-    F: FnMut(&Observation) -> Vec<f32>,
-{
-    if episodes == 0 || max_steps == 0 {
-        return EvaluationSummary::default();
+    /// Last step index *not* in the tail window; `steps > tail_start` is in it.
+    tail_start: u32,
+    expected_episodes: usize,
+    slots: Vec<Slot>,
+    finished_episodes: usize,
+    successes: usize,
+    total_return: f32,
+    total_steps: u64,
+}
+
+impl EvalRun {
+    /// `episodes` is how many episodes the report will cover, `max_steps` the
+    /// per-episode budget (which the caller must also pin on the environment,
+    /// so the loop bound and the env's own `Timeout` coincide), and `slots` how
+    /// many episodes are in flight at once.
+    pub fn new(family: MetricFamily, episodes: usize, max_steps: u32, slots: usize) -> Self {
+        // Mirrors the integer truncation the binary has always used:
+        // `max_steps - (max_steps as f32 * TAIL_FRACTION) as u32`.
+        let tail_start = max_steps.saturating_sub((max_steps as f32 * TAIL_FRACTION) as u32);
+        Self {
+            metrics: TaskMetrics::new(family),
+            family,
+            max_steps,
+            tail_start,
+            expected_episodes: episodes,
+            slots: vec![Slot::default(); slots.max(1)],
+            finished_episodes: 0,
+            successes: 0,
+            total_return: 0.0,
+            total_steps: 0,
+        }
     }
 
-    let mut total_return = 0.0_f32;
-    let mut total_length = 0_u64;
-    let mut successes = 0_usize;
-
-    for _ in 0..episodes {
-        let (mut obs, _) = env.reset();
-        let mut ep_return = 0.0_f32;
-        let mut ep_len = 0_u32;
-        let mut done = false;
-
-        while !done && ep_len < max_steps {
-            let action = policy(&obs);
-            let outcome = env.step(&action);
-            // Either termination reason ends the episode here; this loop's own
-            // `max_steps` cap is separate and drives the success criterion below.
-            done = outcome.done();
-            obs = outcome.obs;
-            ep_return += outcome.reward;
-            ep_len += 1;
-        }
-
-        if ep_len >= max_steps {
-            successes += 1;
-        }
-        total_return += ep_return;
-        total_length += ep_len as u64;
+    /// Highest observation index this run's metric family reads, as a length.
+    fn required_obs_len(&self) -> usize {
+        self.family.max_obs_index() + 1
     }
 
-    EvaluationSummary {
-        episodes,
-        mean_return: total_return / episodes as f32,
-        mean_length: total_length as f32 / episodes as f32,
-        success_rate: successes as f32 / episodes as f32,
+    fn check(&self, slot: usize, obs: &[f32]) -> Result<(), EvalError> {
+        if slot >= self.slots.len() {
+            return Err(EvalError::SlotOutOfRange(slot));
+        }
+        if self.finished_episodes >= self.expected_episodes {
+            return Err(EvalError::AllEpisodesFinished);
+        }
+        let need = self.required_obs_len();
+        if obs.len() < need {
+            return Err(EvalError::ObservationTooShort {
+                got: obs.len(),
+                need,
+            });
+        }
+        Ok(())
+    }
+
+    /// Record one environment step for `slot`: the post-step observation and
+    /// the reward it earned.
+    ///
+    /// Whether the step falls in the settled tail window is decided here, from
+    /// the slot's own step counter — never by the caller.
+    pub fn record(&mut self, slot: usize, obs: &[f32], reward: f32) -> Result<(), EvalError> {
+        self.check(slot, obs)?;
+        let s = &mut self.slots[slot];
+        s.steps += 1;
+        s.ep_return += reward;
+        let in_tail = s.steps > self.tail_start;
+        self.metrics.step(obs, in_tail);
+        Ok(())
+    }
+
+    /// Close the episode in flight on `slot`, with the terminal observation.
+    ///
+    /// An episode that ran the whole `max_steps` budget counts as a success;
+    /// one cut short by a crash or divergence does not.
+    pub fn finish(&mut self, slot: usize, obs: &[f32]) -> Result<(), EvalError> {
+        self.check(slot, obs)?;
+        let s = self.slots[slot];
+        if s.steps == 0 {
+            return Err(EvalError::EmptyEpisode(slot));
+        }
+        self.metrics.finish_episode(obs);
+        if s.steps >= self.max_steps {
+            self.successes += 1;
+        }
+        self.total_return += s.ep_return;
+        self.total_steps += s.steps as u64;
+        self.finished_episodes += 1;
+        self.slots[slot] = Slot::default();
+        Ok(())
+    }
+
+    /// How many episodes have been closed so far.
+    pub fn finished_episodes(&self) -> usize {
+        self.finished_episodes
+    }
+
+    /// Whether every declared episode has finished.
+    pub fn is_complete(&self) -> bool {
+        self.finished_episodes >= self.expected_episodes
+    }
+
+    /// Produce the report, refusing if episodes are still outstanding — a
+    /// partial report would silently divide by the declared episode count and
+    /// understate every mean.
+    pub fn try_report(self) -> Result<EvalReport, EvalError> {
+        if !self.is_complete() {
+            return Err(EvalError::Incomplete {
+                finished: self.finished_episodes,
+                expected: self.expected_episodes,
+            });
+        }
+        Ok(self.into_report())
+    }
+
+    /// Produce the report.
+    ///
+    /// # Panics
+    /// If episodes are still outstanding. Callers that cannot guarantee
+    /// completion should use [`Self::try_report`].
+    pub fn report(self) -> EvalReport {
+        self.try_report().expect("evaluation is complete")
+    }
+
+    fn into_report(self) -> EvalReport {
+        let episodes = self.expected_episodes.max(1) as f32;
+        EvalReport {
+            episodes: self.expected_episodes,
+            success_rate: self.successes as f32 / episodes,
+            mean_return: self.total_return / episodes,
+            mean_length_steps: self.total_steps as f32 / episodes,
+            rows: self.metrics.into_rows(),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::training::{SpawnSpec, StepInfo, StepOutcome, TerminationReason};
 
-    struct FixedLengthEnv {
-        step: u32,
-        episode_steps: u32,
-        reward_per_step: f32,
+    fn obs13(alt: f32) -> Vec<f32> {
+        let mut o = vec![0.0_f32; 13];
+        o[0] = alt;
+        o
     }
 
-    impl TrainingEnv for FixedLengthEnv {
-        fn reset(&mut self) -> (Observation, SpawnSpec) {
-            self.step = 0;
-            (vec![0.0], SpawnSpec::default())
-        }
-
-        fn step(&mut self, _action: &[f32]) -> StepOutcome {
-            self.step += 1;
-            StepOutcome {
-                obs: vec![self.step as f32],
-                reward: self.reward_per_step,
-                // This env only ever ends by running out of steps.
-                end: (self.step >= self.episode_steps).then_some(TerminationReason::Timeout),
-                info: StepInfo {
-                    episode_step: self.step,
-                },
-            }
-        }
-
-        fn observation_dim(&self) -> usize {
-            1
-        }
-
-        fn action_dim(&self) -> usize {
-            1
-        }
-
-        // This double has no RNG at all — every episode is the same fixed-length
-        // ramp — so there is no seed to report or set.
-        fn rng_seed(&self) -> u64 {
-            0
-        }
-
-        fn set_rng_seed(&mut self, _seed: u64) {}
-    }
-
+    /// The tail boundary is exclusive on the low side: with a budget of 10 the
+    /// window is steps 9 and 10, not 8 through 10. Off by one here quietly
+    /// changes what every `mean_tail_*` number in the project means.
     #[test]
-    fn evaluate_policy_aggregates_episode_metrics() {
-        let env = FixedLengthEnv {
-            step: 0,
-            episode_steps: 3,
-            reward_per_step: 2.0,
-        };
+    fn tail_window_is_the_final_fifth_of_the_budget() {
+        let mut run = EvalRun::new(MetricFamily::LevelHold, 1, 10, 1);
+        assert_eq!(run.tail_start, 8);
+        for step in 1..=10 {
+            // Only tail steps carry a non-zero error, so the tail mean is 1.0
+            // exactly if and only if the boundary is right.
+            let alt = if step > 8 { 1.0 } else { 0.0 };
+            run.record(0, &obs13(alt), 0.0).unwrap();
+        }
+        run.finish(0, &obs13(0.0)).unwrap();
+        let report = run.report();
+        let tail = report
+            .rows
+            .iter()
+            .find(|r| r.key == "mean_tail_abs_altitude_m")
+            .unwrap()
+            .value;
+        assert_eq!(tail, 200.0);
+    }
 
-        let summary = evaluate_policy(env, 4, 3, |_obs| vec![0.0]);
-
-        assert_eq!(summary.episodes, 4);
-        assert!((summary.mean_return - 6.0).abs() < 1e-6);
-        assert!((summary.mean_length - 3.0).abs() < 1e-6);
-        assert!((summary.success_rate - 1.0).abs() < 1e-6);
+    /// A zero budget would make the tail window meaningless; saturating_sub
+    /// keeps it from underflowing rather than panicking in release.
+    #[test]
+    fn a_zero_budget_does_not_underflow() {
+        let run = EvalRun::new(MetricFamily::LevelHold, 1, 0, 1);
+        assert_eq!(run.tail_start, 0);
     }
 }

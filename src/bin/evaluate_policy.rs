@@ -183,12 +183,12 @@ fn main() {
     if let Some(r) = &reported_target_heading_range_deg {
         println!("target_heading_range_deg,{}:{}", r.start(), r.end());
     }
-    println!("episodes,{}", metrics.core.episodes);
-    println!("success_rate,{:.6}", metrics.core.success_rate);
-    println!("mean_return,{:.6}", metrics.core.mean_return);
-    println!("mean_length_steps,{:.3}", metrics.core.mean_length_steps);
+    println!("episodes,{}", metrics.episodes);
+    println!("success_rate,{:.6}", metrics.success_rate);
+    println!("mean_return,{:.6}", metrics.mean_return);
+    println!("mean_length_steps,{:.3}", metrics.mean_length_steps);
     // Task-specific extras (each row carries its own print precision).
-    for row in metrics.extra_rows {
+    for row in metrics.rows {
         println!("{},{:.*}", row.key, row.decimals, row.value);
     }
 }
@@ -347,28 +347,15 @@ where
 // Evaluation loop
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "inference")]
-#[derive(Debug, Clone, Copy, Default)]
-struct CoreMetrics {
-    episodes: usize,
-    success_rate: f32,
-    mean_return: f32,
-    mean_length_steps: f32,
-}
-
-/// Fraction of an episode's step budget treated as the settled "tail window"
-/// for `mean_tail_abs_*` metrics (see `ml_planes::training::eval_metrics`).
-#[cfg(feature = "inference")]
-const TAIL_FRACTION: f32 = 0.2;
-
-#[cfg(feature = "inference")]
-struct EvalResult {
-    core: CoreMetrics,
-    extra_rows: Vec<ml_planes::training::eval_metrics::MetricRow>,
-}
-
 /// Roll out `episodes` deterministic episodes, accumulating the common core
 /// metrics plus the task-specific tracking-error metrics for `family`.
+///
+/// Every rule that turns those rollouts into numbers — the settled-tail window,
+/// the success criterion, the aggregation — lives in
+/// `ml_planes::training::EvalRun`, which the Python evaluator drives too. This
+/// loop only supplies steps. Note the single slot: episodes run one after
+/// another here, exactly as they always have, so the accumulation order (and
+/// therefore this binary's output, down to the last bit) is unchanged.
 #[cfg(feature = "inference")]
 fn run_eval<E, P>(
     mut env: E,
@@ -376,70 +363,42 @@ fn run_eval<E, P>(
     max_steps: u32,
     policy: &mut P,
     family: ml_planes::training::eval_metrics::MetricFamily,
-) -> EvalResult
+) -> ml_planes::training::EvalReport
 where
     E: ml_planes::training::TrainingEnv,
     P: EvalPolicy,
 {
-    use ml_planes::training::TaskMetrics;
+    use ml_planes::training::EvalRun;
 
-    let mut task_metrics = TaskMetrics::new(family);
+    let mut run = EvalRun::new(family, episodes, max_steps, 1);
+    // A zero-episode or zero-budget run has nothing to roll out; `EvalRun`
+    // reports the same empty shape without ever being stepped.
     if episodes == 0 || max_steps == 0 {
-        return EvalResult {
-            core: CoreMetrics {
-                episodes,
-                ..Default::default()
-            },
-            extra_rows: task_metrics.into_rows(),
-        };
+        return run.report();
     }
-
-    let mut total_return = 0.0_f32;
-    let mut total_len = 0_u64;
-    let mut success = 0_usize;
-
-    // Tail window: the final 20% of the episode's step budget, used to judge
-    // whether the policy has settled into a stable hold rather than still
-    // converging from the spawn-offset transient.
-    let tail_start = max_steps - (max_steps as f32 * TAIL_FRACTION) as u32;
 
     for _ in 0..episodes {
         let (mut obs, _) = env.reset();
         policy.reset();
-        let mut ep_return = 0.0_f32;
         let mut ep_len = 0_u32;
         let mut done = false;
 
         while !done && ep_len < max_steps {
             let action = policy.act(&obs);
             let outcome = env.step(&action);
-            // The success criterion below is this loop's own `max_steps` cap, which
-            // is independent of the env's termination reason.
+            // The success criterion is the step budget, which `EvalRun` owns;
+            // it is independent of the env's termination reason.
             done = outcome.done();
             obs = outcome.obs;
-            ep_return += outcome.reward;
             ep_len += 1;
-
-            task_metrics.step(&obs, ep_len > tail_start);
+            run.record(0, &obs, outcome.reward)
+                .expect("single-slot evaluation loop");
         }
 
-        if ep_len >= max_steps {
-            success += 1;
-        }
-        task_metrics.finish_episode(&obs);
-        total_return += ep_return;
-        total_len += ep_len as u64;
+        run.finish(0, &obs).expect("episode had at least one step");
     }
 
-    EvalResult {
-        core: CoreMetrics {
-            episodes,
-            success_rate: success as f32 / episodes as f32,
-            mean_return: total_return / episodes as f32,
-            mean_length_steps: total_len as f32 / episodes as f32,
-        },
-        extra_rows: task_metrics.into_rows(),
-    }
+    run.report()
 }
 
 // ---------------------------------------------------------------------------
