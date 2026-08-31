@@ -206,3 +206,35 @@ def test_env_is_exported_from_the_package():
     undesigned. It is designed now, so `Env` is the surface."""
     assert "Env" in ml_planes.__all__
     assert not hasattr(ml_planes._core, "_Env"), "the parity harness should be gone"
+
+
+def test_max_episode_steps_truncates_on_the_given_budget():
+    """`evaluate_policy` sets `env.max_episode_steps` so its loop bound and the
+    env's own `Timeout` coincide. An out-of-process evaluator needs the same
+    lever, or it scores episodes against a budget the env does not share."""
+    env = ml_planes.Env("level_hold", max_episode_steps=8)
+    env.reset()
+    action = np.zeros(env.action_dim, dtype=np.float32)
+
+    for step in range(1, 8):
+        _, _, terminated, truncated, info = env.step(action)
+        assert not truncated, f"step {step} of an 8-step budget"
+        assert not terminated
+        assert info["episode_step"] == step
+
+    _, _, terminated, truncated, _ = env.step(action)
+    assert truncated, "the 8th step exhausts the budget"
+    assert not terminated, "a timeout is not a failure — it must bootstrap V(s')"
+
+
+def test_unset_max_episode_steps_defers_to_the_reward_profile():
+    env = ml_planes.Env("level_hold")
+    env.reset()
+    action = np.zeros(env.action_dim, dtype=np.float32)
+    for _ in range(8):
+        assert not env.step(action)[3], "the shipped budget is 3200 steps, not 8"
+
+
+def test_zero_max_episode_steps_is_rejected():
+    with pytest.raises(ValueError, match="max_episode_steps"):
+        ml_planes.Env("level_hold", max_episode_steps=0)

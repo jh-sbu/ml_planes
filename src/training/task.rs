@@ -226,6 +226,14 @@ pub struct EnvSpec {
     /// **Radians.** See [`Task::default_target_heading_range_deg`].
     pub target_heading_range: RangeInclusive<f32>,
     pub orbit: OrbitGeometry,
+    /// Overrides the reward profile's `max_episode_steps` when `Some`.
+    ///
+    /// `evaluate_policy` sets the field directly on the concrete env so its own
+    /// loop bound and the env's `Timeout` coincide. A caller holding a
+    /// `Box<dyn TrainingEnv>` — the FFI bindings — cannot do that, so the limit
+    /// has to be expressible here instead. `None` defers to the profile, which
+    /// is what every in-tree training run wants.
+    pub max_episode_steps: Option<u32>,
 }
 
 impl EnvSpec {
@@ -238,11 +246,23 @@ impl EnvSpec {
             target_speed_range: task.default_target_speed_range(),
             target_heading_range: heading_deg.start().to_radians()..=heading_deg.end().to_radians(),
             orbit: task.default_orbit_geometry(),
+            max_episode_steps: None,
         }
     }
 }
 
-pub fn level_hold_env(spec: &EnvSpec, reward: LevelHoldRewardConfig) -> LevelHoldEnv {
+/// Applies [`EnvSpec::max_episode_steps`] to a loaded reward profile's own limit.
+///
+/// Called by every `*_env` constructor rather than by [`make_env`] alone, so the
+/// two build paths cannot disagree about how long an episode is.
+fn apply_step_limit(spec: &EnvSpec, limit: &mut u32) {
+    if let Some(n) = spec.max_episode_steps {
+        *limit = n;
+    }
+}
+
+pub fn level_hold_env(spec: &EnvSpec, mut reward: LevelHoldRewardConfig) -> LevelHoldEnv {
+    apply_step_limit(spec, &mut reward.max_episode_steps);
     LevelHoldEnv::with_target_ranges(
         spec.target_alt_range.clone(),
         spec.target_speed_range.clone(),
@@ -251,7 +271,8 @@ pub fn level_hold_env(spec: &EnvSpec, reward: LevelHoldRewardConfig) -> LevelHol
     )
 }
 
-pub fn heading_hold_env(spec: &EnvSpec, reward: HeadingHoldRewardConfig) -> HeadingHoldEnv {
+pub fn heading_hold_env(spec: &EnvSpec, mut reward: HeadingHoldRewardConfig) -> HeadingHoldEnv {
+    apply_step_limit(spec, &mut reward.max_episode_steps);
     HeadingHoldEnv::with_target_ranges(
         spec.target_heading_range.clone(),
         spec.target_alt_range.clone(),
@@ -261,7 +282,8 @@ pub fn heading_hold_env(spec: &EnvSpec, reward: HeadingHoldRewardConfig) -> Head
     )
 }
 
-pub fn orbit_env(spec: &EnvSpec, reward: OrbitRewardConfig) -> OrbitEnv {
+pub fn orbit_env(spec: &EnvSpec, mut reward: OrbitRewardConfig) -> OrbitEnv {
+    apply_step_limit(spec, &mut reward.max_episode_steps);
     OrbitEnv::with_reward_config(
         spec.orbit.altitude,
         spec.orbit.airspeed,
@@ -271,7 +293,8 @@ pub fn orbit_env(spec: &EnvSpec, reward: OrbitRewardConfig) -> OrbitEnv {
     )
 }
 
-pub fn residual_orbit_env(spec: &EnvSpec, reward: OrbitRewardConfig) -> ResidualOrbitEnv {
+pub fn residual_orbit_env(spec: &EnvSpec, mut reward: OrbitRewardConfig) -> ResidualOrbitEnv {
+    apply_step_limit(spec, &mut reward.max_episode_steps);
     ResidualOrbitEnv::with_reward_config(
         spec.orbit.altitude,
         spec.orbit.airspeed,
@@ -281,7 +304,8 @@ pub fn residual_orbit_env(spec: &EnvSpec, reward: OrbitRewardConfig) -> Residual
     )
 }
 
-pub fn wu_orbit_env(spec: &EnvSpec, reward: WuOrbitRewardConfig) -> WuOrbitEnv {
+pub fn wu_orbit_env(spec: &EnvSpec, mut reward: WuOrbitRewardConfig) -> WuOrbitEnv {
+    apply_step_limit(spec, &mut reward.max_episode_steps);
     WuOrbitEnv::with_reward_config(
         spec.orbit.altitude,
         spec.orbit.airspeed,

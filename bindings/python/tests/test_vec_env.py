@@ -182,3 +182,97 @@ def test_there_is_no_auto_reset():
 
 def test_vec_env_is_exported_from_the_package():
     assert "VecEnv" in ml_planes.__all__
+
+
+def test_max_episode_steps_applies_to_every_sub_env():
+    venv = ml_planes.VecEnv("level_hold", 3, max_episode_steps=8, seed=5)
+    venv.reset()
+    actions = np.zeros((3, venv.action_dim), dtype=np.float32)
+
+    for _ in range(7):
+        assert not venv.step(actions)[3].any()
+
+    truncated = venv.step(actions)[3]
+    assert truncated.all(), "every sub-env shares the budget"
+    assert not venv.step(actions)[2].any(), "a timeout is not a termination"
+
+
+def test_zero_max_episode_steps_is_rejected():
+    with pytest.raises(ValueError, match="max_episode_steps"):
+        ml_planes.VecEnv("level_hold", 2, max_episode_steps=0)
+
+
+# --- reset_done -------------------------------------------------------------
+#
+# The no-auto-reset contract means a caller must restart finished sub-envs
+# itself. Doing that one `reset_at` at a time is fine in a training loop (it
+# fires once per episode, ~once per 3200 steps per env), but an evaluator that
+# runs episodes to differing lengths ends up scattering rows by hand. This is
+# the batched form of the same operation, and it does NOT step anything.
+
+
+def test_reset_done_resets_only_the_masked_envs():
+    venv = ml_planes.VecEnv("level_hold", 4, seed=3)
+    obs, _ = venv.reset()
+    obs, *_ = venv.step(zeros(4))
+
+    mask = np.array([True, False, True, False])
+    out, _ = venv.reset_done(obs, mask)
+
+    assert out.shape == obs.shape and out.dtype == np.float32
+    for i in (1, 3):
+        assert np.array_equal(out[i], obs[i]), f"env {i} was not masked"
+    for i in (0, 2):
+        assert not np.array_equal(out[i], obs[i]), f"env {i} should have restarted"
+
+
+def test_reset_done_matches_reset_at_row_for_row():
+    """The batched form must be the per-index form, not a second reset path."""
+    a = ml_planes.VecEnv("level_hold", 3, seed=17)
+    b = ml_planes.VecEnv("level_hold", 3, seed=17)
+    obs_a, _ = a.reset()
+    obs_b, _ = b.reset()
+    assert np.array_equal(obs_a, obs_b)
+
+    mask = np.array([False, True, True])
+    batched, _ = a.reset_done(obs_a, mask)
+
+    expected = obs_b.copy()
+    for i in np.flatnonzero(mask):
+        expected[i], _ = b.reset_at(int(i))
+    assert np.array_equal(batched, expected)
+
+
+def test_reset_done_reports_spawn_only_for_the_reset_envs():
+    venv = ml_planes.VecEnv("level_hold", 3, seed=4)
+    obs, _ = venv.reset()
+
+    _, info = venv.reset_done(obs, np.array([True, False, True]))
+    assert list(info["index"]) == [0, 2]
+    # Row i is env i throughout this class, so an un-reset env is a hole rather
+    # than a shifted row (`stack_column`'s mixed case).
+    position = info["spawn"]["position"]
+    assert position[1] is None
+    assert position[0] is not None and position[2] is not None
+
+
+def test_reset_done_with_an_empty_mask_is_a_no_op():
+    venv = ml_planes.VecEnv("level_hold", 2, seed=9)
+    obs, _ = venv.reset()
+    out, info = venv.reset_done(obs, np.zeros(2, dtype=bool))
+    assert np.array_equal(out, obs)
+    assert list(info["index"]) == []
+
+
+def test_reset_done_rejects_a_mis_shaped_mask():
+    venv = ml_planes.VecEnv("level_hold", 3, seed=1)
+    obs, _ = venv.reset()
+    with pytest.raises(ValueError, match="mask"):
+        venv.reset_done(obs, np.ones(2, dtype=bool))
+
+
+def test_reset_done_rejects_a_mis_shaped_observation():
+    venv = ml_planes.VecEnv("level_hold", 3, seed=1)
+    obs, _ = venv.reset()
+    with pytest.raises(ValueError, match="shape"):
+        venv.reset_done(obs[:, :5], np.ones(3, dtype=bool))

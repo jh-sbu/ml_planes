@@ -61,6 +61,7 @@ fn build_spec(
     orbit_altitude: Option<f32>,
     orbit_airspeed: Option<f32>,
     orbit_radius: Option<f32>,
+    max_episode_steps: Option<u32>,
 ) -> PyResult<EnvSpec> {
     let plane_path = plane_config.unwrap_or(ml_planes::training::DEFAULT_PLANE_CONFIG_PATH);
     // The fallible loader, never `load_plane_config_or_exit` — that one calls
@@ -86,6 +87,17 @@ fn build_spec(
     }
     if let Some(v) = orbit_radius {
         spec.orbit.radius = v;
+    }
+    // A zero budget would make every `step` a truncation before the plane has
+    // moved, which reads as a working evaluation returning nonsense rather than
+    // as an error. `EnvSpec` itself permits it, so reject it at the boundary.
+    if let Some(n) = max_episode_steps {
+        if n == 0 {
+            return Err(PyValueError::new_err(
+                "max_episode_steps must be at least 1",
+            ));
+        }
+        spec.max_episode_steps = Some(n);
     }
     Ok(spec)
 }
@@ -198,6 +210,11 @@ impl PyEnv {
     /// The target-range kwargs override the default training envelope;
     /// `target_heading_range_deg` is in degrees. Pass the same envelope a
     /// checkpoint was trained with, for the same reason the Rust CLI flags exist.
+    ///
+    /// `max_episode_steps` overrides the reward profile's own episode budget,
+    /// the counterpart of what `evaluate_policy` does by assigning the field
+    /// directly. An evaluator that caps its loop without it scores episodes
+    /// against a budget the env does not share.
     #[new]
     #[pyo3(signature = (
         task,
@@ -210,6 +227,7 @@ impl PyEnv {
         orbit_altitude = None,
         orbit_airspeed = None,
         orbit_radius = None,
+        max_episode_steps = None,
         seed = None,
     ))]
     #[allow(clippy::too_many_arguments)]
@@ -223,6 +241,7 @@ impl PyEnv {
         orbit_altitude: Option<f32>,
         orbit_airspeed: Option<f32>,
         orbit_radius: Option<f32>,
+        max_episode_steps: Option<u32>,
         seed: Option<u64>,
     ) -> PyResult<Self> {
         let task = parse_task(task)?;
@@ -235,6 +254,7 @@ impl PyEnv {
             orbit_altitude,
             orbit_airspeed,
             orbit_radius,
+            max_episode_steps,
         )?;
         let mut inner = make_env(task, &spec, reward_config)?;
         if let Some(seed) = seed {
@@ -336,9 +356,19 @@ impl PyEnv {
 /// N independent episodes of one task, stepped together.
 ///
 /// Unlike Gymnasium's vector envs this does **not** auto-reset a finished
-/// sub-env: the caller resets it explicitly with `reset_at`. That is deliberate
-/// — it is what lets a trainer read the terminal observation off the step and
-/// bootstrap a truncated episode's value before restarting it.
+/// sub-env: the caller resets it explicitly with `reset_at`, or a batch of them
+/// with `reset_done`. That is deliberate — it is what lets a trainer read the
+/// terminal observation off the step and bootstrap a truncated episode's value
+/// before restarting it.
+///
+/// `step` runs the pool sequentially, so one `VecEnv` uses one core however
+/// large `num_envs` is. It does release the GIL, though, so **several `VecEnv`
+/// objects driven from Python threads do scale across cores** — no `rayon` or
+/// other Rust-side change required. The detached section has to be long enough
+/// to amortize GIL handoff for that to pay: measured on a 16-core machine,
+/// `num_envs=256` scaled ~4.4x at 4 threads, while `num_envs=16` (~5 us per
+/// step) showed no gain at all, because the threads spend their time convoying
+/// on GIL reacquisition rather than integrating.
 #[pyclass(name = "VecEnv", module = "ml_planes")]
 struct PyVecEnv {
     inner: VecEnv<Box<dyn TrainingEnv>>,
@@ -383,6 +413,7 @@ impl PyVecEnv {
         orbit_altitude = None,
         orbit_airspeed = None,
         orbit_radius = None,
+        max_episode_steps = None,
         seed = None,
     ))]
     #[allow(clippy::too_many_arguments)]
@@ -397,6 +428,7 @@ impl PyVecEnv {
         orbit_altitude: Option<f32>,
         orbit_airspeed: Option<f32>,
         orbit_radius: Option<f32>,
+        max_episode_steps: Option<u32>,
         seed: Option<u64>,
     ) -> PyResult<Self> {
         // `VecEnv::new` asserts on an empty pool; a panic here would surface as
@@ -414,6 +446,7 @@ impl PyVecEnv {
             orbit_altitude,
             orbit_airspeed,
             orbit_radius,
+            max_episode_steps,
         )?;
         let envs = (0..num_envs)
             .map(|_| make_env(task, &spec, reward_config))
@@ -469,6 +502,68 @@ impl PyVecEnv {
         let info = PyDict::new(py);
         info.set_item("spawn", spawn_dict(py, &spec)?)?;
         Ok((obs.into_pyarray(py), info))
+    }
+
+    /// Restart every sub-env the `mask` selects, leaving the rest untouched.
+    ///
+    /// The batched form of [`Self::reset_at`], for the caller the no-auto-reset
+    /// contract leaves holding a `done` array. Takes the observation batch the
+    /// step returned and gives back a copy with the masked rows replaced by
+    /// fresh ones, so a caller never scatters rows by hand. It steps nothing.
+    ///
+    /// `info["index"]` lists the envs that were reset. `info["spawn"]` keeps
+    /// row `i` meaning env `i` — as every array on this class does — so an
+    /// untouched env is a `None` hole rather than a shifted row.
+    #[pyo3(signature = (obs, mask))]
+    fn reset_done<'py>(
+        &mut self,
+        py: Python<'py>,
+        obs: PyArrayLike2<'py, f32, AllowTypeChange>,
+        mask: PyArrayLike1<'py, bool>,
+    ) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyDict>)> {
+        let n = self.inner.n();
+        let obs_view = obs.as_array();
+        let (rows, cols) = (obs_view.shape()[0], obs_view.shape()[1]);
+        if rows != n || cols != self.obs_dim {
+            return Err(PyValueError::new_err(format!(
+                "expected observations of shape ({n}, {}), got ({rows}, {cols})",
+                self.obs_dim
+            )));
+        }
+        let mask_view = mask.as_array();
+        if mask_view.len() != n {
+            return Err(PyValueError::new_err(format!(
+                "expected a mask of length {n}, got {}",
+                mask_view.len()
+            )));
+        }
+
+        // `iter()` walks in logical row-major order whatever the memory layout,
+        // matching `batch_array`'s expectation.
+        let mut flat: Vec<f32> = obs_view.iter().copied().collect();
+        let selected: Vec<bool> = mask_view.iter().copied().collect();
+        drop(obs);
+        drop(mask);
+
+        // A default spec is the hole `stack_column` renders as `None`; every
+        // shipped env fills all five fields, so it cannot be confused with a
+        // real spawn.
+        let mut specs = vec![SpawnSpec::default(); n];
+        let mut index: Vec<u32> = Vec::new();
+        for (i, reset) in selected.iter().enumerate() {
+            if !reset {
+                continue;
+            }
+            let (fresh, spec) = self.inner.reset_at_with_spec(i);
+            flat[i * self.obs_dim..(i + 1) * self.obs_dim].copy_from_slice(&fresh);
+            specs[i] = spec;
+            index.push(i as u32);
+        }
+
+        let info = PyDict::new(py);
+        info.set_item("index", index.into_pyarray(py))?;
+        info.set_item("spawn", stacked_spawn_dict(py, &specs)?)?;
+        Ok((self.batch_array(py, flat)?, info))
     }
 
     /// Step every env with an `(N, action_dim)` batch.

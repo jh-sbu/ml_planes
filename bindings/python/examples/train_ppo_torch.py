@@ -34,8 +34,10 @@ undecided question.
 from __future__ import annotations
 
 import argparse
+import json
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -67,6 +69,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--vf-coef", type=float, default=0.5)
     p.add_argument("--max-grad-norm", type=float, default=0.5)
     p.add_argument("--hidden", type=int, default=128)
+    p.add_argument(
+        "--arch",
+        choices=("mlp", "residual_mlp", "transformer"),
+        default="mlp",
+        help="PyTorch policy/value architecture (no Rust rebuild required)",
+    )
     p.add_argument("--log-std-init", type=float, default=-0.5)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--device", default="cpu")
@@ -75,6 +83,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--reward-config", default=None)
     p.add_argument("--out", default=None, help="checkpoint path (.pt)")
     p.add_argument("--log-every", type=int, default=1)
+    p.add_argument("--eval-only", default=None, metavar="CHECKPOINT",
+                   help="skip training and deterministically evaluate a .pt checkpoint")
+    p.add_argument("--eval-episodes", type=int, default=64)
+    p.add_argument("--eval-max-steps", type=int, default=3200)
+    p.add_argument("--eval-seed", type=int, default=1_000_000)
+    p.add_argument("--eval-json", default=None,
+                   help="optional path for machine-readable evaluation metrics")
     return p.parse_args()
 
 
@@ -135,6 +150,109 @@ class ActorCritic(nn.Module):
             dist.entropy().sum(-1),
             self.value(obs),
         )
+
+
+class ResidualBlock(nn.Module):
+    def __init__(self, width: int) -> None:
+        super().__init__()
+        self.norm = nn.LayerNorm(width)
+        self.fc1 = layer_init(nn.Linear(width, width))
+        self.fc2 = layer_init(nn.Linear(width, width), gain=1.0)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        y = self.norm(x)
+        y = torch.nn.functional.silu(self.fc1(y))
+        return x + 0.5 * self.fc2(y)
+
+
+class ResidualMlpTrunk(nn.Module):
+    def __init__(self, obs_dim: int, width: int) -> None:
+        super().__init__()
+        self.input = layer_init(nn.Linear(obs_dim, width))
+        self.blocks = nn.Sequential(ResidualBlock(width), ResidualBlock(width))
+        self.output_norm = nn.LayerNorm(width)
+
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        x = torch.nn.functional.silu(self.input(obs))
+        return torch.nn.functional.silu(self.output_norm(self.blocks(x)))
+
+
+class ResidualActorCritic(ActorCritic):
+    """A wider/deeper MLP with normalized residual blocks."""
+
+    def __init__(
+        self, obs_dim: int, action_dim: int, hidden: int, log_std_init: float = -0.5
+    ) -> None:
+        nn.Module.__init__(self)
+        width = max(hidden, 256)
+        self.actor = nn.Sequential(
+            ResidualMlpTrunk(obs_dim, width),
+            layer_init(nn.Linear(width, action_dim), gain=0.01),
+        )
+        self.critic = nn.Sequential(
+            ResidualMlpTrunk(obs_dim, width),
+            layer_init(nn.Linear(width, 1), gain=1.0),
+        )
+        self.log_std = nn.Parameter(torch.full((action_dim,), log_std_init))
+
+
+class FeatureTransformerTrunk(nn.Module):
+    """Treat each named scalar observation feature as one attention token."""
+
+    def __init__(self, obs_dim: int, d_model: int = 32) -> None:
+        super().__init__()
+        self.value_projection = nn.Linear(1, d_model)
+        self.feature_embedding = nn.Parameter(torch.empty(obs_dim, d_model))
+        nn.init.normal_(self.feature_embedding, std=0.02)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=4,
+            dim_feedforward=2 * d_model,
+            dropout=0.0,
+            activation="gelu",
+            batch_first=True,
+            norm_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=2)
+        self.norm = nn.LayerNorm(d_model)
+
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        tokens = self.value_projection(obs.unsqueeze(-1))
+        tokens = tokens + self.feature_embedding.unsqueeze(0)
+        return self.norm(self.encoder(tokens)).mean(dim=1)
+
+
+class TransformerActorCritic(ActorCritic):
+    """Small feature-token Transformer with independent actor/critic trunks."""
+
+    def __init__(
+        self, obs_dim: int, action_dim: int, hidden: int, log_std_init: float = -0.5
+    ) -> None:
+        nn.Module.__init__(self)
+        del hidden  # the compact attention width is intentionally fixed
+        d_model = 32
+        self.actor = nn.Sequential(
+            FeatureTransformerTrunk(obs_dim, d_model),
+            layer_init(nn.Linear(d_model, action_dim), gain=0.01),
+        )
+        self.critic = nn.Sequential(
+            FeatureTransformerTrunk(obs_dim, d_model),
+            layer_init(nn.Linear(d_model, 1), gain=1.0),
+        )
+        self.log_std = nn.Parameter(torch.full((action_dim,), log_std_init))
+
+
+ARCHITECTURES = {
+    "mlp": ActorCritic,
+    "residual_mlp": ResidualActorCritic,
+    "transformer": TransformerActorCritic,
+}
+
+
+def build_model(
+    arch: str, obs_dim: int, action_dim: int, hidden: int, log_std_init: float
+) -> ActorCritic:
+    return ARCHITECTURES[arch](obs_dim, action_dim, hidden, log_std_init)
 
 
 @dataclass
@@ -234,11 +352,12 @@ def collect(
             )
 
         # No auto-reset, so restart finished episodes explicitly — after the
-        # terminal observation above has already been used.
-        for i in np.flatnonzero(done):
-            finished.append(float(episode_returns[i]))
-            episode_returns[i] = 0.0
-            next_obs[i], _ = venv.reset_at(int(i))
+        # terminal observation above has already been used. `reset_done` is the
+        # batched form of `reset_at`, and resets exactly the masked rows.
+        if done.any():
+            finished.extend(episode_returns[done].tolist())
+            episode_returns[done] = 0.0
+            next_obs, _ = venv.reset_done(next_obs, done)
 
         obs_np = next_obs
 
@@ -298,10 +417,108 @@ def update(
     return {k: v / max(batches, 1) for k, v in stats.items()}
 
 
+@torch.no_grad()
+def evaluate_checkpoint(args: argparse.Namespace) -> dict[str, float | int | str]:
+    checkpoint = torch.load(args.eval_only, map_location=args.device, weights_only=False)
+    task = checkpoint["task"]
+    if task != "level_hold":
+        raise ValueError("the Python metric evaluator currently supports level_hold only")
+    saved_args = checkpoint.get("args", {})
+    arch = checkpoint.get("arch", saved_args.get("arch", "mlp"))
+    hidden = checkpoint.get("hidden", saved_args.get("hidden", 128))
+    log_std_init = saved_args.get("log_std_init", -0.5)
+
+    env_kwargs = {}
+    for key in ("plane_config", "reward_config"):
+        if saved_args.get(key):
+            env_kwargs[key] = saved_args[key]
+    # Pin the env's own Timeout to this loop's budget, exactly as
+    # `evaluate_policy.rs` does by assigning `env.max_episode_steps`. Without it
+    # the two only agree when the reward profile happens to ship 3200, and
+    # `success_rate` silently counts the wrong thing for every profile that does
+    # not.
+    env_kwargs["max_episode_steps"] = args.eval_max_steps
+    envs = [
+        ml_planes.Env(task, seed=args.eval_seed + i * 1000, **env_kwargs)
+        for i in range(args.eval_episodes)
+    ]
+    model = build_model(
+        arch,
+        checkpoint["observation_dim"],
+        checkpoint["action_dim"],
+        hidden,
+        log_std_init,
+    ).to(args.device)
+    model.load_state_dict(checkpoint["model"])
+    model.eval()
+
+    episode_returns = np.zeros(args.eval_episodes, dtype=np.float64)
+    lengths = np.zeros(args.eval_episodes, dtype=np.int64)
+    finished = np.zeros(args.eval_episodes, dtype=bool)
+    successes = 0
+    step_errors: list[np.ndarray] = []
+    tail_errors: list[np.ndarray] = []
+    final_alt_errors: list[float] = []
+    tail_start = args.eval_max_steps - int(args.eval_max_steps * 0.2)
+
+    observations = [env.reset()[0] for env in envs]
+    error_scales = np.array([200.0, 50.0, 0.5, 0.5], dtype=np.float32)
+
+    while not finished.all():
+        active = np.flatnonzero(~finished)
+        obs_batch = np.stack([observations[i] for i in active])
+        actions = model.actor(torch.from_numpy(obs_batch).to(args.device))
+        actions = actions.clamp(-1.0, 1.0).cpu().numpy().astype(np.float32)
+
+        for row, i in enumerate(active):
+            obs, reward, terminated, truncated, _ = envs[i].step(actions[row])
+            observations[i] = obs
+            episode_returns[i] += reward
+            lengths[i] += 1
+            errors = np.abs(obs[[0, 1, 4, 6]]) * error_scales
+            step_errors.append(errors)
+            if lengths[i] > tail_start:
+                tail_errors.append(errors)
+            if terminated or truncated or lengths[i] >= args.eval_max_steps:
+                finished[i] = True
+                successes += int(lengths[i] >= args.eval_max_steps)
+                final_alt_errors.append(abs(float(obs[0])) * 200.0)
+
+    mean_errors = np.mean(step_errors, axis=0) if step_errors else np.zeros(4)
+    mean_tail = np.mean(tail_errors, axis=0) if tail_errors else np.zeros(4)
+    metrics: dict[str, float | int | str] = {
+        "checkpoint": str(Path(args.eval_only)),
+        "architecture": arch,
+        "episodes": args.eval_episodes,
+        "success_rate": successes / max(args.eval_episodes, 1),
+        "mean_return": float(np.mean(episode_returns)) if len(episode_returns) else 0.0,
+        "mean_length_steps": float(np.mean(lengths)) if len(lengths) else 0.0,
+        "mean_abs_altitude_m": float(mean_errors[0]),
+        "mean_abs_speed_mps": float(mean_errors[1]),
+        "mean_abs_roll_rad": float(mean_errors[2]),
+        "mean_abs_beta_rad": float(mean_errors[3]),
+        "mean_tail_abs_altitude_m": float(mean_tail[0]),
+        "mean_tail_abs_speed_mps": float(mean_tail[1]),
+        "mean_tail_abs_roll_rad": float(mean_tail[2]),
+        "mean_tail_abs_beta_rad": float(mean_tail[3]),
+        "mean_final_abs_altitude_m": float(np.mean(final_alt_errors))
+        if final_alt_errors else 0.0,
+    }
+    for key, value in metrics.items():
+        print(f"{key},{value}")
+    if args.eval_json:
+        Path(args.eval_json).write_text(json.dumps(metrics, indent=2) + "\n")
+    return metrics
+
+
 def main() -> None:
     args = parse_args()
     torch.manual_seed(args.seed)
     device = torch.device(args.device)
+
+    if args.eval_only:
+        evaluate_checkpoint(args)
+        return
 
     env_kwargs = {}
     if args.plane_config:
@@ -310,14 +527,17 @@ def main() -> None:
         env_kwargs["reward_config"] = args.reward_config
 
     venv = ml_planes.VecEnv(args.task, args.num_envs, seed=args.seed, **env_kwargs)
-    model = ActorCritic(
-        venv.observation_dim, venv.action_dim, args.hidden, args.log_std_init
+    model = build_model(
+        args.arch, venv.observation_dim, venv.action_dim,
+        args.hidden, args.log_std_init,
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, eps=1e-5)
 
     print(
         f"task={args.task} obs_dim={venv.observation_dim} action_dim={venv.action_dim} "
-        f"num_envs={args.num_envs} device={device} dt={ml_planes.physics_dt():.6f}s"
+        f"num_envs={args.num_envs} arch={args.arch} device={device} "
+        f"params={sum(p.numel() for p in model.parameters()):,} "
+        f"dt={ml_planes.physics_dt():.6f}s"
     )
 
     obs_np, _ = venv.reset()
@@ -359,6 +579,7 @@ def main() -> None:
                 "observation_dim": venv.observation_dim,
                 "action_dim": venv.action_dim,
                 "hidden": args.hidden,
+                "arch": args.arch,
                 "args": vars(args),
             },
             args.out,

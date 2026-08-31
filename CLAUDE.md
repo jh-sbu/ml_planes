@@ -12,8 +12,9 @@
 - **Python bindings (IMPLEMENTED):** a native extension module exposing the `training::`
   environments to Python so PyTorch can drive them. In-process FFI (PyO3/`abi3` + maturin) —
   still no IPC, no sockets, no Python in the simulator itself. The surface is
-  `ml_planes.Env` (one env), `ml_planes.VecEnv` (N envs, flat env-major batched actions),
-  `ml_planes.TASKS`, and `physics_dt()`, marshalled through **numpy** (`rust-numpy`, pinned to
+  `ml_planes.Env` (one env), `ml_planes.VecEnv` (N envs, flat env-major batched actions,
+  plus `reset_done(obs, mask)` — the batched form of `reset_at`, which resets exactly the
+  masked rows and steps nothing), `ml_planes.TASKS`, and `physics_dt()`, marshalled through **numpy** (`rust-numpy`, pinned to
   pyo3's version) so `torch.from_numpy` is zero-copy. `ml_planes.gym` adds a Gymnasium adapter
   (`MlPlanesEnv` + `register()` for `MlPlanes/<Task>-v0`); it imports gymnasium **lazily**, so
   gymnasium stays optional and the core env path works without it.
@@ -187,7 +188,7 @@ the dev group and `ml_planes.gym` imports it lazily, so `import ml_planes` works
 | `L1Controller` | struct | Follows a preset `FlightPlan` (waypoint sequences + orbit circles) via L1 nonlinear lateral guidance; built from the plan asset by `apply_flight_plan` |
 | `VecEnv<E>` | struct | Wraps any `TrainingEnv` to run N parallel episodes (seeds offset per env). `step_batch` takes one flat env-major `n * action_dim()` buffer |
 | `Task` | enum (`training/task.rs`) | The task registry: `level_hold`/`heading_hold`/`orbit`/`residual_orbit`/`lstm_orbit` → shipped reward + PPO profile paths, `models/` subdirectory, PPO and BC output stems, `MetricFamily`, recurrence, and the default target envelope + orbit geometry. This mapping used to live three times, privately, in `train_ppo`/`train_bc`/`evaluate_policy`; all three now consume it, and `tests/core/training_task.rs` pins every default against the literal those binaries used, because a default that shifts here silently changes what all future runs train on. **`default_target_heading_range_deg()` is degrees; `EnvSpec.target_heading_range` is radians** — convert at the boundary |
-| `EnvSpec` / `OrbitGeometry` | structs (`training/task.rs`) | Resolved env-construction inputs (airframe, target ranges, orbit circle) minus the reward profile, whose type varies per task. `EnvSpec::defaults_for(task, cfg)` is the envelope a bare `train_ppo --task <t>` trains across. Feeds the five concrete `task::*_env(&spec, reward)` constructors and the erased `task::make_env(task, &spec, reward_path)`, which is the bindings' single entry point — it delegates to the same five, so a Python-built env cannot diverge from a Rust-built one. Unlike the binaries, `make_env` **errors** on an unreadable reward profile instead of warning: a binary has an operator watching stderr, a library call does not. It also erases `CurriculumEnv`, so `lstm_orbit` arrives fixed at its first stage |
+| `EnvSpec` / `OrbitGeometry` | structs (`training/task.rs`) | Resolved env-construction inputs (airframe, target ranges, orbit circle, and an optional `max_episode_steps` override) minus the reward profile, whose type varies per task. `max_episode_steps` is `None` by default and then defers to the profile; it exists because `evaluate_policy` pins `env.max_episode_steps` to its own loop bound so the two agree on when an episode ends, and a caller holding a `Box<dyn TrainingEnv>` (the bindings) cannot reach that field. Applied by `apply_step_limit` inside each of the five `*_env` constructors rather than by `make_env`, so both build paths agree. `EnvSpec::defaults_for(task, cfg)` is the envelope a bare `train_ppo --task <t>` trains across. Feeds the five concrete `task::*_env(&spec, reward)` constructors and the erased `task::make_env(task, &spec, reward_path)`, which is the bindings' single entry point — it delegates to the same five, so a Python-built env cannot diverge from a Rust-built one. Unlike the binaries, `make_env` **errors** on an unreadable reward profile instead of warning: a binary has an operator watching stderr, a library call does not. It also erases `CurriculumEnv`, so `lstm_orbit` arrives fixed at its first stage |
 | `DemonstrationEnv` / `BcDataset` | trait / struct | Behavior cloning: `collect_demonstrations()` rolls out a PID expert into a supervised dataset for `train_bc` pretraining |
 | `EvaluationSummary` / `TaskMetrics` | structs | Policy-evaluation output from `evaluate_policy` (success rate + per-metric families) |
 | `ControllerTelemetry` | ECS component (enum) | Read-only **derived** per-controller status (`Orbit { radial_error }`, `FlightPlan { leg, status }`, `Ascent`, `Wingman`, `None`, …) the server snapshots off the active controller each tick and **replicates**, so the thin client — which never steps a controller — can show it on the HUD. Default `None` (`controllers/telemetry.rs`). The *settable* half of controller state lives in `ControllerTargets`, not here — see its row below |
@@ -1231,7 +1232,8 @@ a required `PlaneConfig` field breaks loudly in one place (the struct has no `De
   suite (`test_parity.py`), which is what makes §3's constraint (b) a test rather than a promise;
   it also compiles the binding crate's `reference_rollout` example on first run. The lane is:
   `test_core` (module wiring), `test_env` / `test_vec_env` (shapes, dtypes, error types, seeding,
-  the env-major action layout, and that `ENV_SEED_STRIDE` holds across the boundary),
+  the env-major action layout, the `max_episode_steps` budget override, `reset_done`'s
+  row-for-row agreement with `reset_at`, and that `ENV_SEED_STRIDE` holds across the boundary),
   `test_gym` (skips wholesale without gymnasium, and asserts `import ml_planes` does not pull it
   in), `test_parity` (all five tasks + the batched path), and `test_train_ppo_torch` (a tiny
   subprocess smoke run of the reference loop). Note that `Env.observation_dim`/`action_dim`/

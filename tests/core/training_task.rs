@@ -250,3 +250,55 @@ fn metric_family_and_recurrence_match_evaluate_policy() {
         );
     }
 }
+
+/// `evaluate_policy` sets `env.max_episode_steps` so its loop bound and the
+/// env's own `Timeout` coincide (`evaluate_policy.rs`, the `--max-steps` arms).
+/// A caller holding a `Box<dyn TrainingEnv>` cannot reach that field, so the
+/// limit has to be expressible on the way in — otherwise an out-of-process
+/// evaluator (the Python bindings) silently scores episodes against a step
+/// budget the env does not share, and `success_rate` counts the wrong thing.
+#[test]
+fn env_spec_step_limit_overrides_the_reward_profile() {
+    for task in Task::ALL {
+        let mut spec = EnvSpec::defaults_for(task, generic_jet_config());
+        assert_eq!(
+            spec.max_episode_steps,
+            None,
+            "{}: the default must defer to the reward profile",
+            task.as_str()
+        );
+
+        spec.max_episode_steps = Some(3);
+        let mut env = task::make_env(task, &spec, None)
+            .unwrap_or_else(|e| panic!("{} should build: {e}", task.as_str()));
+        env.reset();
+
+        let action = vec![0.0_f32; env.action_dim()];
+        for step in 1..=3 {
+            let out = env.step(&action);
+            assert_eq!(
+                out.truncated(),
+                step == 3,
+                "{}: step {step} of a 3-step budget",
+                task.as_str()
+            );
+        }
+    }
+}
+
+/// The override is `None`-by-default, so an unset spec must leave the profile's
+/// own (much larger) budget alone rather than defaulting to something.
+#[test]
+fn an_unset_step_limit_leaves_the_profile_budget_alone() {
+    let spec = EnvSpec::defaults_for(Task::LevelHold, generic_jet_config());
+    let mut env = task::make_env(Task::LevelHold, &spec, None).expect("level_hold should build");
+    env.reset();
+
+    let action = vec![0.0_f32; env.action_dim()];
+    for _ in 0..3 {
+        assert!(
+            !env.step(&action).truncated(),
+            "the shipped level_hold budget is 3200 steps, not 3"
+        );
+    }
+}
