@@ -1,18 +1,4 @@
-"""`ml_planes.EvalRun` — the shared evaluation accumulator.
-
-The metric mapping, the settled-tail window, the success criterion and the core
-aggregation used to exist twice: privately inside `src/bin/evaluate_policy.rs`,
-and hand-copied into `train_ppo_torch.py::evaluate_checkpoint`. The copies
-disagreed — most visibly by sampling different episode sets, which put ~15%
-between the two evaluators' `mean_return` for one and the same policy.
-
-`EvalRun` wraps `ml_planes::training::eval::EvalRun`, so both stacks now compute
-the report with the same Rust code. `test_parity_with_the_rust_evaluator` is what
-makes that a test rather than a claim: it drives the Python side with one env per
-episode, seeded absolutely, against a Rust reference that resets a single env —
-`evaluate_policy`'s own scheme. Agreement proves the seeding alignment as well as
-the shared arithmetic.
-"""
+"""Tests for the Python `EvalRun` binding and Rust evaluator parity."""
 
 import json
 import os
@@ -27,7 +13,6 @@ import ml_planes
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 MANIFEST = REPO_ROOT / "bindings" / "python" / "Cargo.toml"
 
-# `ml_planes::training::eval::TAIL_FRACTION`
 TAIL_FRACTION = 0.2
 
 TASK_DIMS = {
@@ -76,7 +61,6 @@ def test_a_full_length_episode_reports_success_and_exact_means():
     assert report["mean_length_steps"] == 10.0
     # (8 * 1.0 + 2 * 0.5) / 10 = 0.9, scaled by 200 m.
     assert report["mean_abs_altitude_m"] == pytest.approx(0.9 * 200.0, abs=1e-4)
-    # Tail is the two half-error steps only.
     assert report["mean_tail_abs_altitude_m"] == pytest.approx(100.0, abs=1e-4)
     assert report["mean_final_abs_altitude_m"] == pytest.approx(50.0, abs=1e-4)
 
@@ -93,8 +77,6 @@ def test_report_keys_are_ordered_core_then_metrics():
         "mean_return",
         "mean_length_steps",
     ]
-    # Then per-step means, then tail means, then final means — the same order
-    # `evaluate_policy` prints its rows in.
     assert keys[4] == "mean_abs_altitude_m"
     assert "mean_tail_abs_altitude_m" in keys
     assert keys[-1] == "mean_final_abs_altitude_m"
@@ -115,9 +97,7 @@ def test_an_episode_cut_short_is_not_a_success():
 
 
 def test_slots_default_to_one_per_episode():
-    """The natural Python shape is one in-flight episode per env."""
     run = ml_planes.EvalRun("level_hold", episodes=3, max_steps=5)
-    # Slot 2 is addressable without passing `slots` explicitly.
     run.record(2, obs_for("level_hold"), 0.0)
     run.finish(2, obs_for("level_hold"))
     assert run.finished_episodes == 1
@@ -132,7 +112,6 @@ def test_report_returns_plain_floats():
     assert isinstance(report["episodes"], int)
     assert isinstance(report["success_rate"], float)
     assert isinstance(report["mean_abs_radial_m"], float)
-    # Orbit family, so no level-hold rows.
     assert "mean_abs_beta_rad" not in report
 
 
@@ -143,10 +122,7 @@ def test_accepts_a_float64_observation():
     assert run.is_complete is True
 
 
-# ---------------------------------------------------------------------------
-# Misuse must raise, never panic. A Rust panic surfaces as an uncatchable
-# PanicException with a backtrace, which is a bug in the binding.
-# ---------------------------------------------------------------------------
+# Error handling
 
 
 def test_unknown_task_raises_value_error():
@@ -200,9 +176,7 @@ def test_reporting_early_raises_rather_than_understating_the_means():
         run.report()
 
 
-# ---------------------------------------------------------------------------
-# Parity with the Rust evaluator.
-# ---------------------------------------------------------------------------
+# Rust/Python parity
 
 
 def reference_eval(task: str, episodes: int, max_steps: int) -> dict:
@@ -230,15 +204,7 @@ def reference_eval(task: str, episodes: int, max_steps: int) -> dict:
 
 
 def python_eval(task: str, episodes: int, max_steps: int, base_seed: int) -> dict:
-    """The Python evaluator's shape: one env per episode, seeded absolutely.
-
-    Episode `i` must draw from `base_seed + i + 1`, because `reset()` advances
-    the seed before drawing — so seeding to `base_seed + i` reproduces the
-    episode a single env would have reached on its (i+1)-th reset.
-
-    `slots=1` keeps the float summation order identical to the sequential Rust
-    loop, which is what makes `==` a fair comparison below.
-    """
+    """Run independent envs in the same seed and accumulation order as Rust."""
     run = ml_planes.EvalRun(task, episodes=episodes, max_steps=max_steps, slots=1)
     action = np.zeros(4, dtype=np.float32)
     for i in range(episodes):
@@ -269,17 +235,12 @@ def test_parity_with_the_rust_evaluator(task, max_steps):
     episodes = 4
     reference = reference_eval(task, episodes, max_steps)
 
-    # The base seed is discovered, not hardcoded: it is 42 for the level-hold
-    # family and 4242 for the orbit family, and a hardcoded literal would
-    # silently mis-align three of the five tasks.
     env = ml_planes.Env(task, max_episode_steps=max_steps)
     assert env.rng_seed == reference["base_seed"]
 
     mine = python_eval(task, episodes, max_steps, reference["base_seed"])
 
     assert mine["episodes"] == reference["episodes"]
-    # Exact equality on purpose: both sides run identical Rust over identical
-    # episodes, so a tolerance here could only hide the divergence this test
-    # exists to catch.
+    # Both sides run identical Rust over identical episodes.
     for key, value in mine.items():
         assert value == reference[key], f"{task}/{max_steps}: {key}"

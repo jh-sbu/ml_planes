@@ -349,13 +349,6 @@ where
 
 /// Roll out `episodes` deterministic episodes, accumulating the common core
 /// metrics plus the task-specific tracking-error metrics for `family`.
-///
-/// Every rule that turns those rollouts into numbers — the settled-tail window,
-/// the success criterion, the aggregation — lives in
-/// `ml_planes::training::EvalRun`, which the Python evaluator drives too. This
-/// loop only supplies steps. Note the single slot: episodes run one after
-/// another here, exactly as they always have, so the accumulation order (and
-/// therefore this binary's output, down to the last bit) is unchanged.
 #[cfg(feature = "inference")]
 fn run_eval<E, P>(
     mut env: E,
@@ -371,8 +364,6 @@ where
     use ml_planes::training::EvalRun;
 
     let mut run = EvalRun::new(family, episodes, max_steps, 1);
-    // A zero-episode or zero-budget run has nothing to roll out; `EvalRun`
-    // reports the same empty shape without ever being stepped.
     if episodes == 0 || max_steps == 0 {
         return run.report();
     }
@@ -386,8 +377,6 @@ where
         while !done && ep_len < max_steps {
             let action = policy.act(&obs);
             let outcome = env.step(&action);
-            // The success criterion is the step budget, which `EvalRun` owns;
-            // it is independent of the env's termination reason.
             done = outcome.done();
             obs = outcome.obs;
             ep_len += 1;

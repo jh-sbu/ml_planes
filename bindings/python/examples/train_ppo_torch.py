@@ -421,14 +421,7 @@ def update(
 
 @torch.no_grad()
 def evaluate_checkpoint(args: argparse.Namespace) -> dict[str, float | int | str]:
-    """Deterministically evaluate a .pt checkpoint.
-
-    The metrics themselves come from `ml_planes.EvalRun`, which is the same Rust
-    accumulator `src/bin/evaluate_policy.rs` drives. This function only supplies
-    steps: it does not know what the tail window is, how success is defined, or
-    which observation index holds the altitude error. It used to know all three,
-    hardcoded for level_hold, and they drifted from the Rust side.
-    """
+    """Evaluate a checkpoint with the shared Rust metric accumulator."""
     checkpoint = torch.load(args.eval_only, map_location=args.device, weights_only=False)
     task = checkpoint["task"]
     saved_args = checkpoint.get("args", {})
@@ -448,11 +441,7 @@ def evaluate_checkpoint(args: argparse.Namespace) -> dict[str, float | int | str
     env_kwargs["max_episode_steps"] = args.eval_max_steps
     envs = [ml_planes.Env(task, **env_kwargs) for _ in range(args.eval_episodes)]
 
-    # Episode i must draw from `base + i + 1`, because reset() advances the seed
-    # before drawing. That reproduces the exact episode set `evaluate_policy`
-    # walks with a single env reset i+1 times, which is what makes these numbers
-    # comparable to a Rust eval report. The base is *discovered* rather than
-    # hardcoded: it is 42 for the level-hold family and 4242 for the orbit one.
+    # reset() advances the seed, so base + i matches reset i + 1 of one env.
     base_seed = envs[0].rng_seed if args.eval_seed is None else args.eval_seed
     for i, env in enumerate(envs):
         env.seed(base_seed + i)
@@ -467,7 +456,6 @@ def evaluate_checkpoint(args: argparse.Namespace) -> dict[str, float | int | str
     model.load_state_dict(checkpoint["model"])
     model.eval()
 
-    # One slot per episode — the default — so slot index and env index coincide.
     run = ml_planes.EvalRun(
         task, episodes=args.eval_episodes, max_steps=args.eval_max_steps
     )

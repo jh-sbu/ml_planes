@@ -59,7 +59,6 @@ enum Source {
 }
 
 impl Source {
-    /// Highest observation index this source reads.
     fn max_index(&self) -> usize {
         match *self {
             Source::Scaled { obs_index, .. } => obs_index,
@@ -92,12 +91,7 @@ struct MetricSpec {
 }
 
 impl MetricFamily {
-    /// Highest observation index any of this family's metrics reads.
-    ///
-    /// Callers that accept an observation from outside the crate (the Python
-    /// bindings) use this to reject a short one up front: every `Source` here
-    /// indexes the slice directly, so a stale or hand-built observation would
-    /// otherwise panic deep inside the accumulator.
+    /// Highest observation index read by this metric family.
     pub fn max_obs_index(self) -> usize {
         self.step_specs()
             .iter()
