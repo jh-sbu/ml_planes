@@ -48,6 +48,52 @@ def test_the_loop_runs_and_writes_a_checkpoint(tmp_path):
     assert "model" in ckpt
 
 
+def test_mlp_hidden_layers_are_configurable_and_saved(tmp_path):
+    out = tmp_path / "level_hold_3x64.pt"
+    result = run(
+        "--task", "level_hold",
+        "--num-envs", "2",
+        "--rollout-steps", "8",
+        "--total-steps", "16",
+        "--minibatch-size", "16",
+        "--hidden", "64",
+        "--layers", "3",
+        "--out", str(out),
+    )
+    assert result.returncode == 0, result.stderr
+
+    ckpt = torch.load(out, weights_only=False)
+    assert ckpt["hidden"] == 64
+    assert ckpt["layers"] == 3
+    hidden_weights = [
+        key for key in ckpt["model"]
+        if key.startswith("actor.") and key.endswith(".weight")
+    ]
+    assert len(hidden_weights) == 4  # three hidden layers plus the action head
+
+
+def test_eval_reconstructs_a_custom_depth_checkpoint(tmp_path):
+    out = tmp_path / "level_hold_1x64.pt"
+    trained = run(
+        "--task", "level_hold",
+        "--num-envs", "2",
+        "--rollout-steps", "8",
+        "--total-steps", "16",
+        "--minibatch-size", "16",
+        "--hidden", "64",
+        "--layers", "1",
+        "--out", str(out),
+    )
+    assert trained.returncode == 0, trained.stderr
+
+    evaluated = run(
+        "--eval-only", str(out),
+        "--eval-episodes", "1",
+        "--eval-max-steps", "4",
+    )
+    assert evaluated.returncode == 0, evaluated.stderr
+
+
 def test_the_ppo_ratio_is_sane_on_the_first_update():
     """A policy loss far from 0 on update 1 means the stored action and its
     stored log-prob disagree — the ratio is then measuring a marshalling bug

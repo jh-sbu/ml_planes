@@ -69,6 +69,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--vf-coef", type=float, default=0.5)
     p.add_argument("--max-grad-norm", type=float, default=0.5)
     p.add_argument("--hidden", type=int, default=128)
+    p.add_argument("--layers", type=int, default=2,
+                   help="number of hidden layers in the plain MLP")
     p.add_argument(
         "--arch",
         choices=("mlp", "residual_mlp", "transformer"),
@@ -114,19 +116,24 @@ class ActorCritic(nn.Module):
     the Rust `ActorCritic` closely enough to be comparable."""
 
     def __init__(
-        self, obs_dim: int, action_dim: int, hidden: int, log_std_init: float = -0.5
+        self, obs_dim: int, action_dim: int, hidden: int,
+        log_std_init: float = -0.5, layers: int = 2,
     ) -> None:
         super().__init__()
-        self.actor = nn.Sequential(
-            layer_init(nn.Linear(obs_dim, hidden)), nn.Tanh(),
-            layer_init(nn.Linear(hidden, hidden)), nn.Tanh(),
-            layer_init(nn.Linear(hidden, action_dim), gain=0.01),
-        )
-        self.critic = nn.Sequential(
-            layer_init(nn.Linear(obs_dim, hidden)), nn.Tanh(),
-            layer_init(nn.Linear(hidden, hidden)), nn.Tanh(),
-            layer_init(nn.Linear(hidden, 1), gain=1.0),
-        )
+        if layers < 1:
+            raise ValueError("MLP layers must be at least 1")
+
+        def trunk(output_dim: int, output_gain: float) -> nn.Sequential:
+            modules: list[nn.Module] = []
+            input_dim = obs_dim
+            for _ in range(layers):
+                modules.extend((layer_init(nn.Linear(input_dim, hidden)), nn.Tanh()))
+                input_dim = hidden
+            modules.append(layer_init(nn.Linear(hidden, output_dim), gain=output_gain))
+            return nn.Sequential(*modules)
+
+        self.actor = trunk(action_dim, 0.01)
+        self.critic = trunk(1, 1.0)
         # std = exp(-0.5) ~ 0.61: wide enough to explore a [-1, 1] action space,
         # narrow enough that a sample is not usually clipped.
         self.log_std = nn.Parameter(torch.full((action_dim,), log_std_init))
@@ -183,9 +190,11 @@ class ResidualActorCritic(ActorCritic):
     """A wider/deeper MLP with normalized residual blocks."""
 
     def __init__(
-        self, obs_dim: int, action_dim: int, hidden: int, log_std_init: float = -0.5
+        self, obs_dim: int, action_dim: int, hidden: int,
+        log_std_init: float = -0.5, layers: int = 2,
     ) -> None:
         nn.Module.__init__(self)
+        del layers  # residual depth is fixed by ResidualMlpTrunk
         width = max(hidden, 256)
         self.actor = nn.Sequential(
             ResidualMlpTrunk(obs_dim, width),
@@ -228,10 +237,11 @@ class TransformerActorCritic(ActorCritic):
     """Small feature-token Transformer with independent actor/critic trunks."""
 
     def __init__(
-        self, obs_dim: int, action_dim: int, hidden: int, log_std_init: float = -0.5
+        self, obs_dim: int, action_dim: int, hidden: int,
+        log_std_init: float = -0.5, layers: int = 2,
     ) -> None:
         nn.Module.__init__(self)
-        del hidden  # the compact attention width is intentionally fixed
+        del hidden, layers  # the compact attention width/depth are intentionally fixed
         d_model = 32
         self.actor = nn.Sequential(
             FeatureTransformerTrunk(obs_dim, d_model),
@@ -252,9 +262,10 @@ ARCHITECTURES = {
 
 
 def build_model(
-    arch: str, obs_dim: int, action_dim: int, hidden: int, log_std_init: float
+    arch: str, obs_dim: int, action_dim: int, hidden: int, log_std_init: float,
+    layers: int = 2,
 ) -> ActorCritic:
-    return ARCHITECTURES[arch](obs_dim, action_dim, hidden, log_std_init)
+    return ARCHITECTURES[arch](obs_dim, action_dim, hidden, log_std_init, layers)
 
 
 @dataclass
@@ -427,6 +438,7 @@ def evaluate_checkpoint(args: argparse.Namespace) -> dict[str, float | int | str
     saved_args = checkpoint.get("args", {})
     arch = checkpoint.get("arch", saved_args.get("arch", "mlp"))
     hidden = checkpoint.get("hidden", saved_args.get("hidden", 128))
+    layers = checkpoint.get("layers", saved_args.get("layers", 2))
     log_std_init = saved_args.get("log_std_init", -0.5)
 
     env_kwargs = {}
@@ -452,6 +464,7 @@ def evaluate_checkpoint(args: argparse.Namespace) -> dict[str, float | int | str
         checkpoint["action_dim"],
         hidden,
         log_std_init,
+        layers,
     ).to(args.device)
     model.load_state_dict(checkpoint["model"])
     model.eval()
@@ -509,13 +522,14 @@ def main() -> None:
     venv = ml_planes.VecEnv(args.task, args.num_envs, seed=args.seed, **env_kwargs)
     model = build_model(
         args.arch, venv.observation_dim, venv.action_dim,
-        args.hidden, args.log_std_init,
+        args.hidden, args.log_std_init, args.layers,
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, eps=1e-5)
 
     print(
         f"task={args.task} obs_dim={venv.observation_dim} action_dim={venv.action_dim} "
-        f"num_envs={args.num_envs} arch={args.arch} device={device} "
+        f"num_envs={args.num_envs} arch={args.arch} hidden={args.hidden} "
+        f"layers={args.layers} device={device} "
         f"params={sum(p.numel() for p in model.parameters()):,} "
         f"dt={ml_planes.physics_dt():.6f}s"
     )
@@ -559,6 +573,7 @@ def main() -> None:
                 "observation_dim": venv.observation_dim,
                 "action_dim": venv.action_dim,
                 "hidden": args.hidden,
+                "layers": args.layers,
                 "arch": args.arch,
                 "args": vars(args),
             },
