@@ -94,6 +94,63 @@ def test_eval_reconstructs_a_custom_depth_checkpoint(tmp_path):
     assert evaluated.returncode == 0, evaluated.stderr
 
 
+def test_transformer_hyperparameters_are_configurable_and_saved(tmp_path):
+    out = tmp_path / "level_hold_transformer.pt"
+    result = run(
+        "--task", "level_hold",
+        "--arch", "transformer",
+        "--num-envs", "2",
+        "--rollout-steps", "8",
+        "--total-steps", "16",
+        "--minibatch-size", "16",
+        "--transformer-d-model", "24",
+        "--transformer-heads", "3",
+        "--transformer-depth", "1",
+        "--transformer-ff-mult", "3",
+        "--transformer-tokenizer", "per_feature",
+        "--transformer-pooling", "cls",
+        "--out", str(out),
+    )
+    assert result.returncode == 0, result.stderr
+
+    ckpt = torch.load(out, weights_only=False)
+    assert ckpt["args"]["transformer_d_model"] == 24
+    assert ckpt["args"]["transformer_heads"] == 3
+    assert ckpt["args"]["transformer_depth"] == 1
+    assert ckpt["args"]["transformer_ff_mult"] == 3
+    assert ckpt["args"]["transformer_tokenizer"] == "per_feature"
+    assert ckpt["args"]["transformer_pooling"] == "cls"
+    assert ckpt["model"]["actor.0.feature_weight"].shape == (13, 24)
+    assert ckpt["model"]["actor.0.cls_token"].shape == (1, 1, 24)
+
+    evaluated = run(
+        "--eval-only", str(out),
+        "--eval-episodes", "1",
+        "--eval-max-steps", "4",
+    )
+    assert evaluated.returncode == 0, evaluated.stderr
+
+
+def test_transformer_defaults_use_per_feature_tokens_and_cls_pooling(tmp_path):
+    out = tmp_path / "level_hold_transformer_default.pt"
+    result = run(
+        "--task", "level_hold",
+        "--arch", "transformer",
+        "--num-envs", "2",
+        "--rollout-steps", "8",
+        "--total-steps", "16",
+        "--minibatch-size", "16",
+        "--out", str(out),
+    )
+    assert result.returncode == 0, result.stderr
+
+    ckpt = torch.load(out, weights_only=False)
+    assert ckpt["args"]["transformer_tokenizer"] == "per_feature"
+    assert ckpt["args"]["transformer_pooling"] == "cls"
+    assert "actor.0.feature_weight" in ckpt["model"]
+    assert "actor.0.cls_token" in ckpt["model"]
+
+
 def test_the_ppo_ratio_is_sane_on_the_first_update():
     """A policy loss far from 0 on update 1 means the stored action and its
     stored log-prob disagree — the ratio is then measuring a marshalling bug

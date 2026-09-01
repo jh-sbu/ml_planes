@@ -77,6 +77,22 @@ def parse_args() -> argparse.Namespace:
         default="mlp",
         help="PyTorch policy/value architecture (no Rust rebuild required)",
     )
+    p.add_argument("--transformer-d-model", type=int, default=32)
+    p.add_argument("--transformer-heads", type=int, default=4)
+    p.add_argument("--transformer-depth", type=int, default=2)
+    p.add_argument("--transformer-ff-mult", type=int, default=2)
+    p.add_argument(
+        "--transformer-tokenizer",
+        choices=("shared", "per_feature"),
+        default="per_feature",
+        help="shared scalar projection (legacy) or one learned value direction per feature",
+    )
+    p.add_argument(
+        "--transformer-pooling",
+        choices=("mean", "cls"),
+        default="cls",
+        help="mean-pool feature tokens (legacy) or read a learned summary token",
+    )
     p.add_argument("--log-std-init", type=float, default=-0.5)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--device", default="cpu")
@@ -210,45 +226,89 @@ class ResidualActorCritic(ActorCritic):
 class FeatureTransformerTrunk(nn.Module):
     """Treat each named scalar observation feature as one attention token."""
 
-    def __init__(self, obs_dim: int, d_model: int = 32) -> None:
+    def __init__(
+        self,
+        obs_dim: int,
+        d_model: int = 32,
+        nhead: int = 4,
+        depth: int = 2,
+        ff_mult: int = 2,
+        tokenizer: str = "per_feature",
+        pooling: str = "cls",
+    ) -> None:
         super().__init__()
-        self.value_projection = nn.Linear(1, d_model)
+        if d_model < 1 or nhead < 1 or d_model % nhead != 0:
+            raise ValueError("transformer d_model must be positive and divisible by heads")
+        if depth < 1 or ff_mult < 1:
+            raise ValueError("transformer depth and ff multiplier must be positive")
+
+        self.tokenizer = tokenizer
+        self.pooling = pooling
+        if tokenizer == "shared":
+            self.value_projection = nn.Linear(1, d_model)
+            self.register_parameter("feature_weight", None)
+        elif tokenizer == "per_feature":
+            self.value_projection = None
+            self.feature_weight = nn.Parameter(torch.empty(obs_dim, d_model))
+            nn.init.normal_(self.feature_weight, std=0.02)
+        else:
+            raise ValueError(f"unknown transformer tokenizer: {tokenizer}")
+
         self.feature_embedding = nn.Parameter(torch.empty(obs_dim, d_model))
         nn.init.normal_(self.feature_embedding, std=0.02)
+        if pooling == "cls":
+            self.cls_token = nn.Parameter(torch.empty(1, 1, d_model))
+            nn.init.normal_(self.cls_token, std=0.02)
+        elif pooling == "mean":
+            self.register_parameter("cls_token", None)
+        else:
+            raise ValueError(f"unknown transformer pooling: {pooling}")
+
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
-            nhead=4,
-            dim_feedforward=2 * d_model,
+            nhead=nhead,
+            dim_feedforward=ff_mult * d_model,
             dropout=0.0,
             activation="gelu",
             batch_first=True,
             norm_first=True,
         )
-        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=2)
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=depth)
         self.norm = nn.LayerNorm(d_model)
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        tokens = self.value_projection(obs.unsqueeze(-1))
+        if self.tokenizer == "shared":
+            tokens = self.value_projection(obs.unsqueeze(-1))
+        else:
+            tokens = obs.unsqueeze(-1) * self.feature_weight.unsqueeze(0)
         tokens = tokens + self.feature_embedding.unsqueeze(0)
-        return self.norm(self.encoder(tokens)).mean(dim=1)
+        if self.pooling == "cls":
+            tokens = torch.cat((self.cls_token.expand(obs.shape[0], -1, -1), tokens), dim=1)
+        encoded = self.norm(self.encoder(tokens))
+        return encoded[:, 0] if self.pooling == "cls" else encoded.mean(dim=1)
 
 
 class TransformerActorCritic(ActorCritic):
-    """Small feature-token Transformer with independent actor/critic trunks."""
+    """Feature-token Transformer with independent actor/critic trunks."""
 
     def __init__(
         self, obs_dim: int, action_dim: int, hidden: int,
         log_std_init: float = -0.5, layers: int = 2,
+        d_model: int = 32, nhead: int = 4, depth: int = 2,
+        ff_mult: int = 2, tokenizer: str = "per_feature", pooling: str = "cls",
     ) -> None:
         nn.Module.__init__(self)
-        del hidden, layers  # the compact attention width/depth are intentionally fixed
-        d_model = 32
+        del hidden, layers  # MLP-only settings
         self.actor = nn.Sequential(
-            FeatureTransformerTrunk(obs_dim, d_model),
+            FeatureTransformerTrunk(
+                obs_dim, d_model, nhead, depth, ff_mult, tokenizer, pooling
+            ),
             layer_init(nn.Linear(d_model, action_dim), gain=0.01),
         )
         self.critic = nn.Sequential(
-            FeatureTransformerTrunk(obs_dim, d_model),
+            FeatureTransformerTrunk(
+                obs_dim, d_model, nhead, depth, ff_mult, tokenizer, pooling
+            ),
             layer_init(nn.Linear(d_model, 1), gain=1.0),
         )
         self.log_std = nn.Parameter(torch.full((action_dim,), log_std_init))
@@ -264,8 +324,41 @@ ARCHITECTURES = {
 def build_model(
     arch: str, obs_dim: int, action_dim: int, hidden: int, log_std_init: float,
     layers: int = 2,
+    transformer_d_model: int = 32,
+    transformer_heads: int = 4,
+    transformer_depth: int = 2,
+    transformer_ff_mult: int = 2,
+    transformer_tokenizer: str = "per_feature",
+    transformer_pooling: str = "cls",
 ) -> ActorCritic:
+    if arch == "transformer":
+        return TransformerActorCritic(
+            obs_dim,
+            action_dim,
+            hidden,
+            log_std_init,
+            layers,
+            transformer_d_model,
+            transformer_heads,
+            transformer_depth,
+            transformer_ff_mult,
+            transformer_tokenizer,
+            transformer_pooling,
+        )
     return ARCHITECTURES[arch](obs_dim, action_dim, hidden, log_std_init, layers)
+
+
+def transformer_kwargs(saved_args: dict | argparse.Namespace) -> dict:
+    """Read transformer settings while keeping legacy checkpoints loadable."""
+    get = saved_args.get if isinstance(saved_args, dict) else vars(saved_args).get
+    return {
+        "transformer_d_model": get("transformer_d_model", 32),
+        "transformer_heads": get("transformer_heads", 4),
+        "transformer_depth": get("transformer_depth", 2),
+        "transformer_ff_mult": get("transformer_ff_mult", 2),
+        "transformer_tokenizer": get("transformer_tokenizer", "shared"),
+        "transformer_pooling": get("transformer_pooling", "mean"),
+    }
 
 
 @dataclass
@@ -465,6 +558,7 @@ def evaluate_checkpoint(args: argparse.Namespace) -> dict[str, float | int | str
         hidden,
         log_std_init,
         layers,
+        **transformer_kwargs(saved_args),
     ).to(args.device)
     model.load_state_dict(checkpoint["model"])
     model.eval()
@@ -523,6 +617,7 @@ def main() -> None:
     model = build_model(
         args.arch, venv.observation_dim, venv.action_dim,
         args.hidden, args.log_std_init, args.layers,
+        **transformer_kwargs(args),
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, eps=1e-5)
 
@@ -530,6 +625,12 @@ def main() -> None:
         f"task={args.task} obs_dim={venv.observation_dim} action_dim={venv.action_dim} "
         f"num_envs={args.num_envs} arch={args.arch} hidden={args.hidden} "
         f"layers={args.layers} device={device} "
+        f"transformer_d_model={args.transformer_d_model} "
+        f"transformer_heads={args.transformer_heads} "
+        f"transformer_depth={args.transformer_depth} "
+        f"transformer_ff_mult={args.transformer_ff_mult} "
+        f"transformer_tokenizer={args.transformer_tokenizer} "
+        f"transformer_pooling={args.transformer_pooling} "
         f"params={sum(p.numel() for p in model.parameters()):,} "
         f"dt={ml_planes.physics_dt():.6f}s"
     )
