@@ -135,7 +135,8 @@ pub fn drain_control_requests(
 ///
 /// Mirrors the visual spawn UI's `SPAWNABLE_KINDS` (`src/ui/lifecycle_panel.rs`): only kinds
 /// whose generic `ControllerKind::build()` is self-sufficient (no leader entity, `.plan.ron`
-/// asset, or RL model needed). `Wingman` / `FlightPlan` are deliberately excluded — `build()`
+/// asset, or RL model needed). `Wingman` / `Refueling` / `FlightPlan` are deliberately
+/// excluded — `build()`
 /// silently substitutes `LevelHold` / `Orbit` for them. RL kinds appear only under `inference`.
 pub fn spawnable_kind_names() -> &'static [&'static str] {
     #[cfg(not(feature = "inference"))]
@@ -161,7 +162,7 @@ pub fn spawnable_kind_names() -> &'static [&'static str] {
 
 /// Parse a controller-kind name (serde variant identifier) into a spawnable [`ControllerKind`].
 ///
-/// Backs both `spawn_plane` and `switch_controller`. `Wingman` / `FlightPlan` are
+/// Backs both `spawn_plane` and `switch_controller`. `Wingman` / `Refueling` / `FlightPlan` are
 /// rejected with a descriptive error because the generic builder mis-substitutes them; unknown
 /// names likewise return an `Err` (never a panic). RL kinds parse only under `inference`.
 pub fn parse_spawnable_controller_kind(name: &str) -> Result<ControllerKind, String> {
@@ -181,10 +182,11 @@ pub fn parse_spawnable_controller_kind(name: &str) -> Result<ControllerKind, Str
         "RlOrbitResidual" => Ok(ControllerKind::RlOrbitResidual),
         #[cfg(feature = "inference")]
         "RlLstmOrbit" => Ok(ControllerKind::RlLstmOrbit),
-        "Wingman" | "FlightPlan" => Err(format!(
+        "Wingman" | "Refueling" | "FlightPlan" => Err(format!(
             "controller kind `{name}` cannot be spawned or switched over MCP: its generic \
-             builder substitutes a different controller (Wingman→LevelHold, FlightPlan→Orbit), \
-             so the plane would fly the wrong one. Choose a self-sufficient kind: {}.",
+             builder substitutes a different controller (Wingman→LevelHold, \
+             Refueling→LevelHold, FlightPlan→Orbit), so the plane would fly the wrong one. \
+             Choose a self-sufficient kind: {}.",
             spawnable_kind_names().join(", ")
         )),
         other => Err(format!(
@@ -293,6 +295,11 @@ pub fn merge_controller_targets(
         }
         ControllerTargets::Wingman { leader } => Ok(ControllerTargets::Wingman {
             leader: leader_id.map(PlaneId).unwrap_or(leader),
+        }),
+        // `leader_id` doubles as the tanker id rather than adding a `tanker_id`
+        // argument — one alias keeps the tool's JSON schema unchanged.
+        ControllerTargets::Refueling { tanker } => Ok(ControllerTargets::Refueling {
+            tanker: leader_id.map(PlaneId).unwrap_or(tanker),
         }),
     }
 }
@@ -502,7 +509,7 @@ mod tests {
 
     #[test]
     fn rejects_wingman_and_flight_plan_with_a_reason() {
-        for name in ["Wingman", "FlightPlan"] {
+        for name in ["Wingman", "Refueling", "FlightPlan"] {
             let err = parse_spawnable_controller_kind(name).unwrap_err();
             assert!(
                 err.contains("substitutes"),

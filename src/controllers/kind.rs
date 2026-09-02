@@ -56,12 +56,22 @@ pub enum ControllerKind {
     /// ML-based heading hold (PPO policy). Controller must be constructed
     /// explicitly via `RlHeadingHoldController::load()`; `build()` falls back
     /// to `HeadingHold` (generic factory cannot produce an RL controller
-    /// without a model path). Declared last (append-only) so existing
-    /// bincode discriminants for a stale net peer don't shift.
+    /// without a model path).
     RlHeadingHold,
+    /// Staged aerial-refueling approach onto a tanker. Like `Wingman`, the controller
+    /// must be constructed explicitly (`RefuelController::new()`) because the generic
+    /// factory has no tanker reference; `build()` falls back to `LevelHold`. Declared
+    /// last (append-only) so existing bincode discriminants for a stale net peer
+    /// don't shift.
+    Refueling,
 }
 
 impl ControllerKind {
+    // `Wingman` and `Refueling` are deliberately absent from both `ALL` lists: their
+    // `build()` cannot reconstruct them, so cycling to one interactively would install a
+    // `LevelHoldController` under the wrong label and `cleanup_orphaned_followers` would
+    // demote it again the next tick — a flickering kind. Pinned by
+    // `peer_following_kinds_are_not_interactively_cyclable`.
     #[cfg(not(feature = "inference"))]
     pub const ALL: &'static [ControllerKind] = &[
         Self::Manual,
@@ -101,6 +111,7 @@ impl ControllerKind {
             ControllerKind::RlLstmOrbit => "RL LSTM Orbit",
             ControllerKind::FlightPlan => "Flight Plan (L1)",
             ControllerKind::RlHeadingHold => "RL Heading Hold",
+            ControllerKind::Refueling => "Refueling",
         }
     }
 
@@ -171,13 +182,18 @@ impl ControllerKind {
                 Some(t) => t.build(state, prev_inputs),
                 None => Box::new(OrbitController::from_state(state, prev_inputs)),
             },
-            // RlLevelHold requires a model path — fall back to LevelHold like Wingman.
-            ControllerKind::LevelHold | ControllerKind::Wingman | ControllerKind::RlLevelHold => {
-                match tuning {
-                    Some(t) => t.build(state, prev_inputs),
-                    None => Box::new(LevelHoldController::from_state(state, prev_inputs)),
-                }
-            }
+            // RlLevelHold requires a model path, and Wingman/Refueling need a peer
+            // reference the generic factory doesn't have — all fall back to LevelHold.
+            // For Wingman and Refueling this is load-bearing rather than merely
+            // graceful: `sim_control`'s restore_wingman / restore_refueling downcast
+            // this exact result back to a `LevelHoldController` to re-wrap it.
+            ControllerKind::LevelHold
+            | ControllerKind::Wingman
+            | ControllerKind::Refueling
+            | ControllerKind::RlLevelHold => match tuning {
+                Some(t) => t.build(state, prev_inputs),
+                None => Box::new(LevelHoldController::from_state(state, prev_inputs)),
+            },
             // FlightPlan needs the plan asset, which the generic factory cannot
             // access; the real controller is built by `apply_flight_plan`. Fall
             // back to a PID orbit so an entity without a loaded plan still flies.
@@ -237,6 +253,36 @@ mod tests {
             .as_any_mut()
             .downcast_mut::<HeadingHoldController>()
             .is_some());
+    }
+
+    /// Pins the deliberate omission documented above `ALL`. Both kinds need a peer
+    /// reference `build()` cannot supply, so reaching them from the interactive cycle
+    /// would install a mislabelled `LevelHoldController`. Nothing else fails if someone
+    /// "helpfully" adds them, which is exactly why this test exists.
+    #[test]
+    fn peer_following_kinds_are_not_interactively_cyclable() {
+        for kind in [ControllerKind::Wingman, ControllerKind::Refueling] {
+            assert!(
+                !ControllerKind::ALL.contains(&kind),
+                "{:?} must stay out of the interactive cycle: build() cannot reconstruct it",
+                kind
+            );
+        }
+    }
+
+    #[test]
+    fn refueling_builds_level_hold_fallback() {
+        // Load-bearing, not merely graceful: `sim_control::restore_refueling` downcasts
+        // this exact result back to a `LevelHoldController` to re-wrap it.
+        let mut controller =
+            ControllerKind::Refueling.build(&state(), None, &ControlInputs::default());
+        assert!(controller
+            .as_any_mut()
+            .downcast_mut::<LevelHoldController>()
+            .is_some());
+        assert_eq!(ControllerKind::Refueling.name(), "Refueling");
+        assert_eq!(ControllerKind::Refueling.model_dir(), None);
+        assert!(!ControllerKind::Refueling.is_heading_hold());
     }
 
     #[test]

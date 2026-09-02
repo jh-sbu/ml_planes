@@ -26,7 +26,7 @@ pub const DEFAULT_PORT: u16 = 5555;
 
 /// Protocol identity/version. Bump when the replicated component or command set
 /// changes incompatibly so the transport rejects mismatched peers.
-pub const PROTOCOL_ID: u64 = 4;
+pub const PROTOCOL_ID: u64 = 5;
 
 /// Switch the target plane's active controller (server rebuilds it).
 #[derive(Event, Serialize, Deserialize, Clone, Debug)]

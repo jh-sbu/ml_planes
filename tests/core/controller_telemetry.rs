@@ -8,7 +8,8 @@ use bevy::math::{Quat, Vec3};
 
 use ml_planes::controllers::{
     AscentController, ControllerTelemetry, FlightController, FlightPlan, FlightPlanLeg,
-    FormationOffset, L1Controller, L1Status, OrbitController, OrbitDirection, WingmanController,
+    FormationOffset, L1Controller, L1Status, OrbitController, OrbitDirection, RefuelConfig,
+    RefuelController, RefuelPhase, WingmanController,
 };
 use ml_planes::plane::{ControlInputs, FlightState, PlaneId, PHYSICS_DT};
 
@@ -136,4 +137,21 @@ fn ascent_telemetry_reflects_complete_latch() {
         ascent.telemetry(&at_target),
         ControllerTelemetry::Ascent { complete: true }
     );
+}
+
+#[test]
+fn refuel_telemetry_reports_phase_and_station_errors() {
+    let tanker = level_state(Vec3::new(0.0, 2000.0, 0.0), 130.0);
+    let own = level_state(Vec3::new(-150.0, 1970.0, 0.0), 130.0);
+    let ctrl = RefuelController::new(PlaneId(1), &tanker, &own, RefuelConfig::default());
+    match ctrl.telemetry(&own) {
+        ControllerTelemetry::Refueling(d) => {
+            // Fresh controller: nothing has run yet, so the geometric fields are default
+            // and the phase is the bottom of the ladder.
+            assert_eq!(d.phase, RefuelPhase::Astern);
+            assert!(!d.tanker_found);
+            assert_eq!(d.breakaways, 0);
+        }
+        other => panic!("expected Refueling telemetry, got {other:?}"),
+    }
 }

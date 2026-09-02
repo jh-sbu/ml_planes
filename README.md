@@ -222,7 +222,9 @@ printf '%s\n' \
 3. **Formation flight (wingman)** — complete. Fixed body-frame offset behind a leader.
 4. **Circular orbit** — complete. PID cascade plus direct, residual, and recurrent-LSTM RL variants.
 5. **Flight-plan following** — complete. `L1Controller` sequences waypoint/orbit legs via L1 guidance.
-6. **Aerial refueling** — next. Approach a lead plane from the rear to a docking position.
+6. **Aerial refueling** — PID controller complete. `RefuelController` flies a receiver up
+   to a docking position astern of a tanker through a three-station ladder
+   (Astern → Precontact → Contact) with an automatic breakaway; an RL variant is next.
 
 ## Scope / Non-Goals
 

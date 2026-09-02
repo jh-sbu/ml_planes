@@ -10,7 +10,8 @@ use bevy::math::{Quat, Vec3};
 use ml_planes::controllers::{
     ActiveController, AscentController, ControllerTargets, FlightController, FlightPlan,
     FlightPlanLeg, FormationOffset, HeadingHoldController, L1Controller, LevelHoldController,
-    ManualController, OrbitController, OrbitDirection, OrbitParams, WingmanController,
+    ManualController, OrbitController, OrbitDirection, OrbitParams, RefuelConfig, RefuelController,
+    WingmanController,
 };
 use ml_planes::plane::{ControlInputs, FlightState, PlaneId, PHYSICS_DT};
 
@@ -380,4 +381,36 @@ fn apply_targets_through_boxed_controller() {
             airspeed: 105.0,
         }
     );
+}
+
+/// A refueler publishes its tanker through its own variant, not `Wingman`'s — the HUD
+/// label and the MCP docs differ, and a shared variant would let a wingman-shaped edit
+/// land on a refueler.
+#[test]
+fn refuel_targets_reports_tanker() {
+    let tanker = level_state(Vec3::new(0.0, 2000.0, 0.0), 130.0);
+    let own = level_state(Vec3::new(-150.0, 1970.0, 0.0), 130.0);
+    let ctrl = RefuelController::new(PlaneId(7), &tanker, &own, RefuelConfig::default());
+    assert_eq!(
+        ctrl.targets(),
+        ControllerTargets::Refueling { tanker: PlaneId(7) }
+    );
+}
+
+#[test]
+fn apply_targets_sets_refuel_tanker_and_ignores_mismatches() {
+    let tanker = level_state(Vec3::new(0.0, 2000.0, 0.0), 130.0);
+    let own = level_state(Vec3::new(-150.0, 1970.0, 0.0), 130.0);
+    let mut ctrl = RefuelController::new(PlaneId(1), &tanker, &own, RefuelConfig::default());
+
+    ctrl.apply_targets(&ControllerTargets::Refueling { tanker: PlaneId(9) }, &own);
+    assert_eq!(ctrl.tanker_id, PlaneId(9));
+    assert_eq!(
+        ctrl.targets(),
+        ControllerTargets::Refueling { tanker: PlaneId(9) }
+    );
+
+    // A stale wingman-shaped command must be a no-op, not a silent retarget.
+    ctrl.apply_targets(&ControllerTargets::Wingman { leader: PlaneId(3) }, &own);
+    assert_eq!(ctrl.tanker_id, PlaneId(9));
 }

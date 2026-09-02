@@ -7,7 +7,7 @@
 use bevy::math::{Quat, Vec3};
 use ml_planes::controllers::{
     ControllerKind, ControllerTargets, ControllerTelemetry, L1Status, OrbitDirection, OrbitParams,
-    WingmanDiagnostics,
+    RefuelDiagnostics, RefuelPhase, WingmanDiagnostics,
 };
 use ml_planes::plane::{ControlInputs, FlightState, PlaneId, PlaneIndex};
 use ml_planes::training::SpawnSpec;
@@ -98,6 +98,18 @@ fn controller_telemetry_roundtrips() {
         range_error: -1.5,
         altitude_error: -2.0,
     }));
+    assert_ron_roundtrip(&ControllerTelemetry::Refueling(RefuelDiagnostics {
+        tanker_found: true,
+        phase: RefuelPhase::Precontact,
+        pos_error: Vec3::new(0.5, -1.0, 0.0),
+        pos_error_mag: 1.12,
+        cross_track: 0.0,
+        range_error: 0.5,
+        altitude_error: -1.0,
+        closure_rate: 1.8,
+        phase_error: 24.0,
+        breakaways: 2,
+    }));
     assert_ron_roundtrip(&ControllerTelemetry::FlightPlan {
         leg_index: 1,
         leg_count: 3,
@@ -150,6 +162,7 @@ fn controller_targets_roundtrips() {
         direction: OrbitDirection::Clockwise,
     }));
     assert_ron_roundtrip(&ControllerTargets::Wingman { leader: PlaneId(4) });
+    assert_ron_roundtrip(&ControllerTargets::Refueling { tanker: PlaneId(5) });
 }
 
 #[test]
@@ -164,6 +177,8 @@ fn controller_kind_roundtrips() {
         // though the variant only *builds* on inference builds; Serialize/Deserialize
         // are unconditional on the enum.
         ControllerKind::RlHeadingHold,
+        // Appended (protocol v5).
+        ControllerKind::Refueling,
     ] {
         assert_ron_roundtrip(&kind);
     }

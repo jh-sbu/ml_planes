@@ -31,4 +31,6 @@ mod heading_hold;
 #[cfg(sim_enabled)]
 mod level_hold;
 #[cfg(sim_enabled)]
+mod refueling;
+#[cfg(sim_enabled)]
 mod wingman;

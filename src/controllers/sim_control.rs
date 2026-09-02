@@ -16,7 +16,8 @@ use bevy::prelude::*;
 use crate::controllers::{
     ActiveController, ControllerKind, ControllerTuning, FlightPlan, FormationOffset, L1Controller,
     LevelHoldController, ModelLibrary, OrbitController, OrbitParams, PidController, PlaneTuning,
-    SelectedTuningProfile, TuningApplied, WingmanController,
+    RefuelConfig, RefuelController, RefuelPhase, RefuelingTuning, SelectedTuningProfile,
+    TuningApplied, WingmanController,
 };
 use crate::plane::{ControlInputs, FlightPlanHandle, FlightState, PlaneId, PlaneTuningHandle};
 
@@ -645,6 +646,81 @@ fn restore_wingman(ctrl: &mut ActiveController, params: WingmanParams) {
     ctrl.0 = Box::new(wingman);
 }
 
+/// Approach state a tuning rebuild would otherwise discard.
+///
+/// Note what is *not* here: the stations, gates and outer gains. Those live in the
+/// plane's `refueling` tuning profile, so they are re-read from the newly applied
+/// profile rather than carried across — see [`restore_refueling`].
+struct RefuelParams {
+    tanker_id: PlaneId,
+    phase: RefuelPhase,
+    commanded_offset: Vec3,
+    dwell: f32,
+    retreating: bool,
+    breakaways: u32,
+    /// Fallback config, used only when the selected profile has no `refueling` entry.
+    config: RefuelConfig,
+}
+
+/// Snapshot the approach state before a rebuild, or `None` when the kind says
+/// `Refueling` but no refueling law is actually installed (e.g. the kind changed to
+/// `Refueling` this very frame, so the controller is still whatever it was).
+fn extract_refuel_params(ctrl: &mut ActiveController) -> Option<RefuelParams> {
+    let r = ctrl.0.as_any_mut().downcast_mut::<RefuelController>()?;
+    Some(RefuelParams {
+        tanker_id: r.tanker_id,
+        phase: r.phase,
+        commanded_offset: r.commanded_offset,
+        dwell: r.dwell,
+        retreating: r.retreating,
+        breakaways: r.breakaways,
+        config: r.config,
+    })
+}
+
+/// Re-wrap the freshly built (and freshly tuned) `LevelHoldController` back into a
+/// `RefuelController`.
+///
+/// This deliberately splits what it restores, and the split is the whole point of the
+/// `refueling` tuning family:
+///
+/// * **Restored from the snapshot** — the dynamic approach state (`tanker_id`, `phase`,
+///   `commanded_offset`, `dwell`, `retreating`, `breakaways`). A profile switch must not
+///   restart a receiver that has already worked its way into `Contact`.
+/// * **Taken from `tuning`** — the stations, gates, rates and outer gains, falling back
+///   to the snapshot only when the selected profile has no `refueling` entry.
+///
+/// `restore_wingman` above restores its outer PIDs verbatim instead, which is correct
+/// *there* because a wingman's gains are compiled-in constants no profile can supply.
+/// Copying that shape here would make switching `refueling` profiles a silent no-op on
+/// exactly the values the family exists to change — the controller keeps flying, just
+/// with the old numbers. Pinned by
+/// `tests/core/sim_control.rs::profile_switch_adopts_new_refuel_config`.
+fn restore_refueling(
+    ctrl: &mut ActiveController,
+    params: RefuelParams,
+    tuning: Option<&RefuelingTuning>,
+) {
+    let Some(inner) = ctrl.0.as_any_mut().downcast_mut::<LevelHoldController>() else {
+        // Shouldn't happen — `Refueling.build()` always yields a LevelHoldController —
+        // but leave the controller alone rather than panic if it ever does.
+        return;
+    };
+    let inner = inner.clone();
+    let config = tuning.map(|t| t.config()).unwrap_or(params.config);
+    let mut refuel = RefuelController::from_inner(
+        params.tanker_id,
+        params.phase,
+        params.commanded_offset,
+        config,
+        inner,
+    );
+    refuel.dwell = params.dwell;
+    refuel.retreating = params.retreating;
+    refuel.breakaways = params.breakaways;
+    ctrl.0 = Box::new(refuel);
+}
+
 /// Kinds whose `build()` re-seeds every setpoint from the *current* `FlightState`
 /// (`LevelHoldController::with_tuning`/`from_state` capture `state.altitude`/
 /// `state.airspeed`; `HeadingHoldController::from_state` captures
@@ -652,10 +728,11 @@ fn restore_wingman(ctrl: &mut ActiveController, params: WingmanParams) {
 /// `state.altitude + 1000.0`). Preserve scenario- and pilot-commanded setpoints
 /// across tuning loads and profile switches.
 ///
-/// `Orbit`/`RlOrbit*` and `Wingman` are deliberately excluded: they already have
-/// their own extract/restore pairs above (`extract_orbit_params`,
-/// `extract_wingman_params`), and their `apply_targets` impls have side effects
-/// (PID resets, auto-centering) a blind snapshot/replay must not trigger.
+/// `Orbit`/`RlOrbit*`, `Wingman` and `Refueling` are deliberately excluded: they
+/// already have their own extract/restore pairs above (`extract_orbit_params`,
+/// `extract_wingman_params`, `extract_refuel_params`), and their `apply_targets` impls
+/// have side effects (PID resets, auto-centering, ladder reset) a blind snapshot/replay
+/// must not trigger.
 fn rebuild_preserves_targets(kind: ControllerKind) -> bool {
     matches!(
         kind,
@@ -732,6 +809,9 @@ fn apply_initial_tuning(
             ControllerKind::HeadingHold | ControllerKind::RlHeadingHold => pt
                 .get_heading_hold(profile_name)
                 .map(|t| t as &dyn ControllerTuning),
+            ControllerKind::Refueling => pt
+                .get_refueling(profile_name)
+                .map(|t| t as &dyn ControllerTuning),
             _ => pt
                 .get_level_hold(profile_name)
                 .map(|t| t as &dyn ControllerTuning),
@@ -752,6 +832,12 @@ fn apply_initial_tuning(
         // reconstruct it (no leader reference in the generic factory).
         let wingman_params = if *kind == ControllerKind::Wingman {
             extract_wingman_params(&mut controller)
+        } else {
+            None
+        };
+        // Same problem, same shape: `Refueling.build()` has no tanker reference.
+        let refuel_params = if *kind == ControllerKind::Refueling {
+            extract_refuel_params(&mut controller)
         } else {
             None
         };
@@ -780,6 +866,12 @@ fn apply_initial_tuning(
         }
         if let Some(params) = wingman_params {
             restore_wingman(&mut controller, params);
+        }
+        if let Some(params) = refuel_params {
+            // Second, concrete lookup: `tuning` above is already erased to
+            // `&dyn ControllerTuning`, and `restore_refueling` needs the real
+            // `RefuelingTuning` to re-read the stations, gates and outer gains.
+            restore_refueling(&mut controller, params, pt.get_refueling(profile_name));
         }
         if let Some(targets) = saved_targets {
             restore_targets(&mut controller, targets, state);
@@ -830,6 +922,9 @@ fn apply_controller_switch(
                 ControllerKind::HeadingHold | ControllerKind::RlHeadingHold => pt
                     .get_heading_hold(profile_name)
                     .map(|t| t as &dyn ControllerTuning),
+                ControllerKind::Refueling => pt
+                    .get_refueling(profile_name)
+                    .map(|t| t as &dyn ControllerTuning),
                 _ => pt
                     .get_level_hold(profile_name)
                     .map(|t| t as &dyn ControllerTuning),
@@ -853,6 +948,12 @@ fn apply_controller_switch(
         // `cleanup_orphaned_wingmen` will demote the kind honestly next tick.
         let wingman_params = if *kind == ControllerKind::Wingman {
             extract_wingman_params(&mut controller)
+        } else {
+            None
+        };
+        // Same problem, same shape: `Refueling.build()` has no tanker reference.
+        let refuel_params = if *kind == ControllerKind::Refueling {
+            extract_refuel_params(&mut controller)
         } else {
             None
         };
@@ -883,6 +984,15 @@ fn apply_controller_switch(
         }
         if let Some(params) = wingman_params {
             restore_wingman(&mut controller, params);
+        }
+        if let Some(params) = refuel_params {
+            // Second, concrete lookup: `tuning` above is already erased to
+            // `&dyn ControllerTuning`, and `restore_refueling` needs the real
+            // `RefuelingTuning` to re-read the stations, gates and outer gains.
+            let refuel_tuning = tuning_handle
+                .and_then(|h| tuning_assets.get(&h.0))
+                .and_then(|pt| pt.get_refueling(profile_name));
+            restore_refueling(&mut controller, params, refuel_tuning);
         }
         if let Some(targets) = saved_targets {
             restore_targets(&mut controller, targets, state);

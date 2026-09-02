@@ -10,12 +10,12 @@ use bevy_rapier3d::prelude::AdditionalMassProperties;
 use ml_planes::camera::{systems::recover_camera_on_target_loss, CameraMode};
 use ml_planes::controllers::{
     ActiveController, ControllerKind, FormationOffset, LevelHoldController, PlaneTuning,
-    SelectedTuningProfile, WingmanController,
+    RefuelConfig, RefuelController, SelectedTuningProfile, WingmanController,
 };
 use ml_planes::environment::PendingPlaneSpawn;
 use ml_planes::environment::{spawn_plane, LifecyclePlugin, RemovePlaneCommand, SpawnPlaneCommand};
 use ml_planes::plane::{
-    FlightState, NextPlaneId, PlaneConfig, PlaneConfigHandle, PlaneId, PlaneIndex,
+    ControlInputs, FlightState, NextPlaneId, PlaneConfig, PlaneConfigHandle, PlaneId, PlaneIndex,
     PlaneTuningHandle, PlaneTuningPath,
 };
 use ml_planes::training::SpawnSpec;
@@ -535,4 +535,170 @@ fn finalized_plane_takes_mass_from_the_loaded_config() {
     // Dry 128000 kg + a full 90000 kg tank — not the 5000 kg generic-jet default.
     assert_eq!(props.mass, 218000.0);
     assert!((props.principal_inertia.y - 2.46e7).abs() < 1.0);
+}
+
+// ---------------------------------------------------------------------------
+// Refueling: the generalized orphan cleanup covers both follower kinds
+
+#[derive(Resource)]
+struct TankerReceiver {
+    tanker: Entity,
+    receiver: Entity,
+}
+
+fn spawn_tanker_and_receiver(
+    mut commands: Commands,
+    mut ids: ResMut<NextPlaneId>,
+    asset_server: Res<AssetServer>,
+) {
+    let tanker_pos = Vec3::new(0.0, 2000.0, 0.0);
+    let vel = Vec3::new(130.0, 0.0, 0.0);
+    let tanker_state = FlightState {
+        position: tanker_pos,
+        velocity: vel,
+        airspeed: 130.0,
+        altitude: 2000.0,
+        ..Default::default()
+    };
+    let tanker = spawn_plane(
+        &mut commands,
+        &mut ids,
+        &asset_server,
+        "planes/generic_jet.plane.ron",
+        &SpawnSpec {
+            position: Some(tanker_pos),
+            velocity: Some(vel),
+            ..Default::default()
+        },
+        Box::new(LevelHoldController::new(2000.0, 130.0)),
+        ControllerKind::LevelHold,
+    );
+
+    let cfg = RefuelConfig::default();
+    let own_pos = tanker_pos + cfg.astern;
+    let own_state = FlightState {
+        position: own_pos,
+        velocity: vel,
+        airspeed: 130.0,
+        altitude: own_pos.y,
+        ..Default::default()
+    };
+    let receiver = spawn_plane(
+        &mut commands,
+        &mut ids,
+        &asset_server,
+        "planes/generic_jet.plane.ron",
+        &SpawnSpec {
+            position: Some(own_pos),
+            velocity: Some(vel),
+            ..Default::default()
+        },
+        Box::new(RefuelController::new(
+            tanker.id,
+            &tanker_state,
+            &own_state,
+            cfg,
+        )),
+        ControllerKind::Refueling,
+    );
+
+    commands.insert_resource(TankerReceiver {
+        tanker: tanker.entity,
+        receiver: receiver.entity,
+    });
+}
+
+/// A receiver whose tanker is gone has nothing to dock with — it must fly honestly as
+/// `LevelHold` rather than keep the `Refueling` label against a dead `PlaneId`.
+#[test]
+fn removing_tanker_drops_refueler_to_level_hold() {
+    let mut app = build_headless_app_with(|app| {
+        app.add_plugins(LifecyclePlugin);
+    });
+    app.add_systems(Startup, spawn_tanker_and_receiver);
+    resolve_pending_spawns(&mut app, &generic_jet_config());
+
+    let (tanker, receiver) = {
+        let pair = app.world().resource::<TankerReceiver>();
+        (pair.tanker, pair.receiver)
+    };
+    assert_eq!(
+        *app.world()
+            .entity(receiver)
+            .get::<ControllerKind>()
+            .unwrap(),
+        ControllerKind::Refueling
+    );
+
+    app.world_mut().trigger(RemovePlaneCommand(tanker));
+    app.update();
+
+    assert_eq!(
+        *app.world()
+            .entity(receiver)
+            .get::<ControllerKind>()
+            .unwrap(),
+        ControllerKind::LevelHold,
+        "orphaned receiver should fall back to LevelHold once its tanker is gone"
+    );
+}
+
+/// The pending-spawn half of the same rule, and the reason the cleanup is one generalized
+/// system rather than a per-kind sibling: a tanker still waiting on its `.plane.ron` has
+/// a reserved `PlaneId` and *will* exist, so it counts as live. Get this wrong and a
+/// receiver whose own config happens to load first is demoted permanently — the demotion
+/// is one-way.
+#[test]
+fn refueler_survives_a_tanker_still_waiting_on_its_config() {
+    let mut app = build_headless_app_with(|app| {
+        app.add_plugins(LifecyclePlugin);
+    });
+
+    let tanker_id = PlaneId(1);
+    let never_loads = app
+        .world()
+        .resource::<Assets<PlaneConfig>>()
+        .reserve_handle();
+    app.world_mut().spawn(PendingPlaneSpawn {
+        plane_id: tanker_id,
+        spec: SpawnSpec::default(),
+        kind: ControllerKind::LevelHold,
+        controller: Some(Box::new(LevelHoldController::new(2000.0, 130.0))),
+        config: never_loads,
+        config_path: "planes/generic_jet.plane.ron".to_string(),
+    });
+
+    let state = FlightState {
+        position: Vec3::new(-150.0, 1970.0, 0.0),
+        velocity: Vec3::new(130.0, 0.0, 0.0),
+        airspeed: 130.0,
+        altitude: 1970.0,
+        ..Default::default()
+    };
+    let receiver = app
+        .world_mut()
+        .spawn((
+            PlaneId(2),
+            state.clone(),
+            ControlInputs::default(),
+            ActiveController(Box::new(RefuelController::new(
+                tanker_id,
+                &state,
+                &state,
+                RefuelConfig::default(),
+            ))),
+            ControllerKind::Refueling,
+        ))
+        .id();
+
+    app.update();
+
+    assert_eq!(
+        *app.world()
+            .entity(receiver)
+            .get::<ControllerKind>()
+            .unwrap(),
+        ControllerKind::Refueling,
+        "a tanker still parked on its .plane.ron counts as live"
+    );
 }

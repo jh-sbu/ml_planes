@@ -51,4 +51,47 @@ PlaneTuning(
             ),
         ),
     },
+    // Staged refueling approach (M13). Stations are in the TANKER's body frame
+    // (+X fwd, +Y right, +Z up), so all three sit on the centerline (y = 0) behind and
+    // below it. STARTER values — validate with
+    //   cargo run --release --example observe_state --no-default-features -- \
+    //     --scenario assets/scenarios/refueling.scenario.ron --steps 11520 --interval 64
+    // before trusting them. `lateral_kp` is at the documented stability ceiling: the
+    // lateral cascade is bandwidth-inverted (outer loop faster than inner), so raising it
+    // buys oscillation, not precision.
+    refueling: {
+        "normal": RefuelingTuning(
+            astern: (-150.0, 0.0, -30.0),
+            precontact: (-40.0, 0.0, -10.0),
+            contact: (-15.0, 0.0, -5.0),
+
+            capture_radius: 12.0,
+            contact_radius: 5.0,
+            closure_tolerance: 2.0,
+            dwell_secs: 3.0,
+            abort_radius: 30.0,
+
+            approach_rate: 4.0,
+            breakaway_rate: 12.0,
+
+            range_kp: 0.2,
+            range_ki: 0.02,
+            range_kd: 0.5,
+            lateral_kp: 0.002,
+            lateral_kd: 0.01,
+            heading_kp: 0.7,
+            heading_kd: 0.1,
+
+            inner: LevelHoldTuning(
+                alt_kp: 0.0187,
+                alt_ki: 0.224,
+                alt_kd: 0.075,
+                pitch_kp: 1.000,
+                pitch_kd: 0.500,
+                spd_kp: 0.026,
+                spd_ki: 0.156,
+                throttle_ff_gain: 0.7,
+            ),
+        ),
+    },
 )

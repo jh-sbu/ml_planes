@@ -23,11 +23,13 @@ use std::path::Path;
 use bevy::math::{Quat, Vec3};
 use serde::Deserialize;
 
-use crate::controllers::tuning::{HeadingHoldTuning, LevelHoldTuning, OrbitTuning};
+use crate::controllers::tuning::{
+    HeadingHoldTuning, LevelHoldTuning, OrbitTuning, RefuelingTuning,
+};
 use crate::controllers::{
     AscentController, ControllerKind, FlightController, FlightPlan, FormationOffset,
     HeadingHoldController, L1Controller, LevelHoldController, ManualController, OrbitController,
-    OrbitDirection, OrbitParams, WingmanController,
+    OrbitDirection, OrbitParams, RefuelController, WingmanController,
 };
 use crate::plane::{ControlInputs, FlightState, PlaneId, PHYSICS_DT};
 
@@ -135,6 +137,15 @@ pub enum ControllerSpec {
         #[serde(default)]
         offset: Option<(f32, f32, f32)>,
     },
+    /// Staged aerial-refueling approach onto a tanker referenced by `name`.
+    ///
+    /// The station ladder and approach gates come from the plane's `refueling` tuning
+    /// profile; an inline `tuning:` block overrides it for this scenario only.
+    Refueling {
+        tanker: String,
+        #[serde(default)]
+        tuning: Option<RefuelingTuning>,
+    },
     FlightPlan {
         plan: String,
     },
@@ -208,6 +219,7 @@ impl ControllerSpec {
             ControllerSpec::HeadingHold { .. } => ControllerKind::HeadingHold,
             ControllerSpec::Ascent { .. } => ControllerKind::Ascent,
             ControllerSpec::Wingman { .. } => ControllerKind::Wingman,
+            ControllerSpec::Refueling { .. } => ControllerKind::Refueling,
             ControllerSpec::FlightPlan { .. } => ControllerKind::FlightPlan,
             ControllerSpec::Manual => ControllerKind::Manual,
             ControllerSpec::RlLevelHold { .. } => ControllerKind::RlLevelHold,
@@ -215,6 +227,29 @@ impl ControllerSpec {
             ControllerSpec::RlOrbitResidual { .. } => ControllerKind::RlOrbitResidual,
             ControllerSpec::RlLstmOrbit { .. } => ControllerKind::RlLstmOrbit,
             ControllerSpec::RlHeadingHold { .. } => ControllerKind::RlHeadingHold,
+        }
+    }
+
+    /// The peer plane this spec follows **by name** — a wingman's leader, a refueler's
+    /// tanker — or `None` for a spec that flies alone.
+    ///
+    /// One accessor rather than a `match` repeated at each site: `resolve()`'s validation
+    /// loop and `scenario_spawn`'s transitive-skip pass both need exactly this question,
+    /// and a per-kind `match` in each is how a new follower kind gets validated in one
+    /// place and silently skipped in the other.
+    pub fn peer_name(&self) -> Option<&str> {
+        match self {
+            ControllerSpec::Wingman { leader, .. } => Some(leader),
+            ControllerSpec::Refueling { tanker, .. } => Some(tanker),
+            _ => None,
+        }
+    }
+
+    /// What [`peer_name`](Self::peer_name) means for this spec, for error messages.
+    pub fn peer_role(&self) -> &'static str {
+        match self {
+            ControllerSpec::Refueling { .. } => "tanker",
+            _ => "leader",
         }
     }
 
@@ -368,18 +403,19 @@ impl Scenario {
             });
         }
 
-        // Validate wingman leader references resolve.
+        // Validate every by-name peer reference (wingman leader, refueling tanker).
+        // Driven off `ControllerSpec::peer_name` so a new follower kind is validated
+        // automatically rather than needing an arm added here.
         for p in &planes {
-            if let ControllerSpec::Wingman { leader, .. } = &p.spec {
-                if leader == &p.name {
-                    return Err(format!("wingman '{}' cannot follow itself", p.name));
-                }
-                if !planes.iter().any(|q| &q.name == leader) {
-                    return Err(format!(
-                        "wingman '{}' references unknown leader '{}'",
-                        p.name, leader
-                    ));
-                }
+            let Some(peer) = p.spec.peer_name() else {
+                continue;
+            };
+            let role = p.spec.peer_role();
+            if peer == p.name {
+                return Err(format!("'{}' cannot follow itself as {role}", p.name));
+            }
+            if !planes.iter().any(|q| q.name == peer) {
+                return Err(format!("'{}' references unknown {role} '{}'", p.name, peer));
             }
         }
 
@@ -472,6 +508,19 @@ impl ResolvedScenario {
                     &leader_state,
                     state,
                     FormationOffset { offset_body },
+                )))
+            }
+            ControllerSpec::Refueling { tanker, tuning } => {
+                let (tanker_id, tanker_state) = self
+                    .lookup(tanker)
+                    .ok_or_else(|| format!("unknown tanker '{tanker}'"))?;
+                let t = tuning.clone().unwrap_or_default();
+                Ok(Box::new(RefuelController::with_tuning(
+                    tanker_id,
+                    &tanker_state,
+                    state,
+                    &t,
+                    &prev,
                 )))
             }
             ControllerSpec::FlightPlan { plan } => {

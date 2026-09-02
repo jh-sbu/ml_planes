@@ -4,7 +4,8 @@ use crate::common::{build_headless_app, build_headless_app_with};
 use bevy::prelude::*;
 use ml_planes::controllers::{
     ActiveController, ControllerKind, FormationOffset, HeadingHoldController, LevelHoldTuning,
-    OrbitDirection, PlaneTuning, SimControlPlugin, TuningApplied, WingmanController,
+    OrbitDirection, PlaneTuning, RefuelController, RefuelPhase, SimControlPlugin, TuningApplied,
+    WingmanController,
 };
 use ml_planes::environment::spawn_resolved_scenario;
 use ml_planes::plane::{NextPlaneId, PlaneId, PlaneTuningHandle};
@@ -64,6 +65,14 @@ fn controller_spec_kind_maps_each_variant() {
         ControllerKind::Wingman
     );
     assert_eq!(
+        ControllerSpec::Refueling {
+            tanker: "tanker".into(),
+            tuning: None,
+        }
+        .kind(),
+        ControllerKind::Refueling
+    );
+    assert_eq!(
         ControllerSpec::FlightPlan { plan: "p".into() }.kind(),
         ControllerKind::FlightPlan
     );
@@ -99,6 +108,49 @@ const LEADER_WINGMAN: &str = r#"(
     ],
 )"#;
 
+const TANKER_RECEIVER: &str = r#"(
+    steps: 10,
+    interval: 10,
+    planes: [
+        (
+            name: "tanker",
+            position: (0.0, 2000.0, 0.0),
+            velocity: (130.0, 0.0, 0.0),
+            controller: LevelHold(altitude: 2000.0, airspeed: 130.0),
+        ),
+        (
+            name: "receiver",
+            position: (-150.0, 1970.0, 0.0),
+            velocity: (130.0, 0.0, 0.0),
+            controller: Refueling(tanker: "tanker"),
+        ),
+    ],
+)"#;
+
+/// Pump the app until every scenario plane has finished spawning, bounded so a genuine
+/// failure still fails instead of hanging.
+///
+/// `spawn_resolved_scenario` parks a `PendingPlaneSpawn` and `finalize_pending_spawns`
+/// only completes it once the `.plane.ron` asset has actually loaded off disk. How many
+/// frames that takes is a property of the build (`--features visual` pulls `bevy/default`
+/// and so a multi-threaded asset server) and of how loaded the machine is — CLAUDE.md is
+/// explicit that it is not something to assert on. A fixed `app.update()` count therefore
+/// races: it passes on an idle machine and fails when a heavy sibling test in the same
+/// binary is saturating the cores.
+fn pump_until_spawned(app: &mut App, expected: usize) {
+    for _ in 0..256 {
+        app.update();
+        let world = app.world_mut();
+        let mut q = world.query::<&PlaneId>();
+        if q.iter(world).count() >= expected {
+            // One more frame so the finalize-frame components are all visible.
+            app.update();
+            return;
+        }
+    }
+    panic!("scenario planes never finished spawning (expected {expected})");
+}
+
 #[derive(Resource)]
 struct ScenarioRes(ResolvedScenario);
 
@@ -124,8 +176,7 @@ fn spawn_resolved_scenario_spawns_all_planes() {
     let mut app = build_headless_app();
     app.insert_resource(ScenarioRes(resolved));
     app.add_systems(Startup, spawn_scenario_system);
-    app.update();
-    app.update();
+    pump_until_spawned(&mut app, 2);
 
     let world = app.world_mut();
     let mut q = world.query::<(&PlaneId, &ControllerKind)>();
@@ -174,7 +225,7 @@ fn scenario_wingman_survives_tuning_rebuild() {
     });
     app.insert_resource(ScenarioRes(resolved));
     app.add_systems(Startup, spawn_scenario_system);
-    app.update();
+    pump_until_spawned(&mut app, 2);
 
     // Locate the spawned wingman and leader.
     let (wingman_entity, tuning_handle, leader_runtime_id) = {
@@ -263,8 +314,7 @@ fn scenario_heading_hold_survives_tuning_rebuild() {
     });
     app.insert_resource(ScenarioRes(resolved));
     app.add_systems(Startup, spawn_scenario_system);
-    app.update();
-    app.update();
+    pump_until_spawned(&mut app, 1);
 
     let world = app.world_mut();
     let mut q = world.query::<(Entity, &ControllerKind)>();
@@ -377,8 +427,7 @@ fn scenario_wingman_leader_id_uses_runtime_plane_ids() {
     app.insert_resource(NextPlaneId(5));
     app.insert_resource(ScenarioRes(resolved));
     app.add_systems(Startup, spawn_scenario_system);
-    app.update();
-    app.update();
+    pump_until_spawned(&mut app, 2);
 
     let world = app.world_mut();
     let mut q = world.query::<&PlaneId>();
@@ -522,8 +571,7 @@ fn scenario_ids_are_contiguous_after_a_skip() {
     let mut app = build_headless_app();
     app.insert_resource(ScenarioRes(resolved));
     app.add_systems(Startup, spawn_scenario_system);
-    app.update();
-    app.update();
+    pump_until_spawned(&mut app, 2);
 
     let world = app.world_mut();
     let mut q = world.query::<(&PlaneId, &ControllerKind)>();
@@ -741,4 +789,119 @@ fn fuel_fraction_is_carried_through_resolve() {
     let resolved = scenario.resolve().expect("resolve");
     assert_eq!(resolved.planes[0].fuel_fraction, Some(0.25));
     assert_eq!(resolved.planes[1].fuel_fraction, None);
+}
+
+// ---------------------------------------------------------------------------
+// Refueling
+
+const SELF_REFUELING: &str = r#"(
+    steps: 10,
+    interval: 10,
+    planes: [
+        (
+            name: "solo",
+            position: (0.0, 1000.0, 0.0),
+            controller: Refueling(tanker: "solo"),
+        ),
+    ],
+)"#;
+
+const UNKNOWN_TANKER: &str = r#"(
+    steps: 10,
+    interval: 10,
+    planes: [
+        (
+            name: "r",
+            position: (0.0, 1000.0, 0.0),
+            controller: Refueling(tanker: "nope"),
+        ),
+    ],
+)"#;
+
+/// The by-name peer checks are driven off `ControllerSpec::peer_name`, so they cover a
+/// refueler without a bespoke arm. These pin that they actually do.
+#[test]
+fn refueler_cannot_reference_itself_as_tanker() {
+    let scenario = Scenario::from_ron_str(SELF_REFUELING).expect("parse");
+    let err = scenario
+        .resolve()
+        .expect_err("must reject a self-reference");
+    assert!(
+        err.contains("solo") && err.contains("tanker"),
+        "error should name the plane and the role, got: {err}"
+    );
+}
+
+#[test]
+fn refueler_with_unknown_tanker_is_rejected() {
+    let scenario = Scenario::from_ron_str(UNKNOWN_TANKER).expect("parse");
+    let err = scenario
+        .resolve()
+        .expect_err("must reject an unknown tanker");
+    assert!(
+        err.contains("nope"),
+        "error should name the missing tanker, got: {err}"
+    );
+}
+
+#[test]
+fn refueling_asset_resolves_and_targets_the_tanker() {
+    let path = Path::new("assets/scenarios/refueling.scenario.ron");
+    let scenario = Scenario::from_path(path).expect("load refueling scenario");
+    let resolved = scenario.resolve().expect("resolve");
+
+    assert_eq!(resolved.planes.len(), 2);
+    assert_eq!(resolved.planes[0].name, "tanker");
+    assert_eq!(resolved.planes[1].name, "receiver");
+
+    let mut receiver = resolved.build_controller(1).expect("build receiver");
+    let rc = receiver
+        .as_any_mut()
+        .downcast_mut::<RefuelController>()
+        .expect("controller is a RefuelController");
+    assert_eq!(rc.tanker_id, resolved.planes[0].id);
+    assert_eq!(rc.phase, RefuelPhase::Astern, "an approach starts astern");
+}
+
+/// The pass-3 remap guard. `resolve()` numbers planes `PlaneId(idx + 1)`, but
+/// `NextPlaneId` never resets — so a refueler spawned into a world that already has
+/// planes must have its `tanker_id` rewritten to the runtime id, or it silently chases
+/// whichever plane happens to hold the scenario-local id. Mirrors
+/// `scenario_wingman_leader_id_uses_runtime_plane_ids`.
+#[test]
+fn scenario_refuel_tanker_id_uses_runtime_plane_ids() {
+    let resolved = Scenario::from_ron_str(TANKER_RECEIVER)
+        .expect("parse fixture")
+        .resolve()
+        .expect("resolve fixture");
+
+    let mut app = build_headless_app();
+    app.insert_resource(NextPlaneId(5));
+    app.insert_resource(ScenarioRes(resolved));
+    app.add_systems(Startup, spawn_scenario_system);
+    pump_until_spawned(&mut app, 2);
+
+    let world = app.world_mut();
+    let mut q = world.query::<&PlaneId>();
+    let mut ids: Vec<u32> = q.iter(world).map(|id| id.0).collect();
+    ids.sort();
+    assert_eq!(ids, vec![5, 6], "runtime ids must come from NextPlaneId");
+
+    let mut rq = world.query::<(&ControllerKind, &mut ActiveController)>();
+    let mut tanker_id = None;
+    for (kind, mut ctrl) in rq.iter_mut(world) {
+        if *kind == ControllerKind::Refueling {
+            let rc = ctrl
+                .0
+                .as_any_mut()
+                .downcast_mut::<RefuelController>()
+                .expect("refuel controller");
+            tanker_id = Some(rc.tanker_id);
+        }
+    }
+    assert_eq!(
+        tanker_id,
+        Some(PlaneId(5)),
+        "tanker_id must reference the tanker's runtime PlaneId, not PlaneId(1)"
+    );
 }

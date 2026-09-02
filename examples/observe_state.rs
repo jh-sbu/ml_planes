@@ -232,6 +232,7 @@ fn usage_and_exit() -> ! {
          Examples:\n\
          \x20 --scenario assets/scenarios/level_hold.scenario.ron\n\
          \x20 --scenario assets/scenarios/wingman_formation.scenario.ron\n\
+         \x20 --scenario assets/scenarios/refueling.scenario.ron\n\
          \n\
          rl_* controller specs require building with --features inference."
     );

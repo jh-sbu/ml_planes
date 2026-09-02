@@ -48,7 +48,7 @@ src/
                   #   context.rs — ControllerContext (shared leader state for Wingman)
   controllers/    # FlightController trait + ControllerKind factory. Controllers:
                   #   manual.rs, level_hold.rs, heading_hold.rs, ascent.rs, orbit.rs,
-                  #   wingman.rs, l1.rs (L1 flight-plan), + 5 RL variants
+                  #   wingman.rs, refueling.rs, l1.rs (L1 flight-plan), + 5 RL variants
                   #   (rl_level_hold, rl_heading_hold, rl_orbit, rl_orbit_residual,
                   #   rl_lstm_orbit)
                   #   pid.rs — PidController<T> utility struct (NOT a FlightController)
@@ -190,6 +190,8 @@ the dev group and `ml_planes.gym` imports it lazily, so `import ml_planes` works
 | `WuOrbitRewardConfig` / `CurriculumStage` | plain structs/enum | Wu et al. multiplicative-Gaussian orbit reward (`R^TT × R^PS × R^RS`) + 3-stage curriculum; from `wu_orbit.reward.ron` |
 | `PpoHyperparams` | plain struct | PPO training-loop config (gamma, gae_lambda, clip, lr, …); from `assets/training/*.ppo.ron` |
 | `WingmanController` | struct | Formation flight; holds a fixed offset in the leader's body frame via a heading-damped lateral cascade (cross-track → heading → bank) |
+| `RefuelController` / `RefuelPhase` / `RefuelConfig` | struct / enum / struct | Staged aerial-refueling approach onto a tanker. Reuses the wingman cascade verbatim, but flies a **three-station ladder** in the tanker's body frame — `Astern` (safe trail, also the recovery station) → `Precontact` → `Contact` — advancing when the phase gate holds for `dwell_secs` and breaking away to `Astern` when tracking is lost. The commanded station is **rate-limited**, not stepped, which is what makes closure a controlled quantity. `RefuelConfig` is the resolved runtime form of `RefuelingTuning` (stations + gates + outer gains, `Copy`). See "Refueling Controller Architecture" below |
+| `RefuelingTuning` | RON tuning family | Per-airframe `refueling` profile pool in `PlaneTuning`: the station ladder, advance/abort gates, transit rates, outer cascade gains, and an `inner: LevelHoldTuning`. Like `Wingman`, its `build()` returns a tuned **`LevelHoldController`** (the generic factory has no tanker reference) which `restore_refueling` re-wraps |
 | `AscentController` | struct | Climbs to target altitude then latches to level hold |
 | `L1Controller` | struct | Follows a preset `FlightPlan` (waypoint sequences + orbit circles) via L1 nonlinear lateral guidance; built from the plan asset by `apply_flight_plan` |
 | `VecEnv<E>` | struct | Wraps any `TrainingEnv` to run N parallel episodes (seeds offset per env). `step_batch` takes one flat env-major `n * action_dim()` buffer |
@@ -453,6 +455,79 @@ fresh `SpawnPlaneCommand { kind: Wingman }`, whose generic `build()` is the same
 fallback) — a safety net for the one case extract/restore can't help, since there's
 nothing to preserve.
 
+### Refueling Controller Architecture
+
+`RefuelController` (`controllers/refueling.rs`) flies a receiver up to a docking position
+astern of a tanker. Its per-tick control law is `WingmanController`'s cascade **verbatim**
+(altitude from the station's world Y, fore-aft range → Δairspeed, cross-track → demanded
+heading → bank, all delegated to an inner `LevelHoldController`), including the outer gain
+values. What it adds is *where* it aims.
+
+**Three stations**, offsets in the **tanker's** body frame (+X fwd, +Y right, +Z up), same
+convention as `FormationOffset`: `Astern` `(-150, 0, -30)` → `Precontact` `(-40, 0, -10)` →
+`Contact` `(-15, 0, -5)`. All three sit on the centerline (`y == 0`), and that is
+structural, not cosmetic: `lateral_pid` is derivative-on-*error*, so a station whose lateral
+component changed between phases would inject a one-tick derivative kick straight into the
+crab command. Keeping the ladder on the centerline makes that impossible by construction —
+pinned by `stations_are_on_the_centerline_and_close_monotonically`.
+
+**The commanded station is rate-limited, not stepped.** Each tick it moves toward the
+current phase's station at `approach_rate` (`breakaway_rate` on an abort). Without this the
+phase machine would hand the inner loops a 110 m position step and let the range PID pick
+whatever closure its output limits allow.
+
+**Two errors drive two different decisions, and conflating them is the trap:**
+
+- `tracking_error` — distance to the **commanded** (mid-transit) station. Drives the
+  **breakaway**.
+- `phase_error` — distance to the phase's **final** station, still large while the transit
+  runs. Drives the **advance**, so a phase cannot advance early.
+
+Gating the breakaway on `phase_error` fires it spuriously (the Precontact→Contact transit is
+~26 m, the same order as any sane abort radius); gating the advance on `tracking_error` lets
+a receiver that tracks the moving station well "reach" Contact ~25 s early and ~100 m short.
+The second failure is invisible to a sloppy-tracking test — it needs a receiver that follows
+the commanded station *perfectly*, which is what
+`advance_gate_reads_the_phase_station_not_the_commanded_one` sets up.
+
+`closure_rate` is `(own.velocity − tanker.velocity)·tanker_fwd`, taken from relative velocity
+rather than by differencing `range_error`, so it carries no numerical noise. A breakaway
+resets the three outer PIDs (a wound-up range integral must not drive the retreat); a phase
+*advance* deliberately does not.
+
+**`lateral_kp` stays at the wingman's 0.002.** The lateral cascade is bandwidth-inverted —
+the outer cross-track loop (τ ≈ 1/(V·k_lat) ≈ 4 s at 120 m/s) is *faster* than the inner
+heading loop (τ ≈ V/(g·k_hdg) ≈ 18 s), the opposite of what a cascade wants — and it only
+survives on `heading_pid`'s rate damping and the ±0.5 rad crab clamp. The inversion gets
+worse with speed, so refueling speeds are less forgiving than the 100 m/s the wingman was
+validated at. Tighter station keeping at `Contact` is bought with a closer, rate-limited
+station, **not** with more lateral gain; per-phase gain scheduling is a deliberate follow-up.
+
+**The tuning family is `refueling`, and the rebuild path splits differently from the
+wingman's.** `restore_wingman` restores its outer PIDs verbatim, which is right there because
+a wingman's gains are compiled-in constants no profile can supply. `restore_refueling`
+instead **preserves the approach state** (`tanker_id`, `phase`, `commanded_offset`, `dwell`,
+`retreating`, `breakaways`) and **takes the config from the newly applied profile** — a
+profile switch must not restart a receiver already in `Contact`, but it must actually change
+the stations and gains the family exists to change. Copying `restore_wingman` verbatim makes
+a profile switch a silent no-op and every other test still passes; pinned by
+`tests/core/sim_control.rs::profile_switch_adopts_new_refuel_config`.
+
+**Orphan cleanup is shared.** `cleanup_orphaned_wingmen` is now
+`cleanup_orphaned_followers` (`environment/lifecycle.rs`) and covers both peer-following
+kinds through one `follower_peer_id` helper. It stays a single system deliberately: the
+load-bearing subtlety is the live-`PlaneId` set including `PendingPlaneSpawn`s, and a
+per-kind sibling is how that gets fixed in one copy and missed in the other. Likewise
+`ControllerSpec::peer_name()` drives both `resolve()`'s by-name validation and
+`scenario_spawn`'s pass-2 transitive skip, and `remap_peer_id` covers pass 3's
+resolved→runtime `PlaneId` rewrite — miss that last one and the receiver chases whichever
+plane happens to hold the scenario-local id, with no error.
+
+Like `Wingman`, `Refueling` is **absent from `ControllerKind::ALL`**, `SPAWNABLE_KINDS`, and
+the MCP spawnable list: `build()` cannot reconstruct it, so reaching it interactively would
+install a mislabelled `LevelHoldController`. Pinned by
+`peer_following_kinds_are_not_interactively_cyclable`.
+
 ### Runtime Plane Lifecycle
 
 Planes can be added/removed at runtime via observer commands (`environment/lifecycle.rs`,
@@ -529,8 +604,11 @@ authoritative 64 Hz Rapier sim, all `FlightController`s, and fuel burn live in t
 mutation goes out as a command. Shared code (`aerodynamics/`, `controllers/`, `plane/`,
 `environment/` core, `scenario.rs`) is unchanged and compiled into both. The protocol lives in
 `src/net/` and is registered identically on both peers by `NetProtocolPlugin` (same order, or
-replicon rejects the connection); `PROTOCOL_ID` (currently **3** — v2 added `ControllerTelemetry`;
-v3 added `ControllerTargets` + `SetControllerTargetsCommand`) gates version-mismatched peers.
+replicon rejects the connection); `PROTOCOL_ID` (currently **5** — v2 added `ControllerTelemetry`;
+v3 added `ControllerTargets` + `SetControllerTargetsCommand`; v4 appended
+`ControllerKind::RlHeadingHold`; v5 appended `ControllerKind::Refueling` plus the
+`Refueling` variants of `ControllerTargets`/`ControllerTelemetry`) gates version-mismatched
+peers.
 
 - **Replicated (server → client), in registration order:** `Transform`, `FlightState`,
   `ControlInputs`, `PlaneId`, `PlaneIndex`, `ControllerKind`, `SelectedTuningProfile`,
@@ -915,7 +993,10 @@ that ships a non-default target) `tests/core/scenario.rs`.
 3. **Formation flight (wingman)** — COMPLETE. Follows leader at fixed body-frame offset (`WingmanController`).
 4. **Circular orbit** — COMPLETE. 3-level cascade PID around world-frame point. Three RL variants: `RlOrbitController` (direct, obs dim=14), `RlOrbitResidualController` (residual over PID), and `RlLstmOrbitController` (recurrent, Wu-curriculum). Policies also reachable via behavior-cloning warm start.
 5. **Flight-plan following** — COMPLETE. `L1Controller` follows a preset `FlightPlan` (waypoint sequences + orbit circles) via L1 nonlinear lateral guidance. Replaces the former single-target `WaypointController`.
-6. **Aerial refueling** — NEXT. Approach lead plane from the rear to a docking position.
+6. **Aerial refueling** — PID half COMPLETE. `RefuelController` flies a receiver from an
+   arbitrary start up to a docking position astern of a tanker through a three-station
+   ladder (Astern → Precontact → Contact) with an automatic breakaway. An RL variant is
+   not yet built.
 7. *(extensible — add new `TrainingEnv` impls without changing core architecture)*
 
 ---
@@ -1143,6 +1224,8 @@ the binary + a module filter, e.g. `cargo test --no-default-features --test core
   - `heading_hold` — heading-hold convergence to a commanded heading
   - `flight_plan` — L1 flight-plan leg sequencing / waypoint capture
   - `wingman` — formation flight relative-position tracking
+  - `refueling` — the staged approach end-to-end: the ladder climb to `Contact` with
+    `breakaways == 0`, and breakaway-then-recover
   - `fuel` — live-sim fuel: spawn-time tank load (`fuel_fraction`), `consume_fuel` burn + `update_plane_mass`, shipped-asset powerplant parse
 
 **`tests/net/` (`net`/`server`/`mcp`; the whole binary compiles out without `net`):**
@@ -1346,4 +1429,6 @@ a required `PlaneConfig` field breaks loudly in one place (the struct has no `De
 > Full plan: `plans/roadmap.md`
 > WASM feasibility: `plans/wasm_feasibility.md`
 
-M0–M12 (environment phase + level hold + formation flight + orbit + RL training) are complete. M13 (aerial refueling) is next.
+M0–M12 (environment phase + level hold + formation flight + orbit + RL training) are
+complete. M13 (aerial refueling) has its PID controller (`RefuelController`); an RL variant
+is the remaining piece.

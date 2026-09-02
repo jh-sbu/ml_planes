@@ -24,7 +24,9 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
-use crate::controllers::{FlightController, FlightPlan, FormationOffset, WingmanController};
+use crate::controllers::{
+    FlightController, FlightPlan, FormationOffset, RefuelController, WingmanController,
+};
 use crate::plane::{FlightPlanHandle, NextPlaneId, PlaneId};
 use crate::scenario::{ControllerSpec, ResolvedScenario};
 use crate::training::SpawnSpec;
@@ -78,6 +80,29 @@ fn asset_relative_config(config: &Option<String>) -> String {
 /// 3. reserve a contiguous runtime-id block for the survivors and remap each
 ///    surviving wingman's `leader_id` from resolved to runtime;
 /// 4. spawn the survivors under their reserved ids.
+/// Rewrite a follower controller's peer id from the scenario-local resolved `PlaneId`
+/// to the runtime id its peer was actually spawned under.
+///
+/// `ResolvedScenario::resolve` numbers planes `PlaneId(idx + 1)`, but `NextPlaneId` is a
+/// persistent allocator that is never reset — so the two numberings diverge as soon as
+/// any other plane exists or any scenario plane is skipped. Missing a kind here produces
+/// no error at all: the controller simply follows whichever plane happens to hold that
+/// id at runtime.
+fn remap_peer_id(
+    controller: &mut dyn FlightController,
+    resolved_to_runtime: &HashMap<PlaneId, PlaneId>,
+) {
+    if let Some(wc) = controller.as_any_mut().downcast_mut::<WingmanController>() {
+        if let Some(&mapped) = resolved_to_runtime.get(&wc.leader_id) {
+            wc.leader_id = mapped;
+        }
+    } else if let Some(rc) = controller.as_any_mut().downcast_mut::<RefuelController>() {
+        if let Some(&mapped) = resolved_to_runtime.get(&rc.tanker_id) {
+            rc.tanker_id = mapped;
+        }
+    }
+}
+
 pub fn spawn_resolved_scenario(
     commands: &mut Commands,
     ids: &mut NextPlaneId,
@@ -100,29 +125,30 @@ pub fn spawn_resolved_scenario(
         }
     }
 
-    // Pass 2: a wingman whose leader was skipped has nothing to follow — skip
-    // it too. Looped to a fixed point since a wingman may itself lead another
-    // wingman.
+    // Pass 2: a follower whose peer was skipped has nothing to follow — skip it too.
+    // Looped to a fixed point since a follower may itself be someone else's peer
+    // (a wingman leading another wingman, a tanker that is itself a wingman).
     loop {
         let mut changed = false;
         for idx in 0..n {
             if skip_reason[idx].is_some() {
                 continue;
             }
-            let ControllerSpec::Wingman { leader, .. } = &scenario.planes[idx].spec else {
+            let Some(peer) = scenario.planes[idx].spec.peer_name() else {
                 continue;
             };
+            let role = scenario.planes[idx].spec.peer_role();
             // Resolve by name, not by resolved PlaneId — the runtime remap
             // in pass 3 hasn't happened yet, and names are what the scenario
             // format itself uses to reference peers.
-            let leader_skipped = scenario
+            let peer_skipped = scenario
                 .planes
                 .iter()
-                .position(|p| &p.name == leader)
+                .position(|p| p.name == peer)
                 .is_some_and(|li| skip_reason[li].is_some());
-            if leader_skipped {
+            if peer_skipped {
                 skip_reason[idx] = Some(format!(
-                    "'{}' skipped: leader '{leader}' was not spawned",
+                    "'{}' skipped: {role} '{peer}' was not spawned",
                     scenario.planes[idx].name
                 ));
                 controllers[idx] = None;
@@ -135,9 +161,9 @@ pub fn spawn_resolved_scenario(
     }
     result.skipped.extend(skip_reason.iter().flatten().cloned());
 
-    // Pass 3: reserve a contiguous runtime-id block for the survivors (in
-    // scenario order) and remap each surviving wingman's `leader_id` from the
-    // scenario-local resolved id to the runtime id its leader actually got.
+    // Pass 3: reserve a contiguous runtime-id block for the survivors (in scenario
+    // order) and remap each surviving follower's peer id from the scenario-local
+    // resolved id to the runtime id that peer actually got.
     let mut runtime_id: Vec<Option<PlaneId>> = vec![None; n];
     for idx in 0..n {
         if skip_reason[idx].is_none() {
@@ -149,11 +175,7 @@ pub fn spawn_resolved_scenario(
         .filter_map(|idx| runtime_id[idx].map(|rid| (scenario.planes[idx].id, rid)))
         .collect();
     for controller in controllers.iter_mut().flatten() {
-        if let Some(wc) = controller.as_any_mut().downcast_mut::<WingmanController>() {
-            if let Some(&mapped) = resolved_to_runtime.get(&wc.leader_id) {
-                wc.leader_id = mapped;
-            }
-        }
+        remap_peer_id(controller.as_mut(), &resolved_to_runtime);
     }
 
     // Pass 4: spawn the survivors under their reserved ids.

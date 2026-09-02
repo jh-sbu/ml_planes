@@ -12,6 +12,7 @@ pub mod model_load;
 pub mod orbit;
 pub mod orbit_marker;
 pub mod pid;
+pub mod refueling;
 #[cfg(feature = "inference")]
 pub mod rl_heading_hold;
 #[cfg(feature = "inference")]
@@ -46,6 +47,7 @@ pub use orbit::{
 };
 pub use orbit_marker::{active_orbit_center, OrbitMarker};
 pub use pid::PidController;
+pub use refueling::{RefuelConfig, RefuelController, RefuelDiagnostics, RefuelPhase};
 #[cfg(feature = "inference")]
 pub use rl_heading_hold::{RlHeadingHoldConfig, RlHeadingHoldController};
 #[cfg(feature = "inference")]
@@ -63,6 +65,6 @@ pub use telemetry::ControllerTelemetry;
 pub use traits::FlightController;
 pub use tuning::{
     ControllerTuning, HeadingHoldTuning, LevelHoldTuning, OrbitTuning, PlaneTuning,
-    SelectedTuningProfile, TuningApplied,
+    RefuelingTuning, SelectedTuningProfile, TuningApplied,
 };
 pub use wingman::{FormationOffset, WingmanController, WingmanDiagnostics};

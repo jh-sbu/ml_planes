@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 
+use bevy::math::Vec3;
 use bevy::reflect::Reflect;
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +15,7 @@ use crate::plane::{ControlInputs, FlightState};
 use super::heading_hold::HeadingHoldController;
 use super::level_hold::LevelHoldController;
 use super::orbit::OrbitController;
+use super::refueling::RefuelConfig;
 use super::FlightController;
 
 // ---------------------------------------------------------------------------
@@ -149,6 +151,130 @@ impl ControllerTuning for HeadingHoldTuning {
 }
 
 // ---------------------------------------------------------------------------
+// RefuelingTuning
+// ---------------------------------------------------------------------------
+
+/// Tunable parameters for [`RefuelController`](crate::controllers::RefuelController):
+/// the three approach stations, the gates between them, the station-transit rates, and
+/// the outer cascade gains — plus the inner level-hold block.
+///
+/// This is the serializable face of [`RefuelConfig`]; `config()` resolves one.
+/// Stations are in the **tanker's** body frame (+X fwd, +Y right, +Z up).
+///
+/// Note that `build()` returns a plain [`LevelHoldController`], not a `RefuelController`
+/// — see the impl below for why.
+#[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
+pub struct RefuelingTuning {
+    /// Safe-trail station `(x, y, z)` [m]. Also the recovery station.
+    pub astern: (f32, f32, f32),
+    /// Closed-up station [m].
+    pub precontact: (f32, f32, f32),
+    /// Docking station [m].
+    pub contact: (f32, f32, f32),
+
+    /// `Astern → Precontact` gate on distance to the phase station [m].
+    pub capture_radius: f32,
+    /// `Precontact → Contact` gate on distance to the phase station [m].
+    pub contact_radius: f32,
+    /// Both gates also require `|closure_rate|` below this [m/s].
+    pub closure_tolerance: f32,
+    /// How long a gate must hold continuously before the phase advances [s].
+    pub dwell_secs: f32,
+    /// Tracking error above this outside `Astern` triggers a breakaway [m].
+    pub abort_radius: f32,
+
+    /// Rate the commanded station moves toward a new phase's station [m/s].
+    pub approach_rate: f32,
+    /// Rate it retreats to `Astern` after a breakaway [m/s].
+    pub breakaway_rate: f32,
+
+    /// Range error [m] → Δairspeed [m/s].
+    pub range_kp: f32,
+    pub range_ki: f32,
+    pub range_kd: f32,
+    /// Cross-track [m] → demanded heading offset [rad]. See [`RefuelConfig::lateral_kp`]
+    /// before raising `lateral_kp` — the cascade is bandwidth-inverted and 0.002 is
+    /// already at the ceiling.
+    pub lateral_kp: f32,
+    pub lateral_kd: f32,
+    /// Heading error [rad] → commanded bank [rad].
+    pub heading_kp: f32,
+    pub heading_kd: f32,
+
+    /// Inner level-hold gains (altitude, airspeed, roll, beta loops).
+    pub inner: LevelHoldTuning,
+}
+
+impl Default for RefuelingTuning {
+    fn default() -> Self {
+        // Mirrors `RefuelConfig::default()` rather than repeating its literals, so the
+        // shipped profiles and the compiled defaults cannot drift apart.
+        let c = RefuelConfig::default();
+        Self {
+            astern: (c.astern.x, c.astern.y, c.astern.z),
+            precontact: (c.precontact.x, c.precontact.y, c.precontact.z),
+            contact: (c.contact.x, c.contact.y, c.contact.z),
+            capture_radius: c.capture_radius,
+            contact_radius: c.contact_radius,
+            closure_tolerance: c.closure_tolerance,
+            dwell_secs: c.dwell_secs,
+            abort_radius: c.abort_radius,
+            approach_rate: c.approach_rate,
+            breakaway_rate: c.breakaway_rate,
+            range_kp: c.range_kp,
+            range_ki: c.range_ki,
+            range_kd: c.range_kd,
+            lateral_kp: c.lateral_kp,
+            lateral_kd: c.lateral_kd,
+            heading_kp: c.heading_kp,
+            heading_kd: c.heading_kd,
+            inner: LevelHoldTuning::default(),
+        }
+    }
+}
+
+impl RefuelingTuning {
+    /// Resolve the runtime [`RefuelConfig`] this profile describes.
+    pub fn config(&self) -> RefuelConfig {
+        RefuelConfig {
+            astern: Vec3::new(self.astern.0, self.astern.1, self.astern.2),
+            precontact: Vec3::new(self.precontact.0, self.precontact.1, self.precontact.2),
+            contact: Vec3::new(self.contact.0, self.contact.1, self.contact.2),
+            capture_radius: self.capture_radius,
+            contact_radius: self.contact_radius,
+            closure_tolerance: self.closure_tolerance,
+            dwell_secs: self.dwell_secs,
+            abort_radius: self.abort_radius,
+            approach_rate: self.approach_rate,
+            breakaway_rate: self.breakaway_rate,
+            range_kp: self.range_kp,
+            range_ki: self.range_ki,
+            range_kd: self.range_kd,
+            lateral_kp: self.lateral_kp,
+            lateral_kd: self.lateral_kd,
+            heading_kp: self.heading_kp,
+            heading_kd: self.heading_kd,
+        }
+    }
+}
+
+impl ControllerTuning for RefuelingTuning {
+    /// Returns a tuned [`LevelHoldController`] — **not** a `RefuelController`.
+    ///
+    /// The generic factory has no tanker reference, exactly as with
+    /// `ControllerKind::Wingman`. `sim_control::restore_refueling` downcasts this
+    /// result and re-wraps it via `RefuelController::from_inner`, so changing the
+    /// returned type here silently breaks the tuning rebuild.
+    fn build(&self, state: &FlightState, prev_inputs: &ControlInputs) -> Box<dyn FlightController> {
+        Box::new(LevelHoldController::with_tuning(
+            state,
+            &self.inner,
+            prev_inputs,
+        ))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // PlaneTuning asset
 // ---------------------------------------------------------------------------
 
@@ -167,6 +293,9 @@ pub struct PlaneTuning {
     /// Named tuning profiles for [`HeadingHoldController`].
     #[serde(default)]
     pub heading_hold: HashMap<String, HeadingHoldTuning>,
+    /// Named tuning profiles for [`RefuelController`](crate::controllers::RefuelController).
+    #[serde(default)]
+    pub refueling: HashMap<String, RefuelingTuning>,
 }
 
 impl PlaneTuning {
@@ -185,11 +314,17 @@ impl PlaneTuning {
         self.heading_hold.get(profile)
     }
 
+    /// Return the named refueling profile, or `None` if not present.
+    pub fn get_refueling(&self, profile: &str) -> Option<&RefuelingTuning> {
+        self.refueling.get(profile)
+    }
+
     /// Merge all profiles from `other` into `self`, overwriting on name collision.
     pub fn merge(&mut self, other: PlaneTuning) {
         self.level_hold.extend(other.level_hold);
         self.orbit.extend(other.orbit);
         self.heading_hold.extend(other.heading_hold);
+        self.refueling.extend(other.refueling);
     }
 }
 

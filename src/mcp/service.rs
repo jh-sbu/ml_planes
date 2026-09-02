@@ -343,7 +343,8 @@ struct SetControllerTargetsArgs {
     radius: Option<f32>,
     /// Orbit direction: `"CW"` or `"CCW"`. Applies to the orbit family only.
     direction: Option<String>,
-    /// The `PlaneId(u32)` of the new formation leader. Applies to Wingman only.
+    /// The `PlaneId(u32)` of the new peer: a Wingman's formation leader, or a
+    /// Refueling receiver's tanker. Applies to those two kinds only.
     leader_id: Option<u32>,
 }
 
@@ -498,7 +499,8 @@ impl PlanesService {
                        name — one of Manual, LevelHold, HeadingHold, Ascent, Orbit (and, on \
                        inference builds, RlLevelHold, RlHeadingHold, RlOrbit, RlOrbitResidual, \
                        RlLstmOrbit). \
-                       Wingman and FlightPlan are rejected. position/velocity/angular_velocity \
+                       Wingman, Refueling and FlightPlan are rejected. \
+                       position/velocity/angular_velocity \
                        are [x,y,z]; attitude is a quaternion [x,y,z,w]; omitted fields use spawn \
                        defaults. Asynchronous: polls up to ~1s and returns { status: \
                        \"confirmed\", plane_id } (the new id) or { status: \"timeout\" }."
@@ -530,9 +532,9 @@ impl PlanesService {
                        `controller_kind` is a serde variant name — one of Manual, LevelHold, \
                        HeadingHold, Ascent, Orbit (and, on inference builds, RlLevelHold, \
                        RlHeadingHold, RlOrbit, RlOrbitResidual, RlLstmOrbit); RL kinds only take effect against \
-                       an inference-capable server (PID fallback otherwise). Wingman and \
-                       FlightPlan are rejected (the generic builder would substitute a different \
-                       controller). Errors if not connected or if no plane carries that id. \
+                       an inference-capable server (PID fallback otherwise). Wingman, \
+                       Refueling and FlightPlan are rejected (the generic builder would \
+                       substitute a different controller). Errors if not connected or if no plane carries that id. \
                        Fire-and-forget: returns { status: \"sent\" }; re-read get_plane_state to \
                        observe the applied controller_kind (eventually consistent)."
     )]
@@ -592,7 +594,8 @@ impl PlanesService {
                        HeadingHold/RlHeadingHold use heading_deg (degrees)+altitude+airspeed; \
                        Orbit/RlOrbit/RlOrbitResidual/RlLstmOrbit use \
                        center_x+center_z+radius+altitude+airspeed+direction (\"CW\"/\"CCW\"); \
-                       Wingman uses leader_id (the new leader's PlaneId). Errors if not \
+                       Wingman uses leader_id (the new leader's PlaneId), and Refueling \
+                       reuses the same leader_id field for its tanker's PlaneId. Errors if not \
                        connected, the id is unknown, or the plane's controller has nothing \
                        editable (Manual, FlightPlan). Fire-and-forget: returns \
                        { status: \"sent\" }; re-read get_plane_state to observe the applied \
@@ -895,6 +898,7 @@ mod tests {
     #[test]
     fn spawn_spec_from_args_rejects_bad_kind() {
         assert!(spawn_spec_from_args(&spawn_args("Wingman")).is_err());
+        assert!(spawn_spec_from_args(&spawn_args("Refueling")).is_err());
         assert!(spawn_spec_from_args(&spawn_args("Nonsense")).is_err());
     }
 
@@ -1011,6 +1015,7 @@ mod tests {
     fn dispatch_switch_controller_rejects_bad_kind() {
         let (service, rx) = service_and_rx(connected_snapshot());
         assert!(service.dispatch_switch_controller(7, "Wingman").is_err());
+        assert!(service.dispatch_switch_controller(7, "Refueling").is_err());
         assert!(service.dispatch_switch_controller(7, "Nonsense").is_err());
         assert!(rx.0.try_recv().is_err(), "nothing enqueued for a bad kind");
     }

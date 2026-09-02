@@ -161,6 +161,7 @@ fn tuning_profile_names(kind: ControllerKind, pt: &PlaneTuning) -> Option<Vec<St
         ControllerKind::HeadingHold | ControllerKind::RlHeadingHold => {
             pt.heading_hold.keys().cloned().collect()
         }
+        ControllerKind::Refueling => pt.refueling.keys().cloned().collect(),
         _ => return None,
     };
     names.sort();

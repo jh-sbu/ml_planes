@@ -13,6 +13,7 @@
 use bevy::prelude::Component;
 
 use crate::controllers::l1::L1Status;
+use crate::controllers::refueling::RefuelDiagnostics;
 use crate::controllers::wingman::WingmanDiagnostics;
 
 /// Read-only, replication-friendly view of the active controller's status. Built by
@@ -37,4 +38,9 @@ pub enum ControllerTelemetry {
         leg_count: usize,
         status: L1Status,
     },
+    /// Staged refueling approach: phase ladder plus station errors.
+    ///
+    /// Appended last (append-only), so a stale net peer's bincode discriminants for
+    /// every earlier variant keep their meaning.
+    Refueling(RefuelDiagnostics),
 }

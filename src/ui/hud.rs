@@ -5,8 +5,8 @@ use std::f32::consts::PI;
 use crate::camera::CameraMode;
 use crate::controllers::{
     ActiveController, AscentController, ControllerKind, ControllerTargets, ControllerTelemetry,
-    L1Controller, L1Status, ModelLibrary, OrbitDirection, OrbitParams, PlaneTuning, SelectedModel,
-    SelectedTuningProfile, WingmanController,
+    L1Controller, L1Status, ModelLibrary, OrbitDirection, OrbitParams, PlaneTuning,
+    RefuelController, SelectedModel, SelectedTuningProfile, WingmanController,
 };
 use crate::plane::{
     ControlInputs, FlightState, PlaneConfig, PlaneConfigHandle, PlaneId, PlaneIndex,
@@ -371,6 +371,26 @@ pub fn draw_flight_hud(
                 }
             }
 
+            if *kind == ControllerKind::Refueling {
+                if let Some(rc) = controller.0.as_any_mut().downcast_mut::<RefuelController>() {
+                    let d = &rc.diagnostics;
+                    if d.tanker_found {
+                        ui.label(format!("Phase: {}", d.phase.label()));
+                        ui.label(format!("Station err: {:.1} m", d.pos_error_mag));
+                        ui.label(format!("  Cross-track: {:+.1} m", d.cross_track));
+                        ui.label(format!("  Fore-aft:    {:+.1} m", d.range_error));
+                        ui.label(format!("  Vertical:    {:+.1} m", d.altitude_error));
+                        ui.label(format!("To station: {:.1} m", d.phase_error));
+                        ui.label(format!("Closure: {:+.1} m/s", d.closure_rate));
+                        if d.breakaways > 0 {
+                            ui.label(format!("Breakaways: {}", d.breakaways));
+                        }
+                    } else {
+                        ui.label("Tanker: lost (holding)");
+                    }
+                }
+            }
+
             if *kind == ControllerKind::Ascent {
                 if let Some(ascent) = controller.0.as_any_mut().downcast_mut::<AscentController>() {
                     let status = if ascent.complete {
@@ -603,6 +623,7 @@ fn net_tuning_names(kind: ControllerKind, pt: &PlaneTuning) -> Option<Vec<String
         ControllerKind::HeadingHold | ControllerKind::RlHeadingHold => {
             pt.heading_hold.keys().cloned().collect()
         }
+        ControllerKind::Refueling => pt.refueling.keys().cloned().collect(),
         _ => return None,
     };
     names.sort();
@@ -728,7 +749,10 @@ fn draw_controller_targets(
         }
         ControllerTargets::Orbit(params) => draw_orbit_targets(ui, state, params),
         ControllerTargets::Wingman { leader } => {
-            draw_leader_combo(ui, pairs, current_entity, leader)
+            draw_leader_combo(ui, "Leader", pairs, current_entity, leader)
+        }
+        ControllerTargets::Refueling { tanker } => {
+            draw_leader_combo(ui, "Tanker", pairs, current_entity, tanker)
         }
     }
 }
@@ -792,9 +816,12 @@ fn draw_heading_row(ui: &mut egui::Ui, heading: &mut f32) -> bool {
     changed
 }
 
-/// The wingman formation-leader combo. Returns whether a different leader was picked.
+/// The peer-plane combo: a wingman's formation leader, or a refueling receiver's tanker.
+/// `label` names which, since the widget is otherwise identical. Returns whether a
+/// different peer was picked.
 fn draw_leader_combo(
     ui: &mut egui::Ui,
+    label: &str,
     pairs: &[(Entity, PlaneId, u32)],
     current_entity: Entity,
     leader: &mut PlaneId,
@@ -806,7 +833,7 @@ fn draw_leader_combo(
         .find(|&&(_, pid, _)| pid == current_leader_id)
         .map(|&(_, _, idx)| format!("Plane {}", idx))
         .unwrap_or_else(|| "Unknown".to_string());
-    egui::ComboBox::from_label("Leader")
+    egui::ComboBox::from_label(label)
         .selected_text(&leader_label)
         .show_ui(ui, |ui| {
             for &(entity, pid, idx) in pairs {
@@ -901,6 +928,20 @@ fn draw_replicated_telemetry(ui: &mut egui::Ui, telemetry: Option<&ControllerTel
                 ui.label(format!("Vertical: {:+.0} m", d.altitude_error));
             } else {
                 ui.label("Leader: lost (holding)");
+            }
+        }
+        ControllerTelemetry::Refueling(d) => {
+            ui.separator();
+            if d.tanker_found {
+                ui.label(format!("Phase: {}", d.phase.label()));
+                ui.label(format!("Station err: {:.1} m", d.pos_error_mag));
+                ui.label(format!("To station: {:.1} m", d.phase_error));
+                ui.label(format!("Closure: {:+.1} m/s", d.closure_rate));
+                if d.breakaways > 0 {
+                    ui.label(format!("Breakaways: {}", d.breakaways));
+                }
+            } else {
+                ui.label("Tanker: lost (holding)");
             }
         }
         ControllerTelemetry::FlightPlan {

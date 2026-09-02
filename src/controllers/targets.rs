@@ -52,4 +52,11 @@ pub enum ControllerTargets {
     Orbit(OrbitParams),
     /// `WingmanController`'s formation leader.
     Wingman { leader: PlaneId },
+    /// `RefuelController`'s tanker.
+    ///
+    /// Deliberately *not* a reuse of `Wingman { leader }` even though the widget is the
+    /// same plane combo: the operator-facing label differs ("Tanker" vs "Leader"), and a
+    /// shared variant would let `merge_controller_targets` silently accept a
+    /// wingman-shaped edit against a refueler and vice versa.
+    Refueling { tanker: PlaneId },
 }

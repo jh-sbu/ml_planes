@@ -1,0 +1,112 @@
+// M13 aerial refueling — staged PID approach onto a tanker.
+//
+// Run: cargo run --release --example observe_state --no-default-features -- \
+//        --scenario assets/scenarios/refueling.scenario.ron --steps 11520 --interval 64
+//
+// The receiver references the tanker by `name`; resolution maps that to the tanker's
+// PlaneId. Unlike the wingman scenario this is NOT a steady-state hold — the receiver
+// spawns well behind and below the tanker and has to fly the whole ladder:
+//
+//   Astern (-150, 0, -30) -> Precontact (-40, 0, -10) -> Contact (-15, 0, -5)
+//
+// Those are offsets in the TANKER's body frame (+X forward, +Y right, +Z up). With the
+// level base attitude `from_rotation_x(-pi/2)` mapping body (x,y,z) -> world (x, z, -y),
+// a tanker flying +X turns the Astern offset into world (-150, -30, 0): 150 m astern and
+// 30 m below, on the centerline. All three stations sit on that centerline (y = 0), which
+// is what lets the phase machine change stations without kicking the lateral loop.
+//
+// Expected shape in the CSV: the receiver closes on the tanker's pos_x in three settling
+// plateaus and altitude_m steps up twice. The commanded station is rate-limited to
+// 4 m/s, so the Astern->Precontact transit (~113 m) takes ~28 s and Precontact->Contact
+// (~26 m) about 7 s, plus a 3 s dwell at each gate — settled well before t = 120 s.
+//
+// Cross-track needs no new CSV column: the tanker holds a +X heading and every station is
+// on the y = 0 centerline, so it is just (receiver.pos_z - tanker.pos_z) per sampled step.
+// Do NOT add columns — CSV_HEADER is pinned by tests/core/scenario.rs.
+//
+// The tanker flies on a HALF tank (45 t dry + 45 t fuel = 90 t). At the full 135 t its
+// stall speed at 2000 m is ~92 m/s, leaving only ~1.3x margin at the 130 m/s refueling
+// speed; half-full gives ~1.6x, and a partly-empty tanker on station is the realistic
+// case anyway. 130 m/s is ~1.8x the generic jet receiver's stall speed.
+(
+    steps: 11520,
+    interval: 64,
+    planes: [
+        (
+            name: "tanker",
+            config: "assets/planes/tanker.plane.ron",
+            position: (0.0, 2000.0, 0.0),
+            velocity: (130.0, 0.0, 0.0),
+            fuel_fraction: 0.5,
+            // The tanker's own steadiness is load-bearing, not decoration: the Astern
+            // station is 150 m aft, so every degree of tanker pitch swings the station's
+            // world altitude by ~2.6 m. On the compiled default gains this airframe
+            // porpoises and waves the station around faster than the receiver's inner
+            // loop can follow. These are tanker.tuning.ron's validated level_hold
+            // "normal" block, inline because observe_state never loads .tuning.ron.
+            controller: LevelHold(
+                altitude: 2000.0,
+                airspeed: 130.0,
+                tuning: LevelHoldTuning(
+                    alt_kp: 0.015,
+                    alt_ki: 0.22,
+                    alt_kd: 0.20,
+                    pitch_kp: 2.0,
+                    pitch_kd: 8.0,
+                    spd_kp: 0.03,
+                    spd_ki: 0.15,
+                    throttle_ff_gain: 0.3,
+                ),
+            ),
+        ),
+        (
+            name: "receiver",
+            config: "assets/planes/generic_jet.plane.ron",
+            position: (-150.0, 1970.0, 0.0),
+            velocity: (130.0, 0.0, 0.0),
+            // observe_state builds controllers straight from the scenario and never
+            // loads `.tuning.ron` (only the live sim's `apply_initial_tuning` does), so
+            // the inner gains have to be inline here. These are generic_jet's *validated*
+            // level_hold."normal" block; the compiled `LevelHoldTuning::default()` is
+            // under-damped in pitch (pitch_kp 1.0 / pitch_kd 0.5) and leaves the receiver
+            // in a ~48 m peak-to-peak vertical phugoid that never settles inside the
+            // capture gate.
+            controller: Refueling(
+                tanker: "tanker",
+                tuning: RefuelingTuning(
+                    astern: (-150.0, 0.0, -30.0),
+                    precontact: (-40.0, 0.0, -10.0),
+                    contact: (-15.0, 0.0, -5.0),
+
+                    capture_radius: 12.0,
+                    contact_radius: 5.0,
+                    closure_tolerance: 2.0,
+                    dwell_secs: 3.0,
+                    abort_radius: 30.0,
+
+                    approach_rate: 4.0,
+                    breakaway_rate: 12.0,
+
+                    range_kp: 0.2,
+                    range_ki: 0.02,
+                    range_kd: 0.5,
+                    lateral_kp: 0.002,
+                    lateral_kd: 0.01,
+                    heading_kp: 0.7,
+                    heading_kd: 0.1,
+
+                    inner: LevelHoldTuning(
+                        alt_kp: 0.015,
+                        alt_ki: 0.22,
+                        alt_kd: 0.20,
+                        pitch_kp: 5.0,
+                        pitch_kd: 4.0,
+                        spd_kp: 0.03,
+                        spd_ki: 0.15,
+                        throttle_ff_gain: 0.3,
+                    ),
+                ),
+            ),
+        ),
+    ],
+)

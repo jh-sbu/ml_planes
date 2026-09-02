@@ -9,8 +9,8 @@ use bevy::prelude::*;
 use ml_planes::controllers::{
     ActiveController, AscentController, ControllerKind, FormationOffset, HeadingHoldController,
     HeadingHoldTuning, LevelHoldController, LevelHoldTuning, ManualController, OrbitController,
-    OrbitParams, OrbitTuning, PlaneTuning, SelectedTuningProfile, SimControlPlugin, TuningApplied,
-    WingmanController,
+    OrbitParams, OrbitTuning, PlaneTuning, RefuelController, RefuelPhase, RefuelingTuning,
+    SelectedTuningProfile, SimControlPlugin, TuningApplied, WingmanController,
 };
 use ml_planes::plane::{ControlInputs, FlightState, PlaneId, PlaneTuningHandle};
 
@@ -631,5 +631,159 @@ fn initial_tuning_still_rebuilds_orbit_geometry() {
         (oc.radial_pid.kp - 4.56).abs() < 1e-6,
         "the loaded orbit tuning profile must still reach the controller, got kp={}",
         oc.radial_pid.kp
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Refueling: the rebuild must preserve the approach, but adopt the new profile
+
+/// A refueling profile with a recognisable contact station and outer gain, so a test can
+/// tell which profile actually reached the rebuilt controller.
+fn refuel_profile(contact_x: f32, range_kp: f32) -> RefuelingTuning {
+    RefuelingTuning {
+        contact: (contact_x, 0.0, -5.0),
+        range_kp,
+        inner: LevelHoldTuning {
+            alt_kp: 9.87,
+            ..LevelHoldTuning::default()
+        },
+        ..RefuelingTuning::default()
+    }
+}
+
+fn spawn_refueler(app: &mut App, tuning: PlaneTuning, profile: &str) -> Entity {
+    let state = level_state(1000.0, 100.0);
+    let tanker = level_state(1000.0, 100.0);
+    let refuel = RefuelController::new(
+        PlaneId(1),
+        &tanker,
+        &state,
+        RefuelingTuning::default().config(),
+    );
+    let handle = app
+        .world_mut()
+        .resource_mut::<Assets<PlaneTuning>>()
+        .add(tuning);
+    app.world_mut()
+        .spawn((
+            state,
+            ControlInputs::default(),
+            ActiveController(Box::new(refuel)),
+            ControllerKind::Refueling,
+            PlaneTuningHandle(handle),
+            SelectedTuningProfile(profile.to_string()),
+        ))
+        .id()
+}
+
+/// `ControllerKind::Refueling.build()` yields a plain `LevelHoldController` (the generic
+/// factory has no tanker reference). The rebuild must put the refueling law back, keeping
+/// the tanker id and the ladder position, while the profile reaches the inner loops.
+#[test]
+fn initial_tuning_preserves_refuel_controller() {
+    let mut app = build_headless_app_with(|app| {
+        app.add_plugins(SimControlPlugin);
+    });
+    let mut pt = PlaneTuning::default();
+    pt.refueling
+        .insert("normal".to_string(), refuel_profile(-15.0, 0.2));
+    let entity = spawn_refueler(&mut app, pt, "normal");
+
+    // Put the approach mid-ladder so the rebuild has something to lose.
+    {
+        let mut ctrl = app.world_mut().get_mut::<ActiveController>(entity).unwrap();
+        let r = ctrl
+            .0
+            .as_any_mut()
+            .downcast_mut::<RefuelController>()
+            .unwrap();
+        r.phase = RefuelPhase::Contact;
+        r.commanded_offset = Vec3::new(-15.0, 0.0, -5.0);
+    }
+
+    app.update();
+
+    let world = app.world_mut();
+    let mut ctrl = world.get_mut::<ActiveController>(entity).unwrap();
+    let r = ctrl
+        .0
+        .as_any_mut()
+        .downcast_mut::<RefuelController>()
+        .expect("controller must still be a RefuelController after the tuning rebuild");
+    assert_eq!(
+        r.tanker_id,
+        PlaneId(1),
+        "tanker id must survive the rebuild"
+    );
+    assert_eq!(
+        r.phase,
+        RefuelPhase::Contact,
+        "a tuning load must not restart an approach already at the docking station"
+    );
+    assert!(
+        (r.inner.altitude_pid.kp - 9.87).abs() < 1e-6,
+        "the profile's inner block must reach the inner LevelHoldController, got kp={}",
+        r.inner.altitude_pid.kp
+    );
+    assert!(world.get::<TuningApplied>(entity).is_some());
+}
+
+/// The other half of the split, and the one a verbatim copy of `restore_wingman` gets
+/// wrong: switching the `refueling` profile must actually change the stations and outer
+/// gains. Preserve them along with the approach state and the switch is a silent no-op —
+/// the controller keeps flying, just with the old numbers, and every other test still
+/// passes.
+#[test]
+fn profile_switch_adopts_new_refuel_config() {
+    let mut app = build_headless_app_with(|app| {
+        app.add_plugins(SimControlPlugin);
+    });
+    let mut pt = PlaneTuning::default();
+    pt.refueling
+        .insert("normal".to_string(), refuel_profile(-15.0, 0.2));
+    pt.refueling
+        .insert("close".to_string(), refuel_profile(-8.0, 0.55));
+    let entity = spawn_refueler(&mut app, pt, "normal");
+
+    app.update();
+    {
+        let mut ctrl = app.world_mut().get_mut::<ActiveController>(entity).unwrap();
+        let r = ctrl
+            .0
+            .as_any_mut()
+            .downcast_mut::<RefuelController>()
+            .unwrap();
+        r.phase = RefuelPhase::Contact;
+        assert_eq!(
+            r.config.contact.x, -15.0,
+            "precondition: on the first profile"
+        );
+    }
+
+    // Switch profiles.
+    *app.world_mut()
+        .get_mut::<SelectedTuningProfile>(entity)
+        .unwrap() = SelectedTuningProfile("close".to_string());
+    app.update();
+
+    let mut ctrl = app.world_mut().get_mut::<ActiveController>(entity).unwrap();
+    let r = ctrl
+        .0
+        .as_any_mut()
+        .downcast_mut::<RefuelController>()
+        .expect("still a RefuelController");
+    assert_eq!(
+        r.phase,
+        RefuelPhase::Contact,
+        "the approach state must survive a profile switch"
+    );
+    assert_eq!(
+        r.config.contact.x, -8.0,
+        "the NEW profile's contact station must take effect"
+    );
+    assert!(
+        (r.range_pid.kp - 0.55).abs() < 1e-6,
+        "the NEW profile's outer gains must reach the PIDs, got kp={}",
+        r.range_pid.kp
     );
 }

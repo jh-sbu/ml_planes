@@ -119,6 +119,7 @@ fn kind_color(kind: ControllerKind) -> egui::Color32 {
             egui::Color32::from_rgb(90, 160, 255) // blue
         }
         ControllerKind::Wingman => egui::Color32::from_rgb(90, 220, 120), // green
+        ControllerKind::Refueling => egui::Color32::from_rgb(60, 200, 210), // teal
         ControllerKind::Orbit => egui::Color32::from_rgb(255, 90, 90),    // red
         ControllerKind::RlOrbit
         | ControllerKind::RlOrbitResidual

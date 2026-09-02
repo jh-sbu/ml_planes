@@ -13,7 +13,7 @@ use bevy::prelude::*;
 
 use std::collections::HashSet;
 
-use crate::controllers::{ActiveController, ControllerKind, WingmanController};
+use crate::controllers::{ActiveController, ControllerKind, RefuelController, WingmanController};
 use crate::plane::{ControlInputs, NextPlaneId, PlaneId};
 use crate::training::SpawnSpec;
 
@@ -54,25 +54,49 @@ impl Plugin for LifecyclePlugin {
     fn build(&self, app: &mut App) {
         app.add_observer(on_spawn_plane_command);
         app.add_observer(on_remove_plane_command);
-        app.add_systems(Update, cleanup_orphaned_wingmen);
+        app.add_systems(Update, cleanup_orphaned_followers);
     }
 }
 
-/// A wingman whose leader has been removed has no formation to hold. Drop it to
-/// `LevelHold` so it flies honestly (and the HUD/map reflect reality) instead of
-/// silently masquerading as formation flight against a dead `leader_id`. Flipping
-/// `ControllerKind` lets the visual `apply_controller_switch` rebuild it into a
-/// real `LevelHoldController`; headless drivers see the kind change directly.
+/// The peer `PlaneId` a follower-kind controller depends on, or `None` when the kind
+/// claims to be a follower but no follower law is actually installed.
+fn follower_peer_id(ctrl: &mut ActiveController, kind: ControllerKind) -> Option<PlaneId> {
+    match kind {
+        ControllerKind::Wingman => ctrl
+            .0
+            .as_any_mut()
+            .downcast_mut::<WingmanController>()
+            .map(|w| w.leader_id),
+        ControllerKind::Refueling => ctrl
+            .0
+            .as_any_mut()
+            .downcast_mut::<RefuelController>()
+            .map(|r| r.tanker_id),
+        _ => None,
+    }
+}
+
+/// A follower whose peer has been removed — a wingman with no leader, a receiver with no
+/// tanker — has nothing to hold station on. Drop it to `LevelHold` so it flies honestly
+/// (and the HUD/map reflect reality) instead of silently masquerading against a dead
+/// `PlaneId`. Flipping `ControllerKind` lets the visual `apply_controller_switch` rebuild
+/// it into a real `LevelHoldController`; headless drivers see the kind change directly.
 ///
-/// Also demotes a `Wingman`-kind plane whose active controller isn't actually a
-/// `WingmanController`; the kind must not claim formation flight the plane is not doing.
+/// Also demotes a follower-kind plane whose active controller isn't actually the matching
+/// follower law; the kind must not claim behaviour the plane is not doing.
 ///
-/// A leader still parked on its `.plane.ron` counts as **live**. A
-/// [`PendingPlaneSpawn`] carries no `PlaneId`, but its id is already reserved; otherwise
-/// a wingman whose config loads first would be demoted. The demotion is one-way: it flips
-/// `ControllerKind`, `apply_controller_switch` rebuilds a real `LevelHoldController`,
-/// and nothing ever promotes back.
-fn cleanup_orphaned_wingmen(
+/// A peer still parked on its `.plane.ron` counts as **live**. A [`PendingPlaneSpawn`]
+/// carries no `PlaneId`, but its id is already reserved; otherwise a follower whose config
+/// loads first would be demoted. The demotion is one-way: it flips `ControllerKind`,
+/// `apply_controller_switch` rebuilds a real `LevelHoldController`, and nothing ever
+/// promotes back.
+///
+/// Kept as **one** system over both follower kinds rather than a per-kind sibling: the
+/// load-bearing subtlety here is the `live` set including pending spawns, and a second
+/// copy is exactly how that gets fixed in one place and silently missed in the other —
+/// the `apply_initial_tuning`/`apply_controller_switch` bug class. Adding a third
+/// follower kind means one arm in `follower_peer_id`, nothing else.
+fn cleanup_orphaned_followers(
     mut planes: Query<(&mut ActiveController, &mut ControllerKind, &PlaneId)>,
     pending: Query<&PendingPlaneSpawn>,
 ) {
@@ -82,11 +106,11 @@ fn cleanup_orphaned_wingmen(
         .chain(pending.iter().map(|p| p.plane_id))
         .collect();
     for (mut ctrl, mut kind, _) in planes.iter_mut() {
-        if *kind != ControllerKind::Wingman {
+        if !matches!(*kind, ControllerKind::Wingman | ControllerKind::Refueling) {
             continue;
         }
-        match ctrl.0.as_any_mut().downcast_mut::<WingmanController>() {
-            Some(wing) if live.contains(&wing.leader_id) => {}
+        match follower_peer_id(&mut ctrl, *kind) {
+            Some(peer) if live.contains(&peer) => {}
             _ => {
                 kind.set_if_neq(ControllerKind::LevelHold);
             }
