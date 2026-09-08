@@ -7,6 +7,7 @@
 //! frame-adjusted signs for all shipped assets so the next NED-copied value
 //! is caught at test time instead of flying with inverted coupling.
 
+use ml_planes::environment::sanitize_asset_path;
 use ml_planes::plane::PlaneConfig;
 
 /// Parse every `assets/planes/*.plane.ron` into `(name, config)` pairs.
@@ -140,4 +141,38 @@ fn longitudinal_derivative_signs_match_frame_convention() {
         );
         assert!(cfg.cm_q < 0.0, "{name}: cm_q={} must damp pitch", cfg.cm_q);
     }
+}
+
+/// A `visual` block that names a scene nobody shipped is a silent wireframe: the
+/// airframe still loads and flies, and the only symptom is a missing mesh at runtime.
+/// Sanitization is asserted for the same reason it is enforced at the loader sink —
+/// `PlaneVisual.scene` reaches `AssetServer::load`, and on a client it arrives off the
+/// wire (CLAUDE.md §7).
+#[test]
+fn shipped_visual_models_name_an_asset_that_exists() {
+    let mut checked = 0;
+    for (name, cfg) in shipped_plane_configs() {
+        let Some(visual) = cfg.visual else { continue };
+        assert_eq!(
+            sanitize_asset_path(&visual.scene).as_deref(),
+            Some(visual.scene.as_str()),
+            "{name}: `visual.scene` must be a clean assets-relative path, or the \
+             loader sink will reject it and the plane will silently draw a wireframe"
+        );
+        assert!(
+            std::path::Path::new(&format!("assets/{}", visual.scene)).exists(),
+            "{name}: `visual.scene` names {} which does not ship — run `just sync-models`",
+            visual.scene
+        );
+        assert!(
+            visual.scale.is_finite() && visual.scale > 0.0,
+            "{name}: `visual.scale` must be a positive, finite factor, got {}",
+            visual.scale
+        );
+        checked += 1;
+    }
+    assert!(
+        checked >= 1,
+        "at least the generic jet ships a visual model; found none"
+    );
 }

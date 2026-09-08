@@ -13,7 +13,13 @@ use super::spawner::detect_ground_contact;
 #[cfg(feature = "visual")]
 use super::grid_material::{follow_camera, GridMaterial};
 #[cfg(feature = "visual")]
-use super::visual::{draw_orbit_pin_gizmo, draw_plane_gizmos, spawn_visual_ground};
+use super::plane_model::attach_plane_models;
+#[cfg(all(feature = "visual", any(not(feature = "net"), feature = "server")))]
+use super::plane_model::sync_model_to_interpolated_pose;
+#[cfg(feature = "visual")]
+use super::visual::{
+    draw_orbit_pin_gizmo, draw_plane_gizmos, spawn_scene_lighting, spawn_visual_ground,
+};
 #[cfg(all(feature = "visual", any(not(feature = "net"), feature = "server")))]
 use super::visual::{save_curr_physics_pose, save_prev_physics_pose};
 #[cfg(feature = "visual")]
@@ -30,7 +36,21 @@ impl Plugin for EnvironmentPlugin {
         #[cfg(feature = "visual")]
         app.add_plugins(MaterialPlugin::<GridMaterial>::default());
         #[cfg(feature = "visual")]
-        app.add_systems(Startup, spawn_visual_ground);
+        app.add_systems(Startup, (spawn_visual_ground, spawn_scene_lighting));
+        // Gives every plane that ships a `PlaneVisual` its glTF scene. Runs for both
+        // spawn paths: locally finalized planes and replicated ones.
+        #[cfg(feature = "visual")]
+        app.add_systems(Update, attach_plane_models);
+        // On a local-sim build the plane's own `Transform` is the raw fixed-step pose,
+        // so the model child is placed from the interpolated one instead. A `Read`:
+        // it consumes the pose this frame establishes (see `PlaneRenderPose`).
+        #[cfg(all(feature = "visual", any(not(feature = "net"), feature = "server")))]
+        app.add_systems(
+            Update,
+            sync_model_to_interpolated_pose
+                .after(attach_plane_models)
+                .in_set(crate::plane::PlaneRenderPose::Read),
+        );
         // Draws the plane at its rendered pose, so it must run after whatever
         // establishes that pose this frame (see `PlaneRenderPose`).
         #[cfg(feature = "visual")]

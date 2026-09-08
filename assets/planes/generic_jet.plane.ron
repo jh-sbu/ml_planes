@@ -51,6 +51,17 @@
     // is 1.2 kg/s (~28 min endurance from a 2000 kg tank). fuel_type is for HUD/labelling.
     powerplant: JetFuel(capacity_kg: 2000.0, tsfc: 2.0e-5, fuel_type: JetA),
 
+    // --- Visual Model ---
+    // Rendering only: this has no effect on aerodynamics, mass, or the collider. The
+    // source of truth for the mesh is the sibling `ml_planes_assets` repo; re-copy the
+    // export with `just sync-models`. `BlenderYUp` is that repo's export convention
+    // (+X nose, +Y up, -Z right wing), rotated +90 deg about X onto the body frame.
+    visual: Some((
+        scene: "models/generic_jet.glb",
+        orientation: BlenderYUp,
+        scale: 1.0,
+    )),
+
     // --- Control Limits ---
     aileron_limit: 0.4363,  // [rad] ≈ 25°
     elevator_limit: 0.3491, // [rad] ≈ 20°

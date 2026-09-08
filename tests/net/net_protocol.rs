@@ -137,6 +137,26 @@ fn plane_tuning_path_roundtrips() {
     ));
 }
 
+/// The airframe's visual model is replicated because the client is a pure renderer:
+/// it never runs `finalize_pending_spawns` and never loads a `.plane.ron`, so this
+/// component is the only way it learns which mesh to attach.
+#[test]
+fn plane_visual_roundtrips() {
+    use ml_planes::plane::{ModelOrientation, PlaneVisual};
+    assert_ron_roundtrip(&PlaneVisual {
+        scene: "models/generic_jet.glb".to_string(),
+        orientation: ModelOrientation::BlenderYUp,
+        scale: 1.0,
+        offset: Vec3::new(0.0, 0.0, -0.25),
+    });
+    assert_ron_roundtrip(&PlaneVisual {
+        scene: "models/other.glb".to_string(),
+        orientation: ModelOrientation::BodyFrame,
+        scale: 0.5,
+        offset: Vec3::ZERO,
+    });
+}
+
 #[cfg(feature = "inference")]
 #[test]
 fn selected_model_roundtrips() {

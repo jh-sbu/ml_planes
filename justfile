@@ -49,6 +49,17 @@ play-debug:
     cargo build --no-default-features --features "server inference" --bin ml_planes_server
     cargo run --features training --bin ml_planes
 
+# Re-copy the exported visual models from the sibling `ml_planes_assets` checkout,
+# which is the source of truth for every `.glb`. The copies under assets/models/ are
+# committed so a clone of this repo alone builds and renders standalone; an airframe
+# whose `.plane.ron` has no `visual` block (or whose scene is missing) simply falls
+# back to the gizmo wireframe. Rebuild an export there first:
+#   blender --background --python planes/<id>/source/create_<id>.py
+sync-models assets_repo="../ml_planes_assets":
+    mkdir -p assets/models
+    cp {{assets_repo}}/planes/*/exports/*.glb assets/models/
+    ls -l assets/models/
+
 # Python bindings (PyO3 + maturin, `bindings/python`). Deliberately absent from
 # test-all: the Rust matrix must stay green on a machine with no Python toolchain
 # (CLAUDE.md §3, Python bindings). Every recipe goes through `uv run` rather than

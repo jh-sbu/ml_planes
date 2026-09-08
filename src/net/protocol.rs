@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::controllers::{
     ControllerKind, ControllerTargets, ControllerTelemetry, SelectedTuningProfile,
 };
-use crate::plane::{ControlInputs, FlightState, PlaneId, PlaneIndex, PlaneTuningPath};
+use crate::plane::{ControlInputs, FlightState, PlaneId, PlaneIndex, PlaneTuningPath, PlaneVisual};
 use crate::sim_speed::SimSpeed;
 use crate::training::SpawnSpec;
 
@@ -26,7 +26,7 @@ pub const DEFAULT_PORT: u16 = 5555;
 
 /// Protocol identity/version. Bump when the replicated component or command set
 /// changes incompatibly so the transport rejects mismatched peers.
-pub const PROTOCOL_ID: u64 = 5;
+pub const PROTOCOL_ID: u64 = 6;
 
 /// Switch the target plane's active controller (server rebuilds it).
 #[derive(Event, Serialize, Deserialize, Clone, Debug)]
@@ -118,7 +118,12 @@ impl Plugin for NetProtocolPlugin {
             // wingman leader) — the settable counterpart to `ControllerTelemetry`. Kept
             // as a separate component (not folded into telemetry) because it changes
             // only on edit, not every tick; see `controllers::targets` module docs.
-            .replicate::<ControllerTargets>();
+            .replicate::<ControllerTargets>()
+            // The airframe's visual model. Replicated for the same reason
+            // `PlaneTuningPath` is: the client is a pure renderer that never runs
+            // `finalize_pending_spawns` and never loads a `.plane.ron`, so this is the
+            // only way it learns which mesh to attach to a replicated plane.
+            .replicate::<PlaneVisual>();
 
         #[cfg(feature = "inference")]
         app.replicate::<SelectedModel>();

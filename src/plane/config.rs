@@ -1,4 +1,5 @@
-use bevy::math::Vec3;
+use bevy::ecs::component::Component;
+use bevy::math::{Quat, Vec3};
 use bevy::reflect::Reflect;
 use serde::{Deserialize, Serialize};
 
@@ -117,6 +118,65 @@ impl Powerplant {
     }
 }
 
+/// How a visual model's exported axes map onto the simulator's body frame
+/// (+X nose, +Y right wing, +Z up — see [`FlightState`](crate::plane::FlightState)).
+///
+/// Purely a rendering fix-up: it rotates the loaded scene under the plane entity and
+/// never touches attitude, aerodynamics, or the collider.
+#[derive(Reflect, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ModelOrientation {
+    /// Blender's standard glTF Y-up export (`export_yup=True`): +X nose, +Y up,
+    /// −Z right wing. This is what `ml_planes_assets` produces, and the conversion is
+    /// baked into the vertex data — the GLB's own root node is identity, so the
+    /// correction has to be applied by the consumer.
+    #[default]
+    BlenderYUp,
+    /// Already authored in the body frame: +X nose, +Y right wing, +Z up. No rotation.
+    BodyFrame,
+}
+
+impl ModelOrientation {
+    /// Rotation carrying the exported scene into the body frame.
+    ///
+    /// For [`ModelOrientation::BlenderYUp`] that is +90° about X: it sends the export's
+    /// +Y (up) to body +Z and its −Z (right wing) to body +Y, leaving the nose on +X.
+    pub fn fixup(self) -> Quat {
+        match self {
+            ModelOrientation::BlenderYUp => Quat::from_rotation_x(std::f32::consts::FRAC_PI_2),
+            ModelOrientation::BodyFrame => Quat::IDENTITY,
+        }
+    }
+}
+
+/// Default for [`PlaneVisual::scale`]: models are authored at true scale in metres.
+fn unit_scale() -> f32 {
+    1.0
+}
+
+/// The visual model for an airframe — **rendering only**. Nothing here reaches the
+/// aerodynamic model, the mass properties, or the collider, so an airframe with no
+/// model flies identically and simply falls back to the gizmo wireframe.
+///
+/// This one type serves two roles so the two cannot drift: it is the
+/// [`PlaneConfig::visual`] field parsed from `.plane.ron`, *and* the replicated
+/// component a networked client reads (the client never loads a `.plane.ron` — see
+/// `net::protocol`). `scene` is therefore a path that can arrive off the wire; it is
+/// validated at its `AssetServer` sink, not here (CLAUDE.md §7).
+#[derive(Component, Reflect, Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct PlaneVisual {
+    /// Asset-relative glTF/GLB scene, e.g. `"models/generic_jet.glb"`.
+    pub scene: String,
+    /// Axis convention the scene was exported in.
+    #[serde(default)]
+    pub orientation: ModelOrientation,
+    /// Uniform scale applied to the model. 1.0 for a model authored in metres.
+    #[serde(default = "unit_scale")]
+    pub scale: f32,
+    /// Body-frame offset of the model's origin from the plane's centre of mass [m].
+    #[serde(default)]
+    pub offset: Vec3,
+}
+
 /// Runtime-loaded plane configuration asset.
 /// Field names must exactly match `assets/planes/*.plane.ron`.
 #[derive(bevy::asset::Asset, Reflect, Serialize, Deserialize, Debug, Clone)]
@@ -162,6 +222,12 @@ pub struct PlaneConfig {
     // struct literals via `..`) omit it and fall back to the generic-jet powerplant.
     #[serde(default)]
     pub powerplant: Powerplant,
+    // Visual model. `#[serde(default)]` for the same reason `powerplant` above is, and
+    // for a stronger one: this is the only field in the struct that does not describe
+    // the plant. A missing aero coefficient would fly the wrong physics silently, which
+    // is why every one of them is required; a missing model just draws the wireframe.
+    #[serde(default)]
+    pub visual: Option<PlaneVisual>,
     // Control limits
     pub aileron_limit: f32,  // [rad]
     pub elevator_limit: f32, // [rad]
@@ -196,6 +262,56 @@ mod tests {
                 fuel_type: FuelType::JetA,
             }
         );
+    }
+
+    /// The load-bearing half of the mesh contract. `ml_planes_assets` exports with
+    /// Blender's `export_yup=True`, so the GLB sits in +X nose / +Y up / −Z right; the
+    /// simulator's body frame is +X nose / +Y right / +Z up. Getting this wrong flies
+    /// the model knife-edge or inverted while every other test still passes.
+    #[test]
+    fn blender_y_up_fixup_maps_export_axes_onto_the_body_frame() {
+        let q = ModelOrientation::BlenderYUp.fixup();
+        let close = |a: Vec3, b: Vec3| (a - b).length() < 1e-6;
+
+        assert!(
+            close(q * Vec3::Y, Vec3::Z),
+            "export up → body up: {}",
+            q * Vec3::Y
+        );
+        assert!(
+            close(q * -Vec3::Z, Vec3::Y),
+            "export right wing (−Z) → body right (+Y): {}",
+            q * -Vec3::Z
+        );
+        assert!(
+            close(q * Vec3::X, Vec3::X),
+            "the nose stays on +X: {}",
+            q * Vec3::X
+        );
+    }
+
+    #[test]
+    fn body_frame_orientation_is_the_identity() {
+        assert_eq!(ModelOrientation::BodyFrame.fixup(), Quat::IDENTITY);
+    }
+
+    #[test]
+    fn plane_visual_fills_in_its_optional_fields() {
+        // Only `scene` is required; the rest describe a model already authored to the
+        // project's export contract.
+        let v: PlaneVisual =
+            ron::de::from_str(r#"(scene: "models/generic_jet.glb")"#).expect("valid RON");
+        assert_eq!(v.scene, "models/generic_jet.glb");
+        assert_eq!(v.orientation, ModelOrientation::BlenderYUp);
+        assert_eq!(v.scale, 1.0);
+        assert_eq!(v.offset, Vec3::ZERO);
+    }
+
+    #[test]
+    fn an_airframe_without_a_model_parses_and_gets_none() {
+        // The fixture ships no `visual` block — as do four of the five shipped
+        // airframes — and must keep loading, falling back to the gizmo wireframe.
+        assert_eq!(fixture_jet_config().visual, None);
     }
 
     #[test]

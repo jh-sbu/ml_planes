@@ -255,6 +255,15 @@ pub fn finalize_pending_spawns(
             ));
         }
 
+        // The airframe's visual model, if it ships one. A separate `insert` because the
+        // bundle above is already at Bevy's 15-element tuple ceiling. Copied through
+        // verbatim: `scene` is validated at its `AssetServer` sink (the renderer's
+        // `attach_plane_models`), which is also the path a *client* takes — it receives
+        // this component by replication and never sees the `.plane.ron` at all.
+        if let Some(visual) = cfg.visual.clone() {
+            commands.entity(entity).insert(visual);
+        }
+
         #[cfg(feature = "visual")]
         commands.entity(entity).insert(PhysicsInterp {
             prev_pos: position,

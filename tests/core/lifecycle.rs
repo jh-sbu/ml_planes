@@ -2,7 +2,8 @@
 //! automatic indexing, and removal cleanup.
 
 use crate::common::{
-    build_headless_app, build_headless_app_with, generic_jet_config, resolve_pending_spawns,
+    build_headless_app, build_headless_app_with, finalize_pending_spawns_now, generic_jet_config,
+    resolve_pending_spawns,
 };
 use bevy::prelude::*;
 use bevy_rapier3d::prelude::AdditionalMassProperties;
@@ -15,8 +16,8 @@ use ml_planes::controllers::{
 use ml_planes::environment::PendingPlaneSpawn;
 use ml_planes::environment::{spawn_plane, LifecyclePlugin, RemovePlaneCommand, SpawnPlaneCommand};
 use ml_planes::plane::{
-    ControlInputs, FlightState, NextPlaneId, PlaneConfig, PlaneConfigHandle, PlaneId, PlaneIndex,
-    PlaneTuningHandle, PlaneTuningPath,
+    ControlInputs, FlightState, ModelOrientation, NextPlaneId, PlaneConfig, PlaneConfigHandle,
+    PlaneId, PlaneIndex, PlaneTuningHandle, PlaneTuningPath, PlaneVisual,
 };
 use ml_planes::training::SpawnSpec;
 
@@ -701,4 +702,76 @@ fn refueler_survives_a_tanker_still_waiting_on_its_config() {
         ControllerKind::Refueling,
         "a tanker still parked on its .plane.ron counts as live"
     );
+}
+
+/// A finalized plane carries its airframe's `PlaneVisual`, which is what both the
+/// local renderer and (after replication) the networked client key off to attach a
+/// mesh. Inserted from the `.plane.ron`, so it can only appear once the config has
+/// actually loaded.
+#[test]
+fn finalized_plane_carries_the_airframes_visual_model() {
+    let mut app = build_headless_app();
+    let mut cfg = generic_jet_config();
+    cfg.visual = Some(PlaneVisual {
+        scene: "models/generic_jet.glb".to_string(),
+        orientation: ModelOrientation::BlenderYUp,
+        scale: 1.0,
+        offset: Vec3::ZERO,
+    });
+
+    spawn_one(&mut app, "planes/generic_jet.plane.ron");
+    finalize_pending_spawns_now(&mut app, &cfg);
+
+    let world = app.world_mut();
+    let visual = world
+        .query::<&PlaneVisual>()
+        .iter(world)
+        .next()
+        .cloned()
+        .expect("a finalized plane should carry its airframe's PlaneVisual");
+    assert_eq!(visual.scene, "models/generic_jet.glb");
+    assert_eq!(visual.orientation, ModelOrientation::BlenderYUp);
+}
+
+/// An airframe with no model must still spawn and fly — it simply keeps the gizmo
+/// wireframe. Four of the five shipped airframes are in exactly this state.
+#[test]
+fn an_airframe_without_a_model_spawns_without_a_visual() {
+    let mut app = build_headless_app();
+    let mut cfg = generic_jet_config();
+    cfg.visual = None;
+
+    spawn_one(&mut app, "planes/generic_jet.plane.ron");
+    finalize_pending_spawns_now(&mut app, &cfg);
+
+    assert_eq!(count_planes(&mut app), 1, "the plane must still spawn");
+    let world = app.world_mut();
+    assert_eq!(
+        world.query::<&PlaneVisual>().iter(world).count(),
+        0,
+        "no `visual` in the config means no PlaneVisual component"
+    );
+}
+
+/// Issue a single spawn request through the public spawner and flush it into the world.
+fn spawn_one(app: &mut App, config_path: &str) {
+    use bevy::ecs::system::RunSystemOnce;
+    let path = config_path.to_string();
+    app.world_mut()
+        .run_system_once(
+            move |mut commands: Commands,
+                  mut ids: ResMut<NextPlaneId>,
+                  asset_server: Res<AssetServer>| {
+                spawn_plane(
+                    &mut commands,
+                    &mut ids,
+                    &asset_server,
+                    &path,
+                    &SpawnSpec::default(),
+                    Box::new(LevelHoldController::new(500.0, 100.0)),
+                    ControllerKind::LevelHold,
+                );
+            },
+        )
+        .expect("spawn request");
 }

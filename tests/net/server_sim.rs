@@ -79,6 +79,28 @@ fn scenario_boots_and_planes_are_replicated() {
     }
 }
 
+/// The client is a pure renderer: it never loads a `.plane.ron`, so the airframe's
+/// visual model has to reach it as a replicated component on the plane entity. The
+/// default scenario flies generic jets, which ship one.
+#[test]
+fn server_replicates_the_airframes_visual_model() {
+    use ml_planes::plane::PlaneVisual;
+
+    let mut app = build_server_app();
+    settle(&mut app);
+
+    let (entity, id) = planes(&mut app)[0];
+    assert!(
+        app.world().get::<Replicated>(entity).is_some(),
+        "the model rides on the replicated plane entity"
+    );
+    let visual = app
+        .world()
+        .get::<PlaneVisual>(entity)
+        .unwrap_or_else(|| panic!("plane {id:?} should carry its airframe's PlaneVisual"));
+    assert_eq!(visual.scene, "models/generic_jet.glb");
+}
+
 #[test]
 fn switch_controller_command_rebuilds_active_controller() {
     let mut app = build_server_app();

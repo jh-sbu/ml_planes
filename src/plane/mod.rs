@@ -6,7 +6,9 @@ pub mod state;
 pub mod systems;
 pub mod timestep;
 
-pub use config::{FuelProperties, FuelType, PlaneConfig, Powerplant};
+pub use config::{
+    FuelProperties, FuelType, ModelOrientation, PlaneConfig, PlaneVisual, Powerplant,
+};
 pub use context::{ControllerContext, NextPlaneId, PlaneId, PlaneSnapshot, SpawnedPlane};
 pub use inputs::ControlInputs;
 pub use plugin::{

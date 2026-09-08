@@ -30,7 +30,7 @@
   never a dependency of the Rust crate's own build, tests, or training stack.
   `cargo test --no-default-features` and the whole `just test-all` matrix must stay Python-free
   and green without a Python toolchain installed — which is why `just py-*` is a separate lane.
-- Asset format: RON (Rusty Object Notation). `.plane.ron` (aero config) and `.plan.ron` (flight plan) use Bevy's asset loader; `.tuning.ron` (PID gain pools), `*.reward.ron` (reward/termination, in `assets/training/`), `*.ppo.ron` (PPO hyperparameters, in `assets/training/`), and multi-plane `*.scenario.ron` (in `assets/scenarios/`) are loaded directly via `ron::de` (`implicit_some` enabled for scenarios) — no Bevy asset server required
+- Asset format: RON (Rusty Object Notation). `.plane.ron` (aero config) and `.plan.ron` (flight plan) use Bevy's asset loader; `.tuning.ron` (PID gain pools), `*.reward.ron` (reward/termination, in `assets/training/`), `*.ppo.ron` (PPO hyperparameters, in `assets/training/`), and multi-plane `*.scenario.ron` (in `assets/scenarios/`) are loaded directly via `ron::de` (`implicit_some` enabled for scenarios) — no Bevy asset server required. Visual models are glTF binaries in `assets/models/*.glb`, loaded through Bevy's `bevy_gltf` loader and referenced by a `.plane.ron`'s `visual` block; the source of truth for them is the sibling `ml_planes_assets` repo (see "Plane Visual Models")
 
 **Development philosophy:** Test-Driven Development (TDD) is mandatory. Write a failing test before writing any implementation code. The Red-Green-Refactor cycle governs all new features: red (failing test), green (minimal implementation to pass), refactor (clean up). The environment, aerodynamic model, and test suite must be solid before any controller or ML work begins.
 
@@ -60,6 +60,7 @@ src/
                   #     apply_flight_plan + RL load arms), shared by visual client & server
   environment/    # infinite ground collider + shader, plane spawner
                   #   spawner.rs — spawn_plane (auto-assigns PlaneId + PlaneIndex)
+                  #   plane_model.rs — glTF model attach + placement (visual-gated)
                   #   lifecycle.rs — LifecyclePlugin: Spawn/RemovePlaneCommand observers
                   #     + cleanup_orphaned_wingmen (headless-safe; no rendering deps)
   camera/         # FreeLook and Follow camera modes
@@ -168,6 +169,7 @@ the dev group and `ml_planes.gym` imports it lazily, so `import ml_planes` works
 |---|---|---|
 | `PlaneConfig` | RON asset | Geometry, mass/inertia, aero coefficients (longitudinal, lateral-directional, **and the four `cy_*` side-force derivatives**), engine params, **`powerplant`**, control limits. Every field except `powerplant` is **required** — see the `.plane.ron` schema note below |
 | `Powerplant` | enum (in `PlaneConfig`) | `JetFuel { capacity_kg, tsfc, fuel_type }` (burns mass, lightens, flames out) or `Electric { capacity, consumption }` (constant mass). Helpers: `capacity()`, `contributes_mass()`, `effective_mass(empty, remaining)`, `burn_rate(thrust)`. `#[serde(default)]` ⇒ generic-jet default |
+| `PlaneVisual` / `ModelOrientation` | struct / enum (in `PlaneConfig`) | The airframe's visual model — **rendering only**; nothing here reaches the aero model, the mass properties, or the collider. `PlaneVisual { scene, orientation, scale, offset }`: `scene` is the assets-relative glTF/GLB, `orientation` says which axis convention it was exported in (`BlenderYUp` = `ml_planes_assets`' `export_yup=True` output, corrected by +90° about X; `BodyFrame` = no rotation). One type serving two roles so they cannot drift: the `#[serde(default)]` `PlaneConfig::visual` field **and** the replicated component the client reads. `scene` is therefore a path that can arrive off the wire — validated at its `AssetServer` sink, not at insertion (see §7). See "Plane Visual Models" |
 | `FuelType` | enum | `JetA`/`Jp8`/`Jp5` + `properties()` (density, specific energy) + `label()`. For HUD/display; kerosene grades are ~identical so the grade does **not** enter the burn math |
 | `FlightPlan` | RON asset | Ordered legs (`Waypoint`/`Orbit`) + L1 period/damping; loaded from `assets/plans/*.plan.ron` via the Bevy asset loader |
 | `FlightState` | ECS component | Position, velocity, attitude (quat), angular velocity, α, β, airspeed, altitude |
@@ -242,8 +244,11 @@ the self-contained training integrator, so both see the same altitude physics.
 All coefficients are defined per-asset in `.plane.ron` files. No compile-time aero data.
 
 **`.plane.ron` schema requirements.** Field names must exactly match `PlaneConfig`
-(`plane/config.rs`), and **every field except `powerplant` is required** — `powerplant` is the
-only one carrying `#[serde(default)]`. Adding a field therefore invalidates every shipped asset,
+(`plane/config.rs`), and **every field except `powerplant` and `visual` is required** — those
+two are the only ones carrying `#[serde(default)]`. `visual` earns its default on a stronger
+argument than `powerplant`'s: it is the one field that does not describe the *plant* at all, so
+a missing value cannot fly the wrong physics — it just draws the gizmo wireframe. Keep that
+line where it is; a rendering field is the exception, not the start of a trend. Adding a field therefore invalidates every shipped asset,
 which is deliberate: an aero coefficient that silently defaults to zero is a plane quietly flying
 the wrong physics. (The four `cy_*` fields were added this way on 2026-08-10; a `.plane.ron`
 missing them fails to load rather than reverting to the old zero-side-force behavior.) The
@@ -361,7 +366,11 @@ wgpu = ["training", "burn/wgpu"]         # opt-in GPU training backend
   64 Hz, broadcasting replicated state and applying client commands. No rendering.
 - `net`: the shared `src/net/` protocol + `bevy_replicon`/renet transport, compiled into both
   client and server. `bevy/serialize` gives `Vec3`/`Quat`/`Transform` serde for replication.
-- `visual`: full Bevy rendering pipeline + egui HUD + `rfd` native file dialogs
+- `visual`: full Bevy rendering pipeline + egui HUD + `rfd` native file dialogs. `bevy/default`
+  brings `bevy_gltf` and `bevy_scene` in with it (via bevy 0.18's `3d` → `3d_bevy_render`
+  feature), so mesh loading needs **no manifest change** — but every line that touches
+  `SceneRoot`/`GltfAssetLabel` must be `#[cfg(feature = "visual")]` or the headless, server, and
+  training builds stop compiling
 - `inference`: `burn` CPU (`ndarray`) backend only — loads/runs trained RL policies
   headlessly, no training stack. Layered into both `visual` (via `wasm`) and `training`.
 - `training`: builds on `inference`, adds `burn` `autodiff`, `train`, and `tui`; defaults to the
@@ -528,6 +537,66 @@ the MCP spawnable list: `build()` cannot reconstruct it, so reaching it interact
 install a mislabelled `LevelHoldController`. Pinned by
 `peer_following_kinds_are_not_interactively_cyclable`.
 
+### Plane Visual Models
+
+An airframe whose `.plane.ron` carries a `visual` block renders as a real glTF mesh; one that
+does not keeps the gizmo wireframe. Only `generic_jet` ships a model today, so the fallback is
+live, not hypothetical.
+
+**The frames, which is where this gets got wrong.** Three conventions are in play:
+
+| Frame | Convention |
+|---|---|
+| Bevy world | Y-up (`altitude = position.y`) |
+| Sim **body** — *and the plane entity's local frame* | +X nose, +Y right wing, +Z up. `FlightState.attitude` **is** `Transform.rotation`, so level flight is `Quat::from_rotation_x(-FRAC_PI_2)`, not the identity |
+| The GLB as exported | +X nose, **+Y up, −Z right wing** — Blender's `export_yup=True` conversion, baked into the vertex data (the GLB's own root node is identity, so the consumer must undo it) |
+
+`ModelOrientation::BlenderYUp.fixup()` is therefore `Quat::from_rotation_x(FRAC_PI_2)`: it sends
+export +Y → body +Z and export −Z → body +Y, leaving the nose on +X. This is pinned by
+`plane::config::tests::blender_y_up_fixup_maps_export_axes_onto_the_body_frame`, and it is worth
+a test because a 90°-wrong fix-up flies the model knife-edge or inverted while **every other
+test still passes**.
+
+**The pipeline.** `finalize_pending_spawns` copies `cfg.visual` onto the plane;
+`net::protocol` replicates it; `environment::plane_model::attach_plane_models` (visual-gated)
+spawns the scene as a **child** and records `PlaneModel(Some(child))`. Being a child means the
+model despawns with the plane for free. Both spawn paths converge on that one system — a
+locally finalized plane and a replicated one differ only in where `PlaneVisual` came from.
+
+`PlaneModel`'s presence means "already decided", which is what keeps the attach system from
+re-spawning a model every frame; `PlaneModel(None)` records a rejected path. Only
+`PlaneModel(Some(_))` suppresses the wireframe (`draws_body_wireframe`) — a plane that is still
+waiting, or whose scene was rejected, keeps it rather than rendering as nothing at all. The
+**velocity and nose arrows are deliberately kept** on modeled planes: they show the velocity
+vector against the body axis, i.e. α and β at a glance, which the mesh cannot.
+
+**Pose.** On the networked client the parent `Transform` is already the interpolated render
+pose (`net::client::render_net_interpolation`), so a child mesh is smooth for free. On a
+local-sim / `wasm` build it holds the raw 64 Hz fixed-step pose — which is why
+`draw_plane_gizmos` renders from `PhysicsInterp` and not from `Transform` — so
+`sync_model_to_interpolated_pose` (gated exactly like `PhysicsInterp`) rewrites the child's
+*local* transform to cancel the parent's staleness, putting the mesh on the same pose the
+gizmos use. `rendered_pose` is the one shared implementation of that choice.
+
+**Adding a model for another airframe:**
+
+1. Build and export it in `ml_planes_assets` (`blender --background --python
+   planes/<id>/source/create_<id>.py`). Keep +X nose / +Y right / +Z up in Blender and the
+   standard Y-up glTF export; keep the origin at the nominal CG and the model in metres.
+2. `just sync-models` — copies every `planes/*/exports/*.glb` into `assets/models/`. The copies
+   are committed so a clone of *this* repo alone builds and renders standalone.
+3. Add a `visual` block to `assets/planes/<id>.plane.ron` (see `generic_jet.plane.ron`).
+   `scale` and `offset` exist for a model that is not already at true scale about its CG; the
+   shipped one needs neither.
+4. `tests/core/plane_assets.rs::shipped_visual_models_name_an_asset_that_exists` then checks the
+   scene ships and survives `sanitize_asset_path`. A `visual` block naming a missing file is
+   otherwise silent — the plane loads and flies, it just draws a wireframe.
+
+**Lighting.** `spawn_scene_lighting` (Startup, visual) is the scene's only light source; before
+models there was none at all, since gizmos and the ground's `GridMaterial` are both unlit. A PBR
+mesh renders near-black without it. Shadows are off deliberately — cascades over the 20 km
+ground plane cost more than they currently buy.
+
 ### Runtime Plane Lifecycle
 
 Planes can be added/removed at runtime via observer commands (`environment/lifecycle.rs`,
@@ -604,20 +673,23 @@ authoritative 64 Hz Rapier sim, all `FlightController`s, and fuel burn live in t
 mutation goes out as a command. Shared code (`aerodynamics/`, `controllers/`, `plane/`,
 `environment/` core, `scenario.rs`) is unchanged and compiled into both. The protocol lives in
 `src/net/` and is registered identically on both peers by `NetProtocolPlugin` (same order, or
-replicon rejects the connection); `PROTOCOL_ID` (currently **5** — v2 added `ControllerTelemetry`;
+replicon rejects the connection); `PROTOCOL_ID` (currently **6** — v2 added `ControllerTelemetry`;
 v3 added `ControllerTargets` + `SetControllerTargetsCommand`; v4 appended
 `ControllerKind::RlHeadingHold`; v5 appended `ControllerKind::Refueling` plus the
-`Refueling` variants of `ControllerTargets`/`ControllerTelemetry`) gates version-mismatched
-peers.
+`Refueling` variants of `ControllerTargets`/`ControllerTelemetry`; v6 appended
+`PlaneVisual`) gates version-mismatched peers.
 
 - **Replicated (server → client), in registration order:** `Transform`, `FlightState`,
   `ControlInputs`, `PlaneId`, `PlaneIndex`, `ControllerKind`, `SelectedTuningProfile`,
-  `PlaneTuningPath`, `ControllerTelemetry`, `ControllerTargets`, and (`inference`-gated)
-  `SelectedModel`. The client HUD/map/camera read these read-only. `PlaneTuningPath` lets the
+  `PlaneTuningPath`, `ControllerTelemetry`, `ControllerTargets`, `PlaneVisual`, and
+  (`inference`-gated) `SelectedModel`. The client HUD/map/camera read these read-only. `PlaneTuningPath` lets the
   client rebuild a `PlaneTuningHandle` and reuse the existing profile enumeration for its
   dropdown. `ControllerTargets` is the settable counterpart to `ControllerTelemetry` — see its
   Key Types row below — and is what the HUD's target-editor widgets (Target Alt/Spd/Hdg, orbit
   geometry, wingman leader) seed from on a client, since `ActiveController` itself never is.
+  `PlaneVisual` is replicated for the same reason `PlaneTuningPath` is: the client never runs
+  `finalize_pending_spawns` and never loads a `.plane.ron`, so it is the only way it learns
+  which mesh to attach — see "Plane Visual Models" below.
 - **Commands (client → server)** — all `add_client_event`, `Channel::Ordered`, received on the
   server as `On<FromClient<…>>` observers: `SwitchControllerCommand`, `SetTuningProfileCommand`,
   `ManualInputCommand` (sent every client frame while manually flying; latest-wins),
@@ -1214,7 +1286,7 @@ the binary + a module filter, e.g. `cargo test --no-default-features --test core
   wrong reward and still reports success)
 - `orbit_tune_sync` — orbit tuning-pool / gain-sync invariants
 - `scenario` — `.scenario.ron` parse/resolve/build, per-plane `fuel_fraction` carried through `resolve()`, `ControllerSpec::kind()` mapping, `spawn_resolved_scenario` live spawn, `default.scenario.ron` resolve, + CSV header pinning (`ml_planes::scenario::CSV_HEADER`, incl. trailing `fuel_remaining`); self-referential wingman-leader rejection; resolved-vs-runtime `PlaneId` remap, leader-skip cascade, and a scenario wingman's `WingmanController` surviving the tuning rebuild end-to-end
-- `lifecycle` — runtime spawn/remove commands, auto-indexing, orphaned-wingman + camera cleanup (camera case is `visual`-gated, so it runs only under `just test-visual`), + a `Wingman`-kind plane with no `WingmanController` installed falling back to `LevelHold`
+- `lifecycle` — runtime spawn/remove commands, auto-indexing, orphaned-wingman + camera cleanup (camera case is `visual`-gated, so it runs only under `just test-visual`), + a `Wingman`-kind plane with no `WingmanController` installed falling back to `LevelHold`; + a finalized plane carrying (or not carrying) its airframe's `PlaneVisual`
 - `sim_control` — relocated `SimControlPlugin` controller-rebuild systems, headless (runs in core); + a `WingmanController` surviving both the initial-tuning rebuild and a later profile switch
 - `controller_telemetry` — each controller's `FlightController::telemetry()` accessor / `ControllerTelemetry` shape (runs in core)
 - `controller_targets` — each controller's `FlightController::targets()`/`apply_targets()` accessors: read/write round trip, mismatched-variant no-op, and the ascent-complete-latch / orbit-PID-reset side effects `apply_targets` owns (runs in core; RL variants' `targets()` covered in `tests/rl/rl_inference.rs`)
@@ -1270,6 +1342,9 @@ skip them. `just test-visual` (`--features visual`) is the only recipe that comp
   the HUD)
 - `ui/map` — map projection / zoom / fit math; `ui/hud` — camera-follow index resolution;
   `ui/file_load` — asset-relative path munging; `ui/menu` — scenario discovery + `parse_addr`
+- `environment/plane_model` — the glTF axis fix-up, the model child's transform (including the
+  local-sim interpolation correction), scene-path sanitization, and the wireframe-suppression
+  rule; `environment/visual` — `rendered_pose`
 - `camera/systems` — follow-camera orbit offset math
 - also picks up the `visual`-gated `lifecycle::camera_recovers_to_free_look_when_followed_plane_removed`
   in `tests/core` and `src/main.rs`'s `cycle_index_wraps_both_directions` (a bin-target test no
@@ -1412,6 +1487,14 @@ a required `PlaneConfig` field breaks loudly in one place (the struct has no `De
   (`controllers/sim_control.rs`) carries the same component walk for `SetModelCommand`, and
   `scenario_spawn::asset_relative_config` for scenario-supplied paths — note its
   `strip_prefix("assets/")` is cosmetic, not validating.
+- **`PlaneVisual.scene` is a caller-supplied path too, and its sink is
+  `environment::plane_model::attach_plane_models`.** `PlaneVisual` is a *replicated* component,
+  so on a client the string is chosen by whatever server it connected to; validation therefore
+  lives at the `AssetServer::load` call, not where `finalize_pending_spawns` copies the field
+  through. `scene_asset_path` runs `sanitize_asset_path` and only then appends the glTF label —
+  `GltfAssetLabel::Scene(0).from_asset(p)` yields `…glb#Scene0`, and `#` is one of the
+  metacharacters the validator rejects outright, so appending first would reject every valid
+  path. A rejected scene logs the path alone and falls back to the wireframe.
 - **Never interpolate a `ron` parse error into a log for a caller-supplied path.** `ron`'s errors
   embed the offending token from the file (`Expected struct PlaneConfig but found <token>`), so
   logging one can disclose file contents. `finalize_pending_spawns` logs the *path* and nothing
