@@ -632,6 +632,31 @@ fn shipped_scenarios_parse_and_resolve() {
     }
 }
 
+/// The fleet demo is the compact visual showcase for the full airframe catalog:
+/// exactly one of each plane, lined up at a common level-hold operating point.
+#[test]
+fn fleet_demo_contains_one_of_every_airframe_in_formation() {
+    let path = Path::new("assets/scenarios/fleet_demo.scenario.ron");
+    let scenario = Scenario::from_path(path).expect("load fleet demo scenario");
+    let resolved = scenario.resolve().expect("resolve fleet demo scenario");
+
+    let expected_configs = [
+        "assets/planes/electric_trainer.plane.ron",
+        "assets/planes/generic_jet.plane.ron",
+        "assets/planes/business_jet.plane.ron",
+        "assets/planes/tanker.plane.ron",
+        "assets/planes/cargo_jet.plane.ron",
+    ];
+
+    assert_eq!(resolved.planes.len(), expected_configs.len());
+    for (plane, expected_config) in resolved.planes.iter().zip(expected_configs) {
+        assert_eq!(plane.config.as_deref(), Some(expected_config));
+        assert_eq!(plane.position.y, 1000.0);
+        assert_eq!(plane.velocity, Vec3::new(120.0, 0.0, 0.0));
+        assert_eq!(plane.spec.kind(), ControllerKind::LevelHold);
+    }
+}
+
 /// The live-app default scene is a valid scenario with the six demo
 /// planes in order. Non-RL planes must build a controller; the RL planes resolve
 /// to their RL kinds (they only *build* under a native inference build, and are
