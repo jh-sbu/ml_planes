@@ -540,8 +540,9 @@ install a mislabelled `LevelHoldController`. Pinned by
 ### Plane Visual Models
 
 An airframe whose `.plane.ron` carries a `visual` block renders as a real glTF mesh; one that
-does not keeps the gizmo wireframe. Only `generic_jet` ships a model today, so the fallback is
-live, not hypothetical.
+does not keeps the gizmo wireframe. All five shipped airframes have basic models:
+`generic_jet`, `tanker`, `business_jet`, `cargo_jet`, and `electric_trainer`. The fallback
+remains available for custom airframes without a visual model.
 
 **The frames, which is where this gets got wrong.** Three conventions are in play:
 

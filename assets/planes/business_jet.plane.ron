@@ -52,6 +52,14 @@
     // Small civilian turbofans burning Jet A; ~1.8 t fuel (~modest endurance).
     powerplant: JetFuel(capacity_kg: 1800.0, tsfc: 2.0e-5, fuel_type: JetA),
 
+    // --- Visual Model ---
+    // Blender source: ml_planes_assets; refresh with `just sync-models`.
+    visual: Some((
+        scene: "models/business_jet.glb",
+        orientation: BlenderYUp,
+        scale: 1.0,
+    )),
+
     // --- Control Limits ---
     aileron_limit: 0.4363,  // [rad] ≈ 25°
     elevator_limit: 0.3491, // [rad] ≈ 20°

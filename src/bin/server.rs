@@ -9,8 +9,15 @@
 //!
 //! Run from the project root so the relative `assets/` paths resolve:
 //!
-//!   cargo run --features server --bin ml_planes_server -- \
+//!   cargo run --no-default-features --features "server inference" \
+//!     --bin ml_planes_server -- \
 //!     --scenario assets/scenarios/default.scenario.ron --port 5555
+//!
+//! `--no-default-features` matters: the default `client` feature enables `visual`, and
+//! cargo unifies that into the lib this binary links. `EnvironmentPlugin` only registers
+//! its rendering systems when a renderer is actually present, so a feature-unified build
+//! still runs correctly — it just pays a wgpu/winit link it never uses. `just play` uses
+//! the form above.
 //!
 //! Options:
 //!   --scenario PATH   `.scenario.ron` to load (default: the bundled default scene).

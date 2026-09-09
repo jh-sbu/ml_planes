@@ -52,6 +52,14 @@
     // High-bypass turbofan burning JP-8; tsfc lower than the generic jet. ~90 t fuel.
     powerplant: JetFuel(capacity_kg: 90000.0, tsfc: 1.6e-5, fuel_type: Jp8),
 
+    // --- Visual Model ---
+    // Blender source: ml_planes_assets; refresh with `just sync-models`.
+    visual: Some((
+        scene: "models/cargo_jet.glb",
+        orientation: BlenderYUp,
+        scale: 1.0,
+    )),
+
     // --- Control Limits ---
     aileron_limit: 0.4363,  // [rad] ≈ 25°
     elevator_limit: 0.3491, // [rad] ≈ 20°

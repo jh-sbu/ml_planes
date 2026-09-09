@@ -52,6 +52,14 @@
     // this drains 0.1 kWh/s (~20 min endurance from a 120 kWh pack).
     powerplant: Electric(capacity: 120.0, consumption: 1.25e-5),
 
+    // --- Visual Model ---
+    // Blender source: ml_planes_assets; refresh with `just sync-models`.
+    visual: Some((
+        scene: "models/electric_trainer.glb",
+        orientation: BlenderYUp,
+        scale: 1.0,
+    )),
+
     // --- Control Limits ---
     aileron_limit: 0.4363,  // [rad] ≈ 25°
     elevator_limit: 0.3491, // [rad] ≈ 20°

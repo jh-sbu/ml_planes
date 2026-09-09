@@ -23,7 +23,7 @@ model, networking protocol, and test strategy). This file is a lighter-weight in
 cargo run
 
 # Headless authoritative server (own the sim, let others connect)
-cargo run --features server --bin ml_planes_server -- \
+cargo run --no-default-features --features "server inference" --bin ml_planes_server -- \
   --scenario assets/scenarios/default.scenario.ron --port 5555
 
 # The client (ml_planes) and server (ml_planes_server) are separate cargo targets with
@@ -143,7 +143,7 @@ pub trait FlightController: Send + Sync {
 
 ## MCP Server
 
-`ml_planes_mcp` (built with `--features mcp`) is a headless control client that joins a running
+`ml_planes_mcp` (built with `--no-default-features --features mcp`) is a headless control client that joins a running
 `ml_planes_server` and exposes the live simulation to an LLM agent over the **Model Context
 Protocol** (MCP stdio). An agent can inspect plane state and spawn/remove/reconfigure planes; it
 does **not** fly manually. The binary reuses the net protocol verbatim — no server changes.
@@ -152,11 +152,11 @@ does **not** fly manually. The binary reuses the net protocol verbatim — no se
 
 ```bash
 # 1. Start the authoritative sim server
-cargo run --features server --bin ml_planes_server -- \
+cargo run --no-default-features --features "server inference" --bin ml_planes_server -- \
   --scenario assets/scenarios/default.scenario.ron --port 5555 &
 
 # 2. Start the MCP client (normally launched by the MCP host, not by hand)
-cargo run --features mcp --bin ml_planes_mcp -- --connect 127.0.0.1:5555
+cargo run --no-default-features --features "mcp inference" --bin ml_planes_mcp -- --connect 127.0.0.1:5555
 ```
 
 Options: `--connect host:port` (default `127.0.0.1:5555`), `--connect-timeout SECS` (connect +
@@ -171,7 +171,8 @@ handshake window and initial reconnect backoff, default 5), `--quiet` (drop logg
   "mcpServers": {
     "ml_planes": {
       "command": "cargo",
-      "args": ["run", "--features", "mcp", "--bin", "ml_planes_mcp", "--",
+      "args": ["run", "--no-default-features", "--features", "mcp inference",
+               "--bin", "ml_planes_mcp", "--",
                "--connect", "127.0.0.1:5555"]
     }
   }
@@ -212,7 +213,7 @@ printf '%s\n' \
   '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
   '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_planes","arguments":{}}}' \
-  | cargo run --features mcp --bin ml_planes_mcp -- --connect 127.0.0.1:5555
+  | cargo run --no-default-features --features "mcp inference" --bin ml_planes_mcp -- --connect 127.0.0.1:5555
 ```
 
 ## Maneuver Roadmap
