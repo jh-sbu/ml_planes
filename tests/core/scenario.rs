@@ -712,31 +712,113 @@ fn stress_100_scenario_resolves_to_100_planes() {
     let rl_count = resolved
         .planes
         .iter()
-        .filter(|p| {
-            matches!(
-                p.spec.kind(),
-                ControllerKind::RlLevelHold
-                    | ControllerKind::RlOrbit
-                    | ControllerKind::RlOrbitResidual
-                    | ControllerKind::RlLstmOrbit
-            )
-        })
+        .filter(|p| is_rl_kind(p.spec.kind()))
         .count();
     assert!(rl_count >= 10, "expected >=10 RL planes, got {rl_count}");
 
     // Every non-RL plane must build cleanly in every feature config.
     for (idx, plane) in resolved.planes.iter().enumerate() {
-        let is_rl = matches!(
-            plane.spec.kind(),
-            ControllerKind::RlLevelHold
-                | ControllerKind::RlOrbit
-                | ControllerKind::RlOrbitResidual
-                | ControllerKind::RlLstmOrbit
-        );
-        if !is_rl {
+        if !is_rl_kind(plane.spec.kind()) {
             resolved
                 .build_controller(idx)
                 .unwrap_or_else(|e| panic!("build stress_100 plane {idx} ({}): {e}", plane.name));
+        }
+    }
+}
+
+/// RL kinds resolve everywhere but build only under a native inference build, so
+/// the stress-scenario tests build every plane except these.
+fn is_rl_kind(kind: ControllerKind) -> bool {
+    matches!(
+        kind,
+        ControllerKind::RlLevelHold
+            | ControllerKind::RlHeadingHold
+            | ControllerKind::RlOrbit
+            | ControllerKind::RlOrbitResidual
+            | ControllerKind::RlLstmOrbit
+    )
+}
+
+/// The 500-plane stress scenario: right count, every shipped airframe flying
+/// (and under several controller kinds, not just parked on a level-hold ladder),
+/// and every non-RL controller kind present — refueling included, which the
+/// 100-plane scenario predates.
+///
+/// The airframe list is read from `assets/planes/`, so adding an airframe fails
+/// this test until the scenario flies it too.
+#[test]
+fn stress_500_scenario_resolves_to_500_planes_across_every_airframe() {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let path = Path::new("assets/scenarios/stress_500.scenario.ron");
+    let scenario = Scenario::from_path(path).expect("load stress_500 scenario");
+    let resolved = scenario.resolve().expect("resolve stress_500 scenario");
+
+    assert_eq!(
+        resolved.planes.len(),
+        500,
+        "stress scenario must be 500 planes"
+    );
+
+    let rl_count = resolved
+        .planes
+        .iter()
+        .filter(|p| is_rl_kind(p.spec.kind()))
+        .count();
+    assert!(rl_count >= 30, "expected >=30 RL planes, got {rl_count}");
+
+    // Airframe → the controller kinds it flies in this scenario.
+    let mut kinds_by_airframe: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for plane in &resolved.planes {
+        let config = plane
+            .config
+            .as_deref()
+            .unwrap_or(ml_planes::training::DEFAULT_PLANE_CONFIG_PATH);
+        kinds_by_airframe
+            .entry(config.to_string())
+            .or_default()
+            .insert(format!("{:?}", plane.spec.kind()));
+    }
+
+    let shipped: BTreeSet<String> = std::fs::read_dir("assets/planes")
+        .expect("read assets/planes")
+        .map(|entry| entry.expect("dir entry").file_name().into_string().unwrap())
+        .filter(|name| name.ends_with(".plane.ron"))
+        .map(|name| format!("assets/planes/{name}"))
+        .collect();
+    assert!(!shipped.is_empty(), "no shipped airframes found");
+    for airframe in &shipped {
+        let kinds = kinds_by_airframe
+            .get(airframe)
+            .unwrap_or_else(|| panic!("stress_500 never flies shipped airframe {airframe}"));
+        assert!(
+            kinds.len() >= 5,
+            "{airframe} flies only {kinds:?} — expected >=5 controller kinds"
+        );
+    }
+
+    let all_kinds: BTreeSet<String> = kinds_by_airframe.values().flatten().cloned().collect();
+    for kind in [
+        ControllerKind::LevelHold,
+        ControllerKind::Orbit,
+        ControllerKind::HeadingHold,
+        ControllerKind::Ascent,
+        ControllerKind::Wingman,
+        ControllerKind::Refueling,
+        ControllerKind::FlightPlan,
+        ControllerKind::Manual,
+    ] {
+        assert!(
+            all_kinds.contains(&format!("{kind:?}")),
+            "stress_500 has no {kind:?} plane"
+        );
+    }
+
+    for (idx, plane) in resolved.planes.iter().enumerate() {
+        if !is_rl_kind(plane.spec.kind()) {
+            resolved
+                .build_controller(idx)
+                .unwrap_or_else(|e| panic!("build stress_500 plane {idx} ({}): {e}", plane.name));
         }
     }
 }
