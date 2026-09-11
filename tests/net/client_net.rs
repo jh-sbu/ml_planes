@@ -57,6 +57,38 @@ fn replicated_plane_gets_interpolation_buffer() {
     );
 }
 
+/// `Transform` is not replicated — `FlightState` already carries the pose, and
+/// sending both would cost every plane ~40 bytes per tick against the renet budget
+/// (see `replication_budget`). So a replicated plane arrives with no `Transform`, and
+/// the client must seed one at the `FlightState` pose: the interpolation writer, the
+/// follow camera, and the model child all need it before the first snapshot lands.
+#[test]
+fn replicated_plane_gets_a_transform_at_its_flight_state_pose() {
+    let mut app = build_client_app();
+    let position = Vec3::new(-15000.0, 860.0, 54600.0);
+    let attitude = Quat::from_rotation_y(0.7) * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+    let entity = app
+        .world_mut()
+        .spawn((
+            PlaneId(0),
+            FlightState {
+                position,
+                attitude,
+                ..Default::default()
+            },
+        ))
+        .id();
+
+    app.update();
+
+    let transform = app
+        .world()
+        .get::<Transform>(entity)
+        .expect("the client should give a replicated plane a Transform");
+    assert_eq!(transform.translation, position);
+    assert_eq!(transform.rotation, attitude);
+}
+
 /// An `EntityReplicated` message (with the FlightState mutated to the new pose) pushes
 /// a snapshot stamped with the server-tick time, and seeds the global clock offset.
 #[test]

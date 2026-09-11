@@ -12,6 +12,8 @@ mod net_protocol;
 mod net_serde;
 
 #[cfg(feature = "server")]
+mod replication_budget;
+#[cfg(feature = "server")]
 mod server_sim;
 
 #[cfg(feature = "mcp")]

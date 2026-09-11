@@ -18,4 +18,6 @@ pub use client::{
 pub mod server;
 
 #[cfg(feature = "server")]
-pub use server::{start_renet_server, ServerPort, ServerScenario, ServerSimPlugin};
+pub use server::{
+    server_connection_config, start_renet_server, ServerPort, ServerScenario, ServerSimPlugin,
+};

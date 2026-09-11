@@ -674,16 +674,22 @@ authoritative 64 Hz Rapier sim, all `FlightController`s, and fuel burn live in t
 mutation goes out as a command. Shared code (`aerodynamics/`, `controllers/`, `plane/`,
 `environment/` core, `scenario.rs`) is unchanged and compiled into both. The protocol lives in
 `src/net/` and is registered identically on both peers by `NetProtocolPlugin` (same order, or
-replicon rejects the connection); `PROTOCOL_ID` (currently **6** — v2 added `ControllerTelemetry`;
+replicon rejects the connection); `PROTOCOL_ID` (currently **7** — v2 added `ControllerTelemetry`;
 v3 added `ControllerTargets` + `SetControllerTargetsCommand`; v4 appended
 `ControllerKind::RlHeadingHold`; v5 appended `ControllerKind::Refueling` plus the
 `Refueling` variants of `ControllerTargets`/`ControllerTelemetry`; v6 appended
-`PlaneVisual`) gates version-mismatched peers.
+`PlaneVisual`; v7 stopped replicating `Transform`) gates version-mismatched peers.
 
-- **Replicated (server → client), in registration order:** `Transform`, `FlightState`,
+- **Replicated (server → client), in registration order:** `FlightState`,
   `ControlInputs`, `PlaneId`, `PlaneIndex`, `ControllerKind`, `SelectedTuningProfile`,
   `PlaneTuningPath`, `ControllerTelemetry`, `ControllerTargets`, `PlaneVisual`, and
-  (`inference`-gated) `SelectedModel`. The client HUD/map/camera read these read-only. `PlaneTuningPath` lets the
+  (`inference`-gated) `SelectedModel`. **`Transform` is deliberately not replicated**:
+  `FlightState` already carries the pose, so the client derives its own
+  (`decorate_replicated_plane` seeds it, `render_net_interpolation` overwrites it each frame).
+  Every byte here is paid per plane per tick against renet's `available_bytes_per_tick`, and
+  sending the pose twice is what froze ~50 planes of `stress_500` on every client —
+  `tests/net/replication_budget.rs` is the gate; run it after adding a per-tick-changing
+  component. The client HUD/map/camera read these read-only. `PlaneTuningPath` lets the
   client rebuild a `PlaneTuningHandle` and reuse the existing profile enumeration for its
   dropdown. `ControllerTargets` is the settable counterpart to `ControllerTelemetry` — see its
   Key Types row below — and is what the HUD's target-editor widgets (Target Alt/Spd/Hdg, orbit
@@ -1307,6 +1313,7 @@ the binary + a module filter, e.g. `cargo test --no-default-features --test core
 - `client_net` — client interpolation math (`NetInterpolation` buffer → interpolated `Transform`) (`net`-gated)
 - `local_server` — `ServerProcess` drop-kills-child (a client-launched local server dies with the client); **not** an in-process replicon round trip despite the name (`server`-gated)
 - `server_sim` — `ServerSimPlugin` boot / scenario spawn / `FromClient` command handlers, transport-free (`server`-gated), incl. `ControllerTargets` replication and `SetControllerTargetsCommand` (apply + echo-back, variant-mismatch no-op, unknown-plane no-op)
+- `replication_budget` — the one net test with the **real renet transport** in the loop (in memory, no socket; `server`-gated): flies `stress_500` on the production `server_connection_config` and fails if any plane moves on the server but freezes on the client. Renet *drops* unreliable messages past `available_bytes_per_tick`, and replicon's stable send order starves the same planes every tick — silently, since no transport-free test can see it. Do not swap its hand-rolled packet pump for `RenetServer::new_local_client`/`process_local_client`: that helper builds the client with the server's channel orientation, and replicon's asymmetric channels then deliver nothing
 - `mcp_snapshot` — MCP read-path snapshot mirror, transport-free (`mcp`-gated), incl. `ControllerTargets` mirrored into `PlaneSnapshot.targets`
 - `mcp_bridge` — MCP write-path command bridge drain, transport-free (`mcp`-gated), incl. `ControlRequest::SetControllerTargets` and the `merge_controller_targets`/`parse_orbit_direction` helpers backing the `set_controller_targets` tool
 - `mcp_lifecycle` — MCP auto-reconnect (`poll_reconnect`) + clean shutdown (`check_shutdown`), transport-free (`mcp`-gated)

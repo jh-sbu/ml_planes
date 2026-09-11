@@ -148,6 +148,22 @@ fn apply_sim_speed(sim_speed: Res<SimSpeed>, mut virtual_time: ResMut<Time<Virtu
     }
 }
 
+/// The renet connection settings the server sends with.
+///
+/// `available_bytes_per_tick` is the one that matters: renet spends it per send, and an
+/// unreliable message that does not fit is **dropped**, not deferred. Replicon ships
+/// per-tick mutations unreliably and always in the same order, so a fleet that
+/// overflows it starves the same planes every tick — they freeze on every client with
+/// no error anywhere. `tests/net/replication_budget.rs` pins that the shipped stress
+/// scenario fits.
+pub fn server_connection_config(channels: &RepliconChannels) -> ConnectionConfig {
+    ConnectionConfig {
+        server_channels_config: channels.server_configs(),
+        client_channels_config: channels.client_configs(),
+        ..Default::default()
+    }
+}
+
 /// Resolve a `PlaneId` to its entity, if a plane with that id is live.
 fn entity_for_plane(planes: &Query<(Entity, &PlaneId)>, plane: PlaneId) -> Option<Entity> {
     planes
@@ -267,16 +283,15 @@ fn on_set_controller_targets(
 /// insert both as resources. Runs at `Startup`, after plugin build so the replicon
 /// channels are registered. Added only by the server binary — kept out of
 /// [`ServerSimPlugin`] so tests never bind a socket.
+///
+/// [`server_connection_config`] is split out so the replication-budget test runs the
+/// transport's real per-tick byte budget rather than a copy of it.
 pub fn start_renet_server(
     mut commands: Commands,
     channels: Res<RepliconChannels>,
     port: Res<ServerPort>,
 ) -> Result {
-    let server = RenetServer::new(ConnectionConfig {
-        server_channels_config: channels.server_configs(),
-        client_channels_config: channels.client_configs(),
-        ..Default::default()
-    });
+    let server = RenetServer::new(server_connection_config(&channels));
 
     let current_time = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?;
     let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, port.0))?;

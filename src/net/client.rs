@@ -234,15 +234,22 @@ fn advance_clock(clock: &mut NetRenderClock, dt: f64) -> bool {
 
 /// Attach an (empty) [`NetInterpolation`] ring buffer to each replicated plane once
 /// it carries both a [`PlaneId`] and a [`FlightState`]. Not keyed on `Added<…>` so it
-/// is robust to the two components arriving in different replication ticks. Planes
-/// render as gizmos (`draw_plane_gizmos`), so no mesh/material is needed here. The
+/// is robust to the two components arriving in different replication ticks. The
 /// buffer stays empty until [`ingest_snapshots`] records the first server-timed pose.
+///
+/// Also seeds the plane's [`Transform`] at its replicated pose. `Transform` is not
+/// replicated (the protocol sends the pose once, in `FlightState`), but the
+/// interpolation writer, the follow camera, and the model child all need one before
+/// the first snapshot lands.
 fn decorate_replicated_plane(
     mut commands: Commands,
-    planes: Query<Entity, (With<PlaneId>, With<FlightState>, Without<NetInterpolation>)>,
+    planes: Query<(Entity, &FlightState), (With<PlaneId>, Without<NetInterpolation>)>,
 ) {
-    for entity in &planes {
-        commands.entity(entity).insert(NetInterpolation::default());
+    for (entity, state) in &planes {
+        commands.entity(entity).insert((
+            NetInterpolation::default(),
+            Transform::from_translation(state.position).with_rotation(state.attitude),
+        ));
     }
 }
 
@@ -329,7 +336,8 @@ fn advance_render_clock(time: Res<Time>, mut clock: ResMut<NetRenderClock>) {
 /// sampling every plane at the shared playback time. The playback clock lives in
 /// server-time space and advances smoothly (see [`advance_render_clock`]), so the
 /// rendered motion is decoupled from client frame / arrival jitter. Planes with an
-/// empty buffer (pre-warmup) keep their replicated `Transform`.
+/// empty buffer (pre-warmup) keep the `Transform` [`decorate_replicated_plane`]
+/// seeded from their replicated `FlightState`.
 ///
 /// Runs in [`PlaneRenderPose::Write`]: this establishes the pose the frame renders, and
 /// the follow camera / gizmo renderer read it back in the same schedule.

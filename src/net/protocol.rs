@@ -26,7 +26,7 @@ pub const DEFAULT_PORT: u16 = 5555;
 
 /// Protocol identity/version. Bump when the replicated component or command set
 /// changes incompatibly so the transport rejects mismatched peers.
-pub const PROTOCOL_ID: u64 = 6;
+pub const PROTOCOL_ID: u64 = 7;
 
 /// Switch the target plane's active controller (server rebuilds it).
 #[derive(Event, Serialize, Deserialize, Clone, Debug)]
@@ -99,8 +99,13 @@ pub struct NetProtocolPlugin;
 impl Plugin for NetProtocolPlugin {
     fn build(&self, app: &mut App) {
         // Replicated components — server → client. Order must match client/server.
-        app.replicate::<Transform>()
-            .replicate::<FlightState>()
+        //
+        // `Transform` is deliberately absent: `FlightState` already carries the pose,
+        // and the client derives its `Transform` from it (`decorate_replicated_plane`
+        // seeds one, `render_net_interpolation` overwrites it every frame). Sending
+        // both cost every plane ~40 bytes per tick against renet's per-tick budget,
+        // which starved the tail of a large fleet — see `tests/net/replication_budget.rs`.
+        app.replicate::<FlightState>()
             .replicate::<ControlInputs>()
             .replicate::<PlaneId>()
             .replicate::<PlaneIndex>()
