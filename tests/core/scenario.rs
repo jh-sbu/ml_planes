@@ -657,7 +657,7 @@ fn fleet_demo_contains_one_of_every_airframe_in_formation() {
     }
 }
 
-/// The live-app default scene is a valid scenario with the six demo
+/// The live-app default scene is a valid scenario with the seven demo
 /// planes in order. Non-RL planes must build a controller; the RL planes resolve
 /// to their RL kinds (they only *build* under a native inference build, and are
 /// otherwise skipped by the live spawner).
@@ -676,15 +676,20 @@ fn default_scenario_resolves_to_full_demo() {
             "pid_orbit",
             "rl_orbit",
             "rl_level_hold",
-            "flight_plan"
+            "flight_plan",
+            "inversion_level_hold"
         ]
     );
 
     assert_eq!(resolved.planes[3].spec.kind(), ControllerKind::RlOrbit);
     assert_eq!(resolved.planes[4].spec.kind(), ControllerKind::RlLevelHold);
+    assert_eq!(
+        resolved.planes[6].spec.kind(),
+        ControllerKind::InversionLevelHold
+    );
 
     // The non-RL planes must build cleanly in every feature config.
-    for idx in [0usize, 1, 2, 5] {
+    for idx in [0usize, 1, 2, 5, 6] {
         resolved
             .build_controller(idx)
             .unwrap_or_else(|e| panic!("build default plane {idx}: {e}"));

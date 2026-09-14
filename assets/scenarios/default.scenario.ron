@@ -1,6 +1,10 @@
 // Default startup scene: a level-hold leader with a
-// wingman in formation, a PID orbit, the two RL comparison planes, and an L1
-// flight-plan follower.
+// wingman in formation, a PID orbit, the two RL comparison planes, an L1
+// flight-plan follower, and a model-inversion level hold.
+//
+// `leader`, `rl_level_hold` and `inversion_level_hold` all hold 1000 m / 100 m/s
+// on parallel tracks 30 m apart in Z, so the three level-hold schemes (PID, RL,
+// inversion) can be compared side by side in flight.
 //
 // All planes cruise at 100 m/s, so `velocity` is omitted and derived from
 // `heading_deg` (0 = +X, 90 = +Z) at the default speed — this also yaws the
@@ -69,6 +73,11 @@
             position: (2000.0, 1000.0, 2000.0),
             heading_deg: -135.0,
             controller: FlightPlan(plan: "assets/plans/patrol.plan.ron"),
+        ),
+        (
+            name: "inversion_level_hold",
+            position: (0.0, 1000.0, 30.0),
+            controller: InversionLevelHold(altitude: 1000.0, airspeed: 100.0),
         ),
     ],
 )
