@@ -141,13 +141,21 @@ pub fn drain_control_requests(
 pub fn spawnable_kind_names() -> &'static [&'static str] {
     #[cfg(not(feature = "inference"))]
     {
-        &["Manual", "LevelHold", "HeadingHold", "Ascent", "Orbit"]
+        &[
+            "Manual",
+            "LevelHold",
+            "InversionLevelHold",
+            "HeadingHold",
+            "Ascent",
+            "Orbit",
+        ]
     }
     #[cfg(feature = "inference")]
     {
         &[
             "Manual",
             "LevelHold",
+            "InversionLevelHold",
             "HeadingHold",
             "Ascent",
             "Orbit",
@@ -169,6 +177,7 @@ pub fn parse_spawnable_controller_kind(name: &str) -> Result<ControllerKind, Str
     match name {
         "Manual" => Ok(ControllerKind::Manual),
         "LevelHold" => Ok(ControllerKind::LevelHold),
+        "InversionLevelHold" => Ok(ControllerKind::InversionLevelHold),
         "HeadingHold" => Ok(ControllerKind::HeadingHold),
         "Ascent" => Ok(ControllerKind::Ascent),
         "Orbit" => Ok(ControllerKind::Orbit),
@@ -492,6 +501,10 @@ mod tests {
         assert_eq!(
             parse_spawnable_controller_kind("LevelHold").unwrap(),
             ControllerKind::LevelHold
+        );
+        assert_eq!(
+            parse_spawnable_controller_kind("InversionLevelHold").unwrap(),
+            ControllerKind::InversionLevelHold
         );
         assert_eq!(
             parse_spawnable_controller_kind("HeadingHold").unwrap(),

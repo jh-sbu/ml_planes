@@ -179,6 +179,7 @@ fn controller_kind_roundtrips() {
         ControllerKind::RlHeadingHold,
         // Appended (protocol v5).
         ControllerKind::Refueling,
+        ControllerKind::InversionLevelHold,
     ] {
         assert_ron_roundtrip(&kind);
     }

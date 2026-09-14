@@ -104,6 +104,11 @@ pub struct PlaneSpec {
 /// inference`.
 #[derive(Debug, Clone, Deserialize)]
 pub enum ControllerSpec {
+    /// Generic-jet model inversion using the frozen Python experiment gains.
+    InversionLevelHold {
+        altitude: f32,
+        airspeed: f32,
+    },
     LevelHold {
         altitude: f32,
         airspeed: f32,
@@ -214,6 +219,7 @@ impl ControllerSpec {
     /// in [`ResolvedScenario::build_controller`].
     pub fn kind(&self) -> ControllerKind {
         match self {
+            ControllerSpec::InversionLevelHold { .. } => ControllerKind::InversionLevelHold,
             ControllerSpec::LevelHold { .. } => ControllerKind::LevelHold,
             ControllerSpec::Orbit { .. } => ControllerKind::Orbit,
             ControllerSpec::HeadingHold { .. } => ControllerKind::HeadingHold,
@@ -445,6 +451,9 @@ impl ResolvedScenario {
         let prev = ControlInputs::default();
 
         match &plane.spec {
+            ControllerSpec::InversionLevelHold { altitude, airspeed } => Ok(Box::new(
+                crate::controllers::InversionLevelHoldController::new(*altitude, *airspeed),
+            )),
             ControllerSpec::LevelHold {
                 altitude,
                 airspeed,

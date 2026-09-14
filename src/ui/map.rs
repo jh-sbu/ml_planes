@@ -115,7 +115,10 @@ impl MapState {
 /// Map color for a plane glyph, keyed by its active controller.
 fn kind_color(kind: ControllerKind) -> egui::Color32 {
     match kind {
-        ControllerKind::LevelHold | ControllerKind::Ascent | ControllerKind::HeadingHold => {
+        ControllerKind::LevelHold
+        | ControllerKind::InversionLevelHold
+        | ControllerKind::Ascent
+        | ControllerKind::HeadingHold => {
             egui::Color32::from_rgb(90, 160, 255) // blue
         }
         ControllerKind::Wingman => egui::Color32::from_rgb(90, 220, 120), // green

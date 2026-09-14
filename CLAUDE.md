@@ -674,11 +674,12 @@ authoritative 64 Hz Rapier sim, all `FlightController`s, and fuel burn live in t
 mutation goes out as a command. Shared code (`aerodynamics/`, `controllers/`, `plane/`,
 `environment/` core, `scenario.rs`) is unchanged and compiled into both. The protocol lives in
 `src/net/` and is registered identically on both peers by `NetProtocolPlugin` (same order, or
-replicon rejects the connection); `PROTOCOL_ID` (currently **7** — v2 added `ControllerTelemetry`;
+replicon rejects the connection); `PROTOCOL_ID` (currently **8** — v2 added `ControllerTelemetry`;
 v3 added `ControllerTargets` + `SetControllerTargetsCommand`; v4 appended
 `ControllerKind::RlHeadingHold`; v5 appended `ControllerKind::Refueling` plus the
 `Refueling` variants of `ControllerTargets`/`ControllerTelemetry`; v6 appended
-`PlaneVisual`; v7 stopped replicating `Transform`) gates version-mismatched peers.
+`PlaneVisual`; v7 stopped replicating `Transform`; v8 appended
+`ControllerKind::InversionLevelHold`) gates version-mismatched peers.
 
 - **Replicated (server → client), in registration order:** `FlightState`,
   `ControlInputs`, `PlaneId`, `PlaneIndex`, `ControllerKind`, `SelectedTuningProfile`,

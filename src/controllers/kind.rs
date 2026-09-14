@@ -64,6 +64,9 @@ pub enum ControllerKind {
     /// last (append-only) so existing bincode discriminants for a stale net peer
     /// don't shift.
     Refueling,
+    /// Generic-jet force/moment inversion cascade, promoted from the Python benchmark.
+    /// Append-only to preserve existing network discriminants.
+    InversionLevelHold,
 }
 
 impl ControllerKind {
@@ -76,6 +79,7 @@ impl ControllerKind {
     pub const ALL: &'static [ControllerKind] = &[
         Self::Manual,
         Self::LevelHold,
+        Self::InversionLevelHold,
         Self::HeadingHold,
         Self::Ascent,
         Self::Orbit,
@@ -86,6 +90,7 @@ impl ControllerKind {
     pub const ALL: &'static [ControllerKind] = &[
         Self::Manual,
         Self::LevelHold,
+        Self::InversionLevelHold,
         Self::HeadingHold,
         Self::RlHeadingHold,
         Self::Ascent,
@@ -101,6 +106,7 @@ impl ControllerKind {
         match self {
             ControllerKind::Manual => "Manual",
             ControllerKind::LevelHold => "Level Hold",
+            ControllerKind::InversionLevelHold => "Inversion Level Hold (generic jet)",
             ControllerKind::HeadingHold => "Heading Hold",
             ControllerKind::Wingman => "Wingman",
             ControllerKind::Ascent => "Ascent",
@@ -167,6 +173,11 @@ impl ControllerKind {
     ) -> Box<dyn FlightController> {
         match self {
             ControllerKind::Manual => Box::new(ManualController::new()),
+            // This has its own frozen gains; a legacy PID tuning profile must
+            // never replace it with a different controller implementation.
+            ControllerKind::InversionLevelHold => {
+                Box::new(super::InversionLevelHoldController::from_state(state))
+            }
             ControllerKind::Ascent => {
                 Box::new(AscentController::new(state, state.altitude + 1000.0))
             }

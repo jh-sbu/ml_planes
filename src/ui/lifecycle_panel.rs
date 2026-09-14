@@ -62,6 +62,7 @@ const DEFAULT_CONFIG: &str = "planes/generic_jet.plane.ron";
 const SPAWNABLE_KINDS: &[ControllerKind] = &[
     ControllerKind::Manual,
     ControllerKind::LevelHold,
+    ControllerKind::InversionLevelHold,
     ControllerKind::Ascent,
     ControllerKind::HeadingHold,
     ControllerKind::Orbit,
@@ -76,6 +77,7 @@ const SPAWNABLE_KINDS: &[ControllerKind] = &[
 const SPAWNABLE_KINDS: &[ControllerKind] = &[
     ControllerKind::Manual,
     ControllerKind::LevelHold,
+    ControllerKind::InversionLevelHold,
     ControllerKind::Ascent,
     ControllerKind::HeadingHold,
     ControllerKind::Orbit,
@@ -485,6 +487,7 @@ mod tests {
         for k in [
             ControllerKind::Manual,
             ControllerKind::LevelHold,
+            ControllerKind::InversionLevelHold,
             ControllerKind::Ascent,
             ControllerKind::HeadingHold,
             ControllerKind::Orbit,

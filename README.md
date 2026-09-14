@@ -126,12 +126,28 @@ this same model.
 |---|---|
 | `ManualController` | Keyboard/stick input; direct control-surface commands |
 | `LevelHoldController` | Cascade PID holding target altitude and airspeed |
+| `InversionLevelHoldController` | Generic-jet density/mass scheduled force/moment inversion; frozen Python-winning gains, no ML dependency |
 | `HeadingHoldController` | Holds a commanded heading via an inner level-hold cascade |
 | `AscentController` | Climbs to a target altitude then hands off to level hold |
 | `OrbitController` | 3-level cascade PID flying a circular orbit around a world-frame point |
 | `WingmanController` | Formation flight; holds a fixed offset in a leader's body frame |
 | `L1Controller` | Follows a preset `FlightPlan` (waypoints + orbit legs) via L1 nonlinear lateral guidance |
 | `Rl*Controller` (`inference`) | Trained `burn` policies for level hold, orbit (direct/residual), and recurrent LSTM orbit |
+
+Select **Inversion Level Hold (generic jet)** in the controller menu, use
+`InversionLevelHold(altitude: 1000.0, airspeed: 110.0)` in a scenario, or send
+`controller_kind: "InversionLevelHold"` through MCP. The promoted cascade uses
+the frozen gains from the Python experiment ([promotion and benchmark report](plans/inversion_level_hold.md)).
+It is calibrated for the generic jet and instantaneous actuators; the measured
+actuator-lag sensitivity still applies. Existing PID and RL modes remain available.
+Run its native benchmark with:
+
+```bash
+cargo run --release --no-default-features --example inversion_level_hold_baseline
+```
+
+The ready-to-run scenario is `assets/scenarios/inversion_level_hold.scenario.ron`.
+Network peers must both use protocol v8, which adds the new controller variant.
 
 Add a new controller by implementing `FlightController`:
 

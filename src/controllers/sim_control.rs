@@ -382,21 +382,12 @@ fn level_hold_targets_from_controller(
     controller: &mut ActiveController,
     state: &FlightState,
 ) -> (f32, f32) {
-    if let Some(rl) = controller
-        .0
-        .as_any_mut()
-        .downcast_mut::<RlLevelHoldController>()
-    {
-        return (rl.target_altitude, rl.target_airspeed);
+    match controller.0.targets() {
+        crate::controllers::ControllerTargets::LevelHold { altitude, airspeed } => {
+            (altitude, airspeed)
+        }
+        _ => (state.altitude, state.airspeed),
     }
-    if let Some(lh) = controller
-        .0
-        .as_any_mut()
-        .downcast_mut::<LevelHoldController>()
-    {
-        return (lh.target_altitude, lh.target_airspeed);
-    }
-    (state.altitude, state.airspeed)
 }
 
 #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
@@ -737,6 +728,7 @@ fn rebuild_preserves_targets(kind: ControllerKind) -> bool {
     matches!(
         kind,
         ControllerKind::LevelHold
+            | ControllerKind::InversionLevelHold
             | ControllerKind::RlLevelHold
             | ControllerKind::HeadingHold
             | ControllerKind::RlHeadingHold
@@ -798,6 +790,12 @@ fn apply_initial_tuning(
         let Some(pt) = tuning_assets.get(&tuning_handle.0) else {
             continue;
         };
+        // No legacy tuning pool applies to the promoted inversion controller.
+        // Preserve its integrals and targets when a plane's PID asset arrives.
+        if *kind == ControllerKind::InversionLevelHold {
+            commands.entity(entity).insert(TuningApplied);
+            continue;
+        }
         let profile_name = profile.0.as_str();
         let tuning: Option<&dyn ControllerTuning> = match *kind {
             ControllerKind::Orbit
@@ -907,6 +905,9 @@ fn apply_controller_switch(
             .map(|p| p.is_changed() && !p.is_added())
             .unwrap_or(false);
         if !kind_mutated && !profile_mutated {
+            continue;
+        }
+        if *kind == ControllerKind::InversionLevelHold && !kind_mutated {
             continue;
         }
         let profile_name = profile.as_deref().map(|p| p.0.as_str()).unwrap_or("normal");

@@ -1,0 +1,13 @@
+// Generic-jet inversion cascade promoted from experiments/level_hold_python.
+// Validated with instantaneous actuators; aggressive recovery, not load-limited.
+(
+    steps: 3200,
+    interval: 64,
+    planes: [(
+        name: "Inversion level hold",
+        config: "assets/planes/generic_jet.plane.ron",
+        position: (0.0, 900.0, 0.0),
+        velocity: (100.0, 0.0, 0.0),
+        controller: InversionLevelHold(altitude: 1000.0, airspeed: 110.0),
+    )],
+)
