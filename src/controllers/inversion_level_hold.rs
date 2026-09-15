@@ -76,10 +76,22 @@ impl InversionLevelHoldController {
     pub fn from_state(state: &FlightState) -> Self {
         Self::new(state.altitude, state.airspeed)
     }
-}
 
-impl FlightController for InversionLevelHoldController {
-    fn update(&mut self, state: &FlightState, _ctx: &ControllerContext, dt: f32) -> ControlInputs {
+    /// Current `(altitude, speed)` error integrals, as advanced by the last `update`.
+    pub fn integrals(&self) -> (f64, f64) {
+        (self.altitude_integral, self.speed_integral)
+    }
+
+    /// The command this controller issues for `state` given integrals that have
+    /// ALREADY been advanced for this step. `update` is exactly "advance the
+    /// integrals, then this"; exposing the second half lets the IntMLP DAgger
+    /// trainer label a learner's state with the learner's own integrator values.
+    pub fn command_with_integrals(
+        &self,
+        state: &FlightState,
+        altitude_integral: f64,
+        speed_integral: f64,
+    ) -> ControlInputs {
         // Reuse the observation definition so Python/native control see identical
         // normalization, density, attitude conventions and fuel information.
         let obs = level_hold_observation(state, self.target_altitude, self.target_airspeed);
@@ -100,9 +112,7 @@ impl FlightController for InversionLevelHoldController {
         let gamma = (vv / v).clamp(-0.8, 0.8).asin();
         let k = self.gains;
 
-        self.altitude_integral = (self.altitude_integral + h * dt as f64).clamp(-30.0, 30.0);
-        self.speed_integral = (self.speed_integral + ev * dt as f64).clamp(-20.0, 20.0);
-        let az = (-k.hp * h - k.hd * vv - k.hi * self.altitude_integral).clamp(-k.azmax, k.azmax);
+        let az = (-k.hp * h - k.hd * vv - k.hi * altitude_integral).clamp(-k.azmax, k.azmax);
         let cl_des = mass * (9.81 + az) / qs / (gamma.cos() * roll.cos()).max(0.6);
         // Lift and zero pitching moment jointly determine trim alpha/elevator.
         let alpha_des =
@@ -114,7 +124,7 @@ impl FlightController for InversionLevelHoldController {
             .clamp(-0.3491, 0.3491);
         let cl = (0.1 + 4.5 * alpha + 0.4 * de).clamp(-1.4, 1.4);
         let drag = qs * (0.02 + 0.05 * cl * cl);
-        let acc = -k.sp * ev - k.si * self.speed_integral;
+        let acc = -k.sp * ev - k.si * speed_integral;
         let thrust =
             (drag + mass * (acc + 9.81 * gamma.sin())) / (alpha.cos() * beta.cos()).max(0.5);
         let throttle = (thrust / (60000.0 * rho)).clamp(0.0, 1.0);
@@ -130,6 +140,17 @@ impl FlightController for InversionLevelHoldController {
             aileron: (da / 0.4363).clamp(-1.0, 1.0) as f32,
             rudder: (dr / 0.2618).clamp(-1.0, 1.0) as f32,
         }
+    }
+}
+
+impl FlightController for InversionLevelHoldController {
+    fn update(&mut self, state: &FlightState, _ctx: &ControllerContext, dt: f32) -> ControlInputs {
+        let obs = level_hold_observation(state, self.target_altitude, self.target_airspeed);
+        let h = (obs[0] * 200.0) as f64;
+        let ev = (obs[1] * 50.0) as f64;
+        self.altitude_integral = (self.altitude_integral + h * dt as f64).clamp(-30.0, 30.0);
+        self.speed_integral = (self.speed_integral + ev * dt as f64).clamp(-20.0, 20.0);
+        self.command_with_integrals(state, self.altitude_integral, self.speed_integral)
     }
 
     fn name(&self) -> &'static str {

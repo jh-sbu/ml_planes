@@ -35,9 +35,9 @@ use crate::plane::{ControlInputs, FlightState, PlaneId, PHYSICS_DT};
 
 #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
 use crate::controllers::{
-    RlHeadingHoldConfig, RlHeadingHoldController, RlLevelHoldController, RlLstmOrbitConfig,
-    RlLstmOrbitController, RlOrbitConfig, RlOrbitController, RlOrbitResidualConfig,
-    RlOrbitResidualController,
+    IntMlpLevelHoldController, RlHeadingHoldConfig, RlHeadingHoldController, RlLevelHoldController,
+    RlLstmOrbitConfig, RlLstmOrbitController, RlOrbitConfig, RlOrbitController,
+    RlOrbitResidualConfig, RlOrbitResidualController,
 };
 
 const DEFAULT_STEPS: usize = 640;
@@ -166,6 +166,13 @@ pub enum ControllerSpec {
         altitude: f32,
         airspeed: f32,
     },
+    /// Trained IntMLP level hold (`models/int_mlp_level_hold/*.mpk`). Always parses;
+    /// builds only on a native `--features inference` build, like the RL specs.
+    IntMlpLevelHold {
+        model: String,
+        altitude: f32,
+        airspeed: f32,
+    },
     RlOrbit {
         model: String,
         #[serde(default)]
@@ -229,6 +236,7 @@ impl ControllerSpec {
             ControllerSpec::FlightPlan { .. } => ControllerKind::FlightPlan,
             ControllerSpec::Manual => ControllerKind::Manual,
             ControllerSpec::RlLevelHold { .. } => ControllerKind::RlLevelHold,
+            ControllerSpec::IntMlpLevelHold { .. } => ControllerKind::IntMlpLevelHold,
             ControllerSpec::RlOrbit { .. } => ControllerKind::RlOrbit,
             ControllerSpec::RlOrbitResidual { .. } => ControllerKind::RlOrbitResidual,
             ControllerSpec::RlLstmOrbit { .. } => ControllerKind::RlLstmOrbit,
@@ -279,6 +287,7 @@ impl ControllerSpec {
     pub fn rl_model_stem(&self) -> Option<String> {
         match self {
             ControllerSpec::RlLevelHold { model, .. }
+            | ControllerSpec::IntMlpLevelHold { model, .. }
             | ControllerSpec::RlOrbit { model, .. }
             | ControllerSpec::RlOrbitResidual { model, .. }
             | ControllerSpec::RlLstmOrbit { model, .. }
@@ -546,6 +555,14 @@ impl ResolvedScenario {
                 .map(|c| Box::new(c) as Box<dyn FlightController>)
                 .map_err(|e| format!("failed to load RL model '{model}': {e}")),
             #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
+            ControllerSpec::IntMlpLevelHold {
+                model,
+                altitude,
+                airspeed,
+            } => IntMlpLevelHoldController::load(&strip_mpk(model), *altitude, *airspeed)
+                .map(|c| Box::new(c) as Box<dyn FlightController>)
+                .map_err(|e| format!("failed to load IntMLP model '{model}': {e}")),
+            #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
             ControllerSpec::RlHeadingHold {
                 model,
                 heading_deg,
@@ -635,6 +652,7 @@ impl ResolvedScenario {
             // `observe_state` reports a clear error) rather than failing to parse.
             #[cfg(not(all(feature = "inference", not(target_arch = "wasm32"))))]
             ControllerSpec::RlLevelHold { .. }
+            | ControllerSpec::IntMlpLevelHold { .. }
             | ControllerSpec::RlOrbit { .. }
             | ControllerSpec::RlOrbitResidual { .. }
             | ControllerSpec::RlLstmOrbit { .. }

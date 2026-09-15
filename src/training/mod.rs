@@ -7,6 +7,11 @@ pub mod eval;
 pub mod eval_metrics;
 mod flight_env;
 pub mod heading_hold_env;
+pub mod int_mlp;
+#[cfg(feature = "inference")]
+pub mod int_mlp_model;
+#[cfg(feature = "training")]
+pub mod int_mlp_train;
 pub mod level_hold_env;
 pub mod orbit_env;
 pub mod orbit_residual_env;

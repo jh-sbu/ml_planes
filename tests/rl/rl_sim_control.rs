@@ -18,11 +18,11 @@ use burn::tensor::backend::Backend;
 
 use ml_planes::controllers::orbit::OrbitDirection;
 use ml_planes::controllers::{
-    ActiveController, ControllerKind, HeadingHoldController, LevelHoldController, LevelHoldTuning,
-    ModelLibrary, OrbitTuning, PlaneTuning, RlHeadingHoldConfig, RlHeadingHoldController,
-    RlLevelHoldController, RlOrbitConfig, RlOrbitController, RlOrbitResidualConfig,
-    RlOrbitResidualController, SelectedModel, SelectedTuningProfile, SimControlPlugin,
-    TuningApplied,
+    ActiveController, ControllerKind, HeadingHoldController, IntMlpLevelHoldController,
+    LevelHoldController, LevelHoldTuning, ModelLibrary, OrbitTuning, PlaneTuning,
+    RlHeadingHoldConfig, RlHeadingHoldController, RlLevelHoldController, RlOrbitConfig,
+    RlOrbitController, RlOrbitResidualConfig, RlOrbitResidualController, SelectedModel,
+    SelectedTuningProfile, SimControlPlugin, TuningApplied,
 };
 use ml_planes::plane::{ControlInputs, FlightState, PlaneTuningHandle};
 use ml_planes::training::heading_hold_env::HEADING_HOLD_OBS_DIM;
@@ -549,5 +549,138 @@ fn rl_level_hold_load_failure_demotes_kind() {
          matching the orbit-family arms' Orbit demotion"
     );
 
+    let _ = std::fs::remove_file(stale_path.with_extension("mpk"));
+}
+
+/// A loaded IntMLP policy has no PID gains either: both tuning-rebuild systems must leave
+/// it — weights, targets AND integrator state — in place.
+#[test]
+fn tuning_rebuilds_preserve_int_mlp_level_hold_controller() {
+    use ml_planes::controllers::FlightController;
+    use ml_planes::plane::{ControllerContext, PlaneId, PHYSICS_DT};
+    use ml_planes::training::int_mlp::IntMlpWeights;
+
+    let mut app = build_headless_app_with(|app| {
+        app.add_plugins(SimControlPlugin);
+    });
+    // Flush `scan_models` so a real `models/` dir cannot race the spawn below.
+    app.update();
+
+    let state = level_state(1030.0, 100.0);
+    let mut controller =
+        IntMlpLevelHoldController::from_weights(IntMlpWeights::zeros(), 1000.0, 100.0);
+    // Advance the integrators so an unintended rebuild (which zeroes them) is visible.
+    controller.update(
+        &state,
+        &ControllerContext::empty_for(PlaneId::TEST),
+        PHYSICS_DT,
+    );
+    let integrators = controller.integrators();
+    assert_ne!(integrators.altitude, 0.0);
+
+    let handle = app
+        .world_mut()
+        .resource_mut::<Assets<PlaneTuning>>()
+        .add(tuning_asset());
+    let entity = app
+        .world_mut()
+        .spawn((
+            state,
+            ControlInputs::default(),
+            ActiveController(Box::new(controller)),
+            ControllerKind::IntMlpLevelHold,
+            SelectedModel("models/int_mlp_level_hold/int_mlp_level_hold".to_string()),
+            PlaneTuningHandle(handle),
+            SelectedTuningProfile("normal".to_string()),
+        ))
+        .id();
+
+    let assert_preserved = |app: &mut App, when: &str| {
+        let world = app.world_mut();
+        let mut ctrl = world.get_mut::<ActiveController>(entity).unwrap();
+        let c = ctrl
+            .0
+            .as_any_mut()
+            .downcast_mut::<IntMlpLevelHoldController>()
+            .unwrap_or_else(|| panic!("IntMLP controller replaced after {when}"));
+        assert_eq!(
+            c.integrators(),
+            integrators,
+            "integrators reset after {when}"
+        );
+        assert_eq!((c.target_altitude, c.target_airspeed), (1000.0, 100.0));
+    };
+
+    app.update();
+    assert!(app.world().get::<TuningApplied>(entity).is_some());
+    assert_preserved(&mut app, "the initial tuning load");
+
+    app.world_mut()
+        .get_mut::<SelectedTuningProfile>(entity)
+        .unwrap()
+        .0 = "other".to_string();
+    app.update();
+    assert_preserved(&mut app, "a profile switch");
+}
+
+/// A resolved IntMLP checkpoint that fails to load must demote the kind to `LevelHold`,
+/// the PID controller it is actually flying.
+#[test]
+fn int_mlp_level_hold_load_failure_demotes_kind() {
+    use burn::nn::LinearConfig;
+    use ml_planes::training::int_mlp::INT_MLP_HIDDEN;
+    use ml_planes::training::int_mlp_model::IntMlpPolicy;
+
+    let mut app = build_headless_app_with(|app| {
+        app.add_plugins(SimControlPlugin);
+    });
+    app.update();
+
+    let device = <InfB as Backend>::Device::default();
+    let stale = IntMlpPolicy::<InfB> {
+        fc1: LinearConfig::new(13, INT_MLP_HIDDEN).init(&device),
+        fc2: LinearConfig::new(INT_MLP_HIDDEN, INT_MLP_HIDDEN).init(&device),
+        out: LinearConfig::new(INT_MLP_HIDDEN, 4).init(&device),
+        skip: LinearConfig::new(13, 4).init(&device),
+    };
+    let stale_path = std::env::temp_dir().join(format!(
+        "ml_planes_rl_sim_control_int_mlp_stale_{}",
+        std::process::id()
+    ));
+    stale
+        .save_file(
+            stale_path.to_str().unwrap(),
+            &DefaultFileRecorder::<FullPrecisionSettings>::default(),
+        )
+        .unwrap();
+    app.world_mut().insert_resource(ModelLibrary(
+        [(
+            "int_mlp_level_hold".to_string(),
+            vec![stale_path.to_str().unwrap().to_string()],
+        )]
+        .into_iter()
+        .collect(),
+    ));
+
+    let state = level_state(1000.0, 100.0);
+    let entity = app
+        .world_mut()
+        .spawn((
+            state.clone(),
+            ControlInputs::default(),
+            ActiveController(Box::new(LevelHoldController::from_state(
+                &state,
+                &ControlInputs::default(),
+            ))),
+            ControllerKind::IntMlpLevelHold,
+        ))
+        .id();
+    app.update();
+
+    assert_eq!(
+        *app.world().get::<ControllerKind>(entity).unwrap(),
+        ControllerKind::LevelHold,
+        "a failed IntMLP load must demote the kind label to LevelHold"
+    );
     let _ = std::fs::remove_file(stale_path.with_extension("mpk"));
 }

@@ -23,6 +23,14 @@
 //!                           for the same reason the target ranges must match. Echoed back
 //!                           as the `plane_config` row of the report.
 //!   --episodes <n>          Episodes to roll out (default 64)
+//!   --arch <actor_critic|int_mlp>  level_hold only: checkpoint architecture (default
+//!                           actor_critic). `int_mlp` loads a `train_int_mlp` checkpoint
+//!                           and carries its two error integrators across the episode.
+//!   --seed <u64>            Pre-reset seed episode i with `seed + i * stride` instead of
+//!                           the env's sequential default (which is the 64-episode
+//!                           benchmark, seeds 42+i). Holdout: --episodes 1024
+//!                           --seed 100000 --seed-stride 104729
+//!   --seed-stride <u64>     Seed spacing for --seed (default 1)
 //!   --max-steps <n>         Override the per-episode step cap (default: task config)
 //!   --backend ndarray|cpu   Inference backend (only ndarray/cpu supported)
 //!   --reward-config <path>  Reward/termination profile path (default: the task's
@@ -70,6 +78,24 @@ fn main() {
         std::process::exit(2);
     }
     let episodes = parse_usize(&args, "--episodes", 64);
+    let arch = find_arg(&args, "--arch").unwrap_or_else(|| "actor_critic".to_string());
+    if !matches!(arch.as_str(), "actor_critic" | "int_mlp") {
+        eprintln!("--arch must be actor_critic or int_mlp (got '{arch}')");
+        std::process::exit(2);
+    }
+    if arch == "int_mlp" && task != Task::LevelHold {
+        eprintln!(
+            "--arch int_mlp is a level_hold architecture; got --task {}",
+            task.as_str()
+        );
+        std::process::exit(2);
+    }
+    let seeding = find_arg(&args, "--seed").map(|_| {
+        (
+            parse_u64(&args, "--seed", 0),
+            parse_u64(&args, "--seed-stride", 1),
+        )
+    });
     let path = model_path
         .strip_suffix(".mpk")
         .unwrap_or(&model_path)
@@ -125,8 +151,27 @@ fn main() {
             env.max_episode_steps = max_steps;
             reported_target_alt_range = Some(alt_range);
             reported_target_speed_range = Some(speed_range);
-            let mut policy = load_ff_policy::<B>(&path, env_obs_dim(&env));
-            run_eval(env, episodes, max_steps, &mut policy, task.metric_family())
+            if arch == "int_mlp" {
+                let mut policy = load_int_mlp_policy(&path);
+                run_eval(
+                    env,
+                    episodes,
+                    max_steps,
+                    &mut policy,
+                    task.metric_family(),
+                    seeding,
+                )
+            } else {
+                let mut policy = load_ff_policy::<B>(&path, env_obs_dim(&env));
+                run_eval(
+                    env,
+                    episodes,
+                    max_steps,
+                    &mut policy,
+                    task.metric_family(),
+                    seeding,
+                )
+            }
         }
         Task::HeadingHold => {
             let reward_cfg: HeadingHoldRewardConfig = load_task_reward(&args, task);
@@ -137,7 +182,14 @@ fn main() {
             reported_target_speed_range = Some(speed_range);
             reported_target_heading_range_deg = Some(heading_range_deg);
             let mut policy = load_ff_policy::<B>(&path, env_obs_dim(&env));
-            run_eval(env, episodes, max_steps, &mut policy, task.metric_family())
+            run_eval(
+                env,
+                episodes,
+                max_steps,
+                &mut policy,
+                task.metric_family(),
+                seeding,
+            )
         }
         Task::Orbit => {
             let reward_cfg: OrbitRewardConfig = load_task_reward(&args, task);
@@ -145,7 +197,14 @@ fn main() {
             let mut env = task::orbit_env(&spec, reward_cfg);
             env.max_episode_steps = max_steps;
             let mut policy = load_ff_policy::<B>(&path, env_obs_dim(&env));
-            run_eval(env, episodes, max_steps, &mut policy, task.metric_family())
+            run_eval(
+                env,
+                episodes,
+                max_steps,
+                &mut policy,
+                task.metric_family(),
+                seeding,
+            )
         }
         Task::ResidualOrbit => {
             let reward_cfg: OrbitRewardConfig = load_task_reward(&args, task);
@@ -153,7 +212,14 @@ fn main() {
             let mut env = task::residual_orbit_env(&spec, reward_cfg);
             env.max_episode_steps = max_steps;
             let mut policy = load_ff_policy::<B>(&path, env_obs_dim(&env));
-            run_eval(env, episodes, max_steps, &mut policy, task.metric_family())
+            run_eval(
+                env,
+                episodes,
+                max_steps,
+                &mut policy,
+                task.metric_family(),
+                seeding,
+            )
         }
         Task::LstmOrbit => {
             let reward_cfg: WuOrbitRewardConfig = load_task_reward(&args, task);
@@ -163,13 +229,24 @@ fn main() {
             env.advance_to_stage(curriculum_stage);
             reported_stage = Some(env.curriculum_stage.name());
             let mut policy = load_lstm_policy::<B>(&path, env_obs_dim(&env));
-            run_eval(env, episodes, max_steps, &mut policy, task.metric_family())
+            run_eval(
+                env,
+                episodes,
+                max_steps,
+                &mut policy,
+                task.metric_family(),
+                seeding,
+            )
         }
     };
 
     // Common core — identical keys for every task.
     println!("task,{}", task.as_str());
     println!("model,{path}.mpk");
+    println!("arch,{arch}");
+    if let Some((seed, stride)) = seeding {
+        println!("seed,{seed}\nseed_stride,{stride}");
+    }
     println!("plane_config,{plane_config}");
     if let Some(stage) = reported_stage {
         println!("curriculum_stage,{stage}");
@@ -318,6 +395,39 @@ where
     FeedForwardRunner { model, device }
 }
 
+/// IntMLP level hold: the flat kernel plus the two error integrators it carries.
+#[cfg(feature = "inference")]
+struct IntMlpRunner {
+    weights: ml_planes::training::int_mlp::IntMlpWeights,
+    integrators: ml_planes::training::int_mlp::IntegratorState,
+}
+
+#[cfg(feature = "inference")]
+impl EvalPolicy for IntMlpRunner {
+    fn reset(&mut self) {
+        self.integrators = Default::default();
+    }
+
+    fn act(&mut self, obs: &[f32]) -> Vec<f32> {
+        use ml_planes::training::int_mlp::int_mlp_features;
+        self.integrators.step(obs, ml_planes::plane::PHYSICS_DT);
+        self.weights
+            .action(&int_mlp_features(obs, &self.integrators))
+            .to_vec()
+    }
+}
+
+/// Load through the controller so evaluation and flight share one validating loader.
+#[cfg(feature = "inference")]
+fn load_int_mlp_policy(path: &str) -> IntMlpRunner {
+    let controller = ml_planes::controllers::IntMlpLevelHoldController::load(path, 0.0, 0.0)
+        .unwrap_or_else(|e| panic!("failed to load IntMLP model from {path}.mpk: {e}"));
+    IntMlpRunner {
+        weights: controller.weights().clone(),
+        integrators: Default::default(),
+    }
+}
+
 #[cfg(feature = "inference")]
 fn load_lstm_policy<Bk: burn::tensor::backend::Backend>(
     path: &str,
@@ -356,6 +466,7 @@ fn run_eval<E, P>(
     max_steps: u32,
     policy: &mut P,
     family: ml_planes::training::eval_metrics::MetricFamily,
+    seeding: Option<(u64, u64)>,
 ) -> ml_planes::training::EvalReport
 where
     E: ml_planes::training::TrainingEnv,
@@ -368,7 +479,10 @@ where
         return run.report();
     }
 
-    for _ in 0..episodes {
+    for i in 0..episodes {
+        if let Some((seed, stride)) = seeding {
+            env.set_rng_seed(seed.wrapping_add((i as u64).wrapping_mul(stride)));
+        }
         let (mut obs, _) = env.reset();
         policy.reset();
         let mut ep_len = 0_u32;
@@ -422,6 +536,18 @@ fn parse_target_range(
         .map(|v| {
             ml_planes::training::parse_f32_range(&v).unwrap_or_else(|e| {
                 eprintln!("{key}: {e}");
+                std::process::exit(2);
+            })
+        })
+        .unwrap_or(default)
+}
+
+#[cfg(feature = "inference")]
+fn parse_u64(args: &[String], key: &str, default: u64) -> u64 {
+    find_arg(args, key)
+        .map(|v| {
+            v.parse::<u64>().unwrap_or_else(|_| {
+                eprintln!("{key} must be a non-negative integer");
                 std::process::exit(2);
             })
         })

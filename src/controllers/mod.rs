@@ -3,6 +3,8 @@ pub mod component;
 pub mod flight_plan;
 pub mod guidance;
 pub mod heading_hold;
+#[cfg(feature = "inference")]
+pub mod int_mlp_level_hold;
 pub mod inversion_level_hold;
 pub mod kind;
 pub mod l1;
@@ -36,6 +38,8 @@ pub use ascent::AscentController;
 pub use component::ActiveController;
 pub use flight_plan::{FlightPlan, FlightPlanLeg};
 pub use heading_hold::HeadingHoldController;
+#[cfg(feature = "inference")]
+pub use int_mlp_level_hold::IntMlpLevelHoldController;
 pub use inversion_level_hold::{InversionLevelHoldController, InversionLevelHoldGains};
 pub use kind::ControllerKind;
 pub use l1::{L1Controller, L1Phase, L1Status};

@@ -67,6 +67,10 @@ pub enum ControllerKind {
     /// Generic-jet force/moment inversion cascade, promoted from the Python benchmark.
     /// Append-only to preserve existing network discriminants.
     InversionLevelHold,
+    /// Trained IntMLP level hold (a network whose memory is two error integrators).
+    /// Must be constructed via `IntMlpLevelHoldController::load()`; `build()` falls
+    /// back to `LevelHold` (the generic factory has no model path). Append-only.
+    IntMlpLevelHold,
 }
 
 impl ControllerKind {
@@ -95,6 +99,7 @@ impl ControllerKind {
         Self::RlHeadingHold,
         Self::Ascent,
         Self::RlLevelHold,
+        Self::IntMlpLevelHold,
         Self::Orbit,
         Self::RlOrbit,
         Self::RlOrbitResidual,
@@ -118,6 +123,7 @@ impl ControllerKind {
             ControllerKind::FlightPlan => "Flight Plan (L1)",
             ControllerKind::RlHeadingHold => "RL Heading Hold",
             ControllerKind::Refueling => "Refueling",
+            ControllerKind::IntMlpLevelHold => "Int-MLP Level Hold (generic jet)",
         }
     }
 
@@ -130,6 +136,7 @@ impl ControllerKind {
             ControllerKind::RlOrbitResidual => Some("orbit_residual"),
             ControllerKind::RlLstmOrbit => Some("lstm_orbit"),
             ControllerKind::RlHeadingHold => Some("heading_hold"),
+            ControllerKind::IntMlpLevelHold => Some("int_mlp_level_hold"),
             _ => None,
         }
     }
@@ -201,7 +208,8 @@ impl ControllerKind {
             ControllerKind::LevelHold
             | ControllerKind::Wingman
             | ControllerKind::Refueling
-            | ControllerKind::RlLevelHold => match tuning {
+            | ControllerKind::RlLevelHold
+            | ControllerKind::IntMlpLevelHold => match tuning {
                 Some(t) => t.build(state, prev_inputs),
                 None => Box::new(LevelHoldController::from_state(state, prev_inputs)),
             },
@@ -294,6 +302,30 @@ mod tests {
         assert_eq!(ControllerKind::Refueling.name(), "Refueling");
         assert_eq!(ControllerKind::Refueling.model_dir(), None);
         assert!(!ControllerKind::Refueling.is_heading_hold());
+    }
+
+    #[cfg(feature = "inference")]
+    #[test]
+    fn int_mlp_level_hold_has_its_own_model_dir_and_is_cyclable() {
+        // Its own directory: an IntMLP `.mpk` is not an `ActorCritic` record, so it
+        // must never be offered in the RL level-hold model dropdown (or vice versa).
+        assert_eq!(
+            ControllerKind::IntMlpLevelHold.model_dir(),
+            Some("int_mlp_level_hold")
+        );
+        assert!(ControllerKind::ALL.contains(&ControllerKind::IntMlpLevelHold));
+        assert!(!ControllerKind::IntMlpLevelHold.is_heading_hold());
+    }
+
+    #[test]
+    fn int_mlp_level_hold_builds_pid_level_hold_fallback() {
+        let mut controller =
+            ControllerKind::IntMlpLevelHold.build(&state(), None, &ControlInputs::default());
+        assert!(controller
+            .as_any_mut()
+            .downcast_mut::<LevelHoldController>()
+            .is_some());
+        assert!(!ControllerKind::IntMlpLevelHold.name().is_empty());
     }
 
     #[test]

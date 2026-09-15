@@ -154,9 +154,9 @@ fn cycle_index(cur: usize, len: usize, reverse: bool) -> usize {
 #[cfg(feature = "visual")]
 fn tuning_profile_names(kind: ControllerKind, pt: &PlaneTuning) -> Option<Vec<String>> {
     let mut names: Vec<String> = match kind {
-        ControllerKind::LevelHold | ControllerKind::RlLevelHold => {
-            pt.level_hold.keys().cloned().collect()
-        }
+        ControllerKind::LevelHold
+        | ControllerKind::RlLevelHold
+        | ControllerKind::IntMlpLevelHold => pt.level_hold.keys().cloned().collect(),
         ControllerKind::Orbit | ControllerKind::RlOrbit => pt.orbit.keys().cloned().collect(),
         ControllerKind::HeadingHold | ControllerKind::RlHeadingHold => {
             pt.heading_hold.keys().cloned().collect()

@@ -75,7 +75,7 @@ src/
   mcp/            # MCP control client: replicon client + rmcp stdio server                [mcp]
   training/       # TrainingEnv trait, self-contained 6-DOF integrator, PPO/BC training loops
   scenario.rs     # multi-plane .scenario.ron model + controller factory
-  bin/            # train_ppo, train_bc, evaluate_policy, ml_planes_server, ml_planes_mcp
+  bin/            # train_ppo, train_bc, train_int_mlp, evaluate_policy, ml_planes_server, ml_planes_mcp
 ```
 
 ### Physics Stack
@@ -127,6 +127,7 @@ this same model.
 | `ManualController` | Keyboard/stick input; direct control-surface commands |
 | `LevelHoldController` | Cascade PID holding target altitude and airspeed |
 | `InversionLevelHoldController` | Generic-jet density/mass scheduled force/moment inversion; frozen Python-winning gains, no ML dependency |
+| `IntMlpLevelHoldController` (`inference`) | Trained level hold whose network carries two error integrators; trained by DAgger + evolution strategies with `train_int_mlp` |
 | `HeadingHoldController` | Holds a commanded heading via an inner level-hold cascade |
 | `AscentController` | Climbs to a target altitude then hands off to level hold |
 | `OrbitController` | 3-level cascade PID flying a circular orbit around a world-frame point |
@@ -147,7 +148,26 @@ cargo run --release --no-default-features --example inversion_level_hold_baselin
 ```
 
 The ready-to-run scenario is `assets/scenarios/inversion_level_hold.scenario.ron`.
-Network peers must both use protocol v8, which adds the new controller variant.
+
+**IntMLP level hold** is a trained alternative: a 64-64 tanh MLP with a linear skip path
+whose memory is two clamped integrators of the altitude and airspeed errors, so it cannot
+settle on a steady-state offset. Train it (DAgger from the inversion controller, then
+evolution strategies) and evaluate the result:
+
+```bash
+cargo run --release --no-default-features --features training --bin train_int_mlp -- \
+  --output int_mlp_level_hold --threads 12
+cargo run --release --no-default-features --features inference --bin evaluate_policy -- \
+  --task level_hold --arch int_mlp --model models/int_mlp_level_hold/int_mlp_level_hold_best
+```
+
+Select **Int-MLP Level Hold (generic jet)** in the controller menu (inference builds), use
+`IntMlpLevelHold(model: "models/int_mlp_level_hold/<stem>.mpk", altitude: 1000.0,
+airspeed: 110.0)` in a scenario, or send `controller_kind: "IntMlpLevelHold"` through MCP.
+See [plans/int_mlp_level_hold.md](plans/int_mlp_level_hold.md).
+
+Network peers must both use protocol v9 (v8 added `InversionLevelHold`, v9 adds
+`IntMlpLevelHold`).
 
 Add a new controller by implementing `FlightController`:
 

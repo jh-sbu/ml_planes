@@ -79,6 +79,11 @@ path = "src/bin/train_bc.rs"
 required-features = ["training"]
 
 [[bin]]
+name = "train_int_mlp"
+path = "src/bin/train_int_mlp.rs"
+required-features = ["training"]
+
+[[bin]]
 name = "evaluate_policy"
 path = "src/bin/evaluate_policy.rs"
 required-features = ["inference"]

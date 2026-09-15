@@ -26,8 +26,9 @@ pub const DEFAULT_PORT: u16 = 5555;
 
 /// Protocol identity/version. Bump when the replicated component or command set
 /// changes incompatibly so the transport rejects mismatched peers.
-// v8 adds ControllerKind::InversionLevelHold. Old peers cannot decode that variant.
-pub const PROTOCOL_ID: u64 = 8;
+// v8 adds ControllerKind::InversionLevelHold; v9 appends ControllerKind::IntMlpLevelHold.
+// Old peers cannot decode those variants.
+pub const PROTOCOL_ID: u64 = 9;
 
 /// Switch the target plane's active controller (server rebuilds it).
 #[derive(Event, Serialize, Deserialize, Clone, Debug)]

@@ -25,8 +25,9 @@ use crate::plane::{ControlInputs, FlightPlanHandle, FlightState, PlaneId, PlaneT
 use crate::controllers::heading_hold::ground_track_heading;
 #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
 use crate::controllers::{
-    HeadingHoldController, ModelLoadError, RlHeadingHoldController, RlLevelHoldController,
-    RlLstmOrbitController, RlOrbitController, RlOrbitResidualController, SelectedModel,
+    HeadingHoldController, IntMlpLevelHoldController, ModelLoadError, RlHeadingHoldController,
+    RlLevelHoldController, RlLstmOrbitController, RlOrbitController, RlOrbitResidualController,
+    SelectedModel,
 };
 #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
 use crate::controllers::{OrbitTuning, RlLstmOrbitConfig, RlOrbitConfig, RlOrbitResidualConfig};
@@ -138,6 +139,13 @@ fn apply_model_switch(
                     Err(e) => report_skipped_model(&mut notes, &sel.0, &e),
                 }
             }
+            ControllerKind::IntMlpLevelHold => {
+                let (target_alt, target_spd) = level_hold_targets_from_controller(&mut ctrl, state);
+                match IntMlpLevelHoldController::load(&sel.0, target_alt, target_spd) {
+                    Ok(new_ctrl) => ctrl.0 = Box::new(new_ctrl),
+                    Err(e) => report_skipped_model(&mut notes, &sel.0, &e),
+                }
+            }
             ControllerKind::RlOrbit => {
                 let config = orbit_config_from_controller(&mut ctrl, state);
                 match RlOrbitController::load(&sel.0, config) {
@@ -217,6 +225,7 @@ fn rl_kind_needs_load_on_change(
             | ControllerKind::RlOrbitResidual
             | ControllerKind::RlLstmOrbit
             | ControllerKind::RlHeadingHold
+            | ControllerKind::IntMlpLevelHold
     );
     is_rl && (!kind_added || !has_selected_model)
 }
@@ -259,7 +268,7 @@ fn apply_rl_controller_switch(
                 | ControllerKind::RlLstmOrbit => {
                     kind.set_if_neq(ControllerKind::Orbit);
                 }
-                ControllerKind::RlLevelHold => {
+                ControllerKind::RlLevelHold | ControllerKind::IntMlpLevelHold => {
                     kind.set_if_neq(ControllerKind::LevelHold);
                 }
                 ControllerKind::RlHeadingHold => {
@@ -279,6 +288,16 @@ fn apply_rl_controller_switch(
                 let (tgt_alt, tgt_spd) = level_hold_targets_from_controller(&mut controller, state);
                 match RlLevelHoldController::load(&path, tgt_alt, tgt_spd) {
                     Ok(rl) => controller.0 = Box::new(rl),
+                    Err(e) => {
+                        report_skipped_model(&mut notes, &path, &e);
+                        kind.set_if_neq(ControllerKind::LevelHold);
+                    }
+                }
+            }
+            ControllerKind::IntMlpLevelHold => {
+                let (tgt_alt, tgt_spd) = level_hold_targets_from_controller(&mut controller, state);
+                match IntMlpLevelHoldController::load(&path, tgt_alt, tgt_spd) {
+                    Ok(policy) => controller.0 = Box::new(policy),
                     Err(e) => {
                         report_skipped_model(&mut notes, &path, &e);
                         kind.set_if_neq(ControllerKind::LevelHold);
@@ -556,6 +575,12 @@ fn preserve_rl_controller(
             .as_any_mut()
             .downcast_mut::<RlLevelHoldController>()
             .is_some(),
+        // Also carries integrator state a rebuild would zero.
+        ControllerKind::IntMlpLevelHold => ctrl
+            .0
+            .as_any_mut()
+            .downcast_mut::<IntMlpLevelHoldController>()
+            .is_some(),
         ControllerKind::RlOrbit => ctrl
             .0
             .as_any_mut()
@@ -730,6 +755,7 @@ fn rebuild_preserves_targets(kind: ControllerKind) -> bool {
         ControllerKind::LevelHold
             | ControllerKind::InversionLevelHold
             | ControllerKind::RlLevelHold
+            | ControllerKind::IntMlpLevelHold
             | ControllerKind::HeadingHold
             | ControllerKind::RlHeadingHold
             | ControllerKind::Ascent
@@ -1060,8 +1086,9 @@ mod tests {
             RlOrbitResidual,
             RlLstmOrbit,
             RlHeadingHold,
+            IntMlpLevelHold,
         ] {
-            assert!(rl_kind_needs_load_on_change(k, true, false));
+            assert!(rl_kind_needs_load_on_change(k, true, false), "{k:?}");
         }
         // Non-RL kinds are never handled here.
         assert!(!rl_kind_needs_load_on_change(Orbit, true, false));

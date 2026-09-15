@@ -49,6 +49,31 @@ fn inversion_level_hold_beats_incumbent_on_original_64_episodes() {
     assert!(metric("mean_tail_abs_speed_mps") < 0.17);
 }
 
+/// `update` must be exactly "advance the integrals, then `command_with_integrals`",
+/// bit for bit, over a real closed-loop episode — the IntMLP DAgger trainer labels
+/// learner states through the second half alone.
+#[test]
+fn command_with_integrals_is_the_second_half_of_update() {
+    let mut env = env();
+    env.reset();
+    let ctx = ControllerContext::empty_for(PlaneId::TEST);
+    let mut ctrl = InversionLevelHoldController::new(env.target_altitude, env.target_airspeed);
+    for step in 0..1500 {
+        let state = env.current_state();
+        let u = ctrl.update(&state, &ctx, PHYSICS_DT);
+        let (ih, iv) = ctrl.integrals();
+        let v = ctrl.command_with_integrals(&state, ih, iv);
+        assert_eq!(
+            (u.elevator, u.throttle, u.aileron, u.rudder),
+            (v.elevator, v.throttle, v.aileron, v.rudder),
+            "step {step}"
+        );
+        let o = env.step(&[u.elevator, u.throttle * 2.0 - 1.0, u.aileron, u.rudder]);
+        assert!(!o.done(), "episode ended at {step}");
+    }
+    assert_ne!(ctrl.integrals(), (0.0, 0.0), "integrals never moved");
+}
+
 #[test]
 fn inversion_factory_and_targets_survive_pid_tuning() {
     let state = FlightState {

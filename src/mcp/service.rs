@@ -264,7 +264,7 @@ struct GetPlaneStateArgs {
 ///
 /// `controller_kind` is a serde variant name of a *spawnable* `ControllerKind` (`"Manual"`,
 /// `"LevelHold"`, `"InversionLevelHold"`, `"HeadingHold"`, `"Ascent"`, `"Orbit"`, and — on inference builds —
-/// `"RlLevelHold"`/`"RlHeadingHold"`/`"RlOrbit"`/`"RlOrbitResidual"`/`"RlLstmOrbit"`). Spatial fields are optional;
+/// `"RlLevelHold"`/`"IntMlpLevelHold"`/`"RlHeadingHold"`/`"RlOrbit"`/`"RlOrbitResidual"`/`"RlLstmOrbit"`). Spatial fields are optional;
 /// omitting one uses the server's spawn default.
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct SpawnPlaneArgs {
@@ -497,7 +497,7 @@ impl PlanesService {
                        `config_path` is an asset-relative `.plane.ron` (e.g. \
                        \"planes/generic_jet.plane.ron\"); `controller_kind` is a serde variant \
                        name — one of Manual, LevelHold, InversionLevelHold, HeadingHold, Ascent, Orbit (and, on \
-                       inference builds, RlLevelHold, RlHeadingHold, RlOrbit, RlOrbitResidual, \
+                       inference builds, RlLevelHold, IntMlpLevelHold, RlHeadingHold, RlOrbit, RlOrbitResidual, \
                        RlLstmOrbit). \
                        Wingman, Refueling and FlightPlan are rejected. \
                        position/velocity/angular_velocity \
@@ -530,7 +530,7 @@ impl PlanesService {
     #[tool(
         description = "Switch a plane's active controller: { plane_id, controller_kind }. \
                        `controller_kind` is a serde variant name — one of Manual, LevelHold, \
-                       InversionLevelHold, HeadingHold, Ascent, Orbit (and, on inference builds, RlLevelHold, \
+                       InversionLevelHold, HeadingHold, Ascent, Orbit (and, on inference builds, RlLevelHold, IntMlpLevelHold, \
                        RlHeadingHold, RlOrbit, RlOrbitResidual, RlLstmOrbit); RL kinds only take effect against \
                        an inference-capable server (PID fallback otherwise). Wingman, \
                        Refueling and FlightPlan are rejected (the generic builder would \

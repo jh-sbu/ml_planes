@@ -616,9 +616,9 @@ fn plane_id_of(pairs: &[(Entity, PlaneId, u32)], entity: Entity) -> Option<Plane
 #[cfg(feature = "net")]
 fn net_tuning_names(kind: ControllerKind, pt: &PlaneTuning) -> Option<Vec<String>> {
     let mut names: Vec<String> = match kind {
-        ControllerKind::LevelHold | ControllerKind::RlLevelHold => {
-            pt.level_hold.keys().cloned().collect()
-        }
+        ControllerKind::LevelHold
+        | ControllerKind::RlLevelHold
+        | ControllerKind::IntMlpLevelHold => pt.level_hold.keys().cloned().collect(),
         ControllerKind::Orbit | ControllerKind::RlOrbit => pt.orbit.keys().cloned().collect(),
         ControllerKind::HeadingHold | ControllerKind::RlHeadingHold => {
             pt.heading_hold.keys().cloned().collect()

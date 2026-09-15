@@ -50,7 +50,7 @@ src/
                   #   manual.rs, level_hold.rs, heading_hold.rs, ascent.rs, orbit.rs,
                   #   wingman.rs, refueling.rs, l1.rs (L1 flight-plan), + 5 RL variants
                   #   (rl_level_hold, rl_heading_hold, rl_orbit, rl_orbit_residual,
-                  #   rl_lstm_orbit)
+                  #   rl_lstm_orbit), int_mlp_level_hold.rs (trained IntMLP; `inference`)
                   #   pid.rs — PidController<T> utility struct (NOT a FlightController)
                   #   guidance.rs — shared L1 + orbit bank-command primitives
                   #   flight_plan.rs — FlightPlan asset; tuning.rs — per-plane gain pools
@@ -92,6 +92,9 @@ src/
                     #   EnvSpec + the five concrete constructors + erased make_env
     reward_config.rs, wu_orbit_reward.rs, ppo_config.rs   # RON-backed configs
     bc.rs           # behavior cloning (DemonstrationEnv, collect_demonstrations, BcDataset)
+    int_mlp.rs      # IntMLP contract, ungated: IntegratorState, int_mlp_features, flat IntMlpWeights kernel
+    int_mlp_model.rs  # burn IntMlpPolicy (`inference`): checkpoints + the gradient form
+    int_mlp_train.rs  # DAgger + evolution-strategies pipeline (`training`)
     eval.rs, eval_metrics.rs   # EvalRun/EvalReport (the shared accumulator), TaskMetrics
     ppo/            # MLP track: model.rs/trainer.rs/buffer.rs (ActorCritic, PpoTrainer)
                     # LSTM track: lstm_model.rs/lstm_trainer.rs/lstm_buffer.rs
@@ -103,7 +106,7 @@ src/
                     #   lifecycle.rs — poll_reconnect (auto-reconnect) + check_shutdown
                     #   service.rs — rmcp ServerHandler + #[tool] methods (rmcp quarantined here)
                     #   args.rs — --connect / --connect-timeout / --quiet
-  bin/              # train_ppo, train_bc (required-features = training); evaluate_policy
+  bin/              # train_ppo, train_bc, train_int_mlp (required-features = training); evaluate_policy
                     #   (required-features = inference); ml_planes_server (server);
                     #   ml_planes_mcp (mcp)
 ```
@@ -188,6 +191,10 @@ the dev group and `ml_planes.gym` imports it lazily, so `import ml_planes` works
 | `RlOrbitController` | struct | Burn `ActorCritic` policy for orbit (obs dim=14); `inference`/`training`-gated |
 | `RlOrbitResidualController` | struct | Burn `ActorCritic` policy emitting residual deltas added to the PID orbit baseline (obs dim=14); paired with `ResidualOrbitEnv` |
 | `RlLstmOrbitController` | struct | Recurrent `LstmActorCritic` orbit policy (Wu et al. FC-LSTM-FC); carries `LstmHiddenState` across steps; paired with `WuOrbitEnv` |
+| `IntMlpLevelHoldController` | struct | Trained level hold, `inference`-gated, promoted from `experiments/nn_arch`. A 15-input 64-64 tanh MLP plus a linear skip path whose memory is two clamped error integrators, so any stable equilibrium has zero altitude/speed error. Loads a `models/int_mlp_level_hold/*.mpk` through burn once, validates `input_dim == 15`, then runs the flat `IntMlpWeights` kernel (no tensor backend, no `Mutex`). A changed target resets that target's integral. Its own model dir: an IntMLP record is not an `ActorCritic` one |
+| `IntegratorState` / `IntMlpWeights` | structs (`training/int_mlp.rs`, ungated) | The single IntMLP contract, shared by controller, trainer and `evaluate_policy`: integrators advance *before* the forward pass (`ih += obs[0]·200·dt` clamped ±30, `iv += obs[1]·50·dt` clamped ±20); features are `[obs, ih, iv] · INPUT_SCALE` (`×10` on the two error channels, `0.1`/`0.2` on the integrators). `IntMlpWeights` stores all 5,508 parameters row-major `[out, in]` (PyTorch order); burn stores `Linear` as `[in, out]`, so `IntMlpPolicy::{to,from}_weights` transpose. Parity pinned by `tests/rl/int_mlp.rs` |
+| `IntMlpPolicy<B>` | burn module (`training/int_mlp_model.rs`, `inference`) | Persistence and gradient form of IntMLP. `new_seeded` reproduces the experiment's init (orthogonal √2 / 0.01 head, zero biases, zero skip) under `ppo::rng_lock()`. Linears are built by hand because `LinearConfig` would run the orthogonal initializer on the 1-D bias |
+| `DaggerConfig` / `EsConfig` | structs (`training/int_mlp_train.rs`, `training`) | The two IntMLP training stages, defaults = the experiment's. DAgger labels learner-visited states with `InversionLevelHoldController::command_with_integrals` using the *learner's* integrators (exact labels). ES perturbs `IntMlpWeights` (antithetic, centred ranks, Adam, σ = 0.001 — σ = 0.01 wrecks every member), with common random numbers per generation and threaded rollouts; fitness = return − tail hinge penalties anchored to the inversion benchmark tails − 1000·failures |
 | `LevelHoldRewardConfig` / `HeadingHoldRewardConfig` / `OrbitRewardConfig` | plain structs | Reward weights, scales, alive bonus, failure penalty, and termination thresholds; loaded from `assets/training/*.reward.ron` at training startup. `HeadingHoldRewardConfig` has no `\|roll\|` penalty (bank is the control authority for turning) — instead a roll-*rate* term (chatter guard), a bank-*excess* term past ±60° (matching the PID heading loop's own clamp), and an **α-excess** term past `alpha_soft_limit` (stall guard; **weight defaults to 0.0/inert**, opt in via a profile — see `heading_hold_stall_safe.reward.ron`). Its fields carry no `#[serde(default)]` by design, so adding one invalidates every shipped profile file — update them all, and `tests/core/training_assets.rs` will catch it if you don't (a parse failure is only a runtime *warning* that silently falls back to the compiled defaults) |
 | `WuOrbitRewardConfig` / `CurriculumStage` | plain structs/enum | Wu et al. multiplicative-Gaussian orbit reward (`R^TT × R^PS × R^RS`) + 3-stage curriculum; from `wu_orbit.reward.ron` |
 | `PpoHyperparams` | plain struct | PPO training-loop config (gamma, gae_lambda, clip, lr, …); from `assets/training/*.ppo.ron` |
@@ -674,12 +681,13 @@ authoritative 64 Hz Rapier sim, all `FlightController`s, and fuel burn live in t
 mutation goes out as a command. Shared code (`aerodynamics/`, `controllers/`, `plane/`,
 `environment/` core, `scenario.rs`) is unchanged and compiled into both. The protocol lives in
 `src/net/` and is registered identically on both peers by `NetProtocolPlugin` (same order, or
-replicon rejects the connection); `PROTOCOL_ID` (currently **8** — v2 added `ControllerTelemetry`;
+replicon rejects the connection); `PROTOCOL_ID` (currently **9** — v2 added `ControllerTelemetry`;
 v3 added `ControllerTargets` + `SetControllerTargetsCommand`; v4 appended
 `ControllerKind::RlHeadingHold`; v5 appended `ControllerKind::Refueling` plus the
 `Refueling` variants of `ControllerTargets`/`ControllerTelemetry`; v6 appended
 `PlaneVisual`; v7 stopped replicating `Transform`; v8 appended
-`ControllerKind::InversionLevelHold`) gates version-mismatched peers.
+`ControllerKind::InversionLevelHold`; v9 appended `ControllerKind::IntMlpLevelHold`) gates
+version-mismatched peers.
 
 - **Replicated (server → client), in registration order:** `FlightState`,
   `ControlInputs`, `PlaneId`, `PlaneIndex`, `ControllerKind`, `SelectedTuningProfile`,
@@ -897,6 +905,10 @@ All five RL controllers (`RlLevelHoldController`, `RlHeadingHoldController`, `Rl
   policy must be stepped sequentially within an episode.
 - All are gated behind `inference` (loaded in the renderer) or `training`; the non-ML build
   excludes them from `ControllerKind::ALL` entirely.
+- `IntMlpLevelHoldController` rides the same wiring (model dir, `SelectedModel`, the
+  `sim_control` load/demote/preserve arms) but differs in two ways: it runs the flat
+  `IntMlpWeights` kernel after loading, and it carries integrator state, so it must also be
+  stepped sequentially within an episode and preserved (not rebuilt) across tuning changes.
 
 ### Training Strategies and Evaluation
 
@@ -919,6 +931,14 @@ maintaining separate checkpoint recipes throughout this file:
   `orbit`; compare it with a from-scratch PPO run rather than assuming the warm start wins.
   `HeadingHoldEnv::make_expert` must reapply each episode's resampled targets via
   `apply_targets`, because construction initially seeds the inner controller from spawn state.
+- **IntMLP (DAgger → ES), level hold only:** `train_int_mlp` clones
+  `InversionLevelHoldController` into `IntMlpPolicy` by DAgger, then fine-tunes the weights
+  with evolution strategies on the deterministic evaluation objective. Evaluate with
+  `evaluate_policy --arch int_mlp`. PPO is deliberately **not** part of this track: in the
+  experiment, from-scratch PPO never learned to use the integrator inputs (0.64 m tail
+  altitude) and PPO fine-tuning degraded a good clone. ES validates every 10 generations and
+  keeps `_gNNNN` snapshots; select by validation, not by the last generation. The `.pt`
+  baseline the Rust pipeline should reach is in `plans/int_mlp_level_hold.md`.
 
 Reward and termination settings belong in `assets/training/*.reward.ron`; PPO hyperparameters
 belong in `assets/training/*.ppo.ron`. Use explicit profile paths for experiments and change one
@@ -1068,7 +1088,8 @@ that ships a non-default target) `tests/core/scenario.rs`.
    an outer heading loop, while `RlHeadingHoldController` uses a 16-element observation over a
    randomized ±180° heading-change envelope and the same altitude/speed range. Configure it
    with `--target-heading-range`, `--target-alt-range`, and `--target-speed-range` on the
-   training, BC, and evaluation binaries.
+   training, BC, and evaluation binaries. `IntMlpLevelHoldController` adds a trained network
+   with integrator memory (DAgger + ES via `train_int_mlp`); see `plans/int_mlp_level_hold.md`.
 2. **Ascent** — COMPLETE. Climbs to target altitude then hands off to level hold.
 3. **Formation flight (wingman)** — COMPLETE. Follows leader at fixed body-frame offset (`WingmanController`).
 4. **Circular orbit** — COMPLETE. 3-level cascade PID around world-frame point. Three RL variants: `RlOrbitController` (direct, obs dim=14), `RlOrbitResidualController` (residual over PID), and `RlLstmOrbitController` (recurrent, Wu-curriculum). Policies also reachable via behavior-cloning warm start.
@@ -1120,6 +1141,9 @@ path = "src/bin/train_ppo.rs"
 [[bin]]
 name = "train_bc"          # required-features = ["training"] — BC pretraining; wgpu as above
 path = "src/bin/train_bc.rs"
+[[bin]]
+name = "train_int_mlp"     # required-features = ["training"] — IntMLP DAgger + ES pipeline
+path = "src/bin/train_int_mlp.rs"
 [[bin]]
 name = "evaluate_policy"   # required-features = ["inference"] — policy rollout/metrics
 path = "src/bin/evaluate_policy.rs"
@@ -1177,6 +1201,12 @@ path = "src/bin/mcp.rs"
 > (spawns always start on ground track 0, so the sampled value is the required turn). All three
 > are parsed by the shared `training::parse_f32_range`; pass the same ranges to `evaluate_policy`
 > that a checkpoint was trained with for a comparable report.
+>
+> `evaluate_policy` also takes `--arch int_mlp` (level_hold only; loads an IntMLP checkpoint
+> and carries its integrators) and `--seed <u64>` / `--seed-stride <u64>`, which pre-reset
+> seed episode `i` with `seed + i·stride`. Without `--seed` it keeps its sequential default,
+> which is the 64-episode benchmark (seeds 42+i); the 1024-episode holdout is
+> `--episodes 1024 --seed 100000 --seed-stride 104729`.
 
 > **Bevy feature flag note:** `default-features = false` disables all optional
 > subsystems. `bevy_asset` **is** an optional feature of the `bevy` meta-crate
@@ -1338,6 +1368,11 @@ the binary + a module filter, e.g. `cargo test --no-default-features --test core
   instead of silently replacing it with the PID fallback `ControllerKind::build()` produces
   (`RlLevelHold`/`RlHeadingHold`/`RlOrbit`/`RlOrbitResidual`), plus the load-failure-demotes-kind
   guard for `RlLevelHold`/`RlHeadingHold` (`inference`-gated)
+- `int_mlp` — IntMLP: burn forward vs flat kernel parity, weights round-trip, the init recipe
+  and seed determinism, save → `IntMlpLevelHoldController::load` flying the identical network,
+  rejection of a 13-input and of an `ActorCritic` checkpoint, and per-target integrator resets
+  (`inference`-gated; `rl_sim_control` separately pins tuning-rebuild preservation and the
+  load-failure demotion to `LevelHold`)
 - `ppo_training` — short PPO rollout/update loops (level_hold + orbit), asserting no NaN in
   policy output after training; **not** a convergence/reward-trend check (see the "Known
   nondeterminism" note below) (training-gated; run with `--features training --test rl ppo_training::`)

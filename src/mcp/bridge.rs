@@ -160,6 +160,7 @@ pub fn spawnable_kind_names() -> &'static [&'static str] {
             "Ascent",
             "Orbit",
             "RlLevelHold",
+            "IntMlpLevelHold",
             "RlHeadingHold",
             "RlOrbit",
             "RlOrbitResidual",
@@ -183,6 +184,8 @@ pub fn parse_spawnable_controller_kind(name: &str) -> Result<ControllerKind, Str
         "Orbit" => Ok(ControllerKind::Orbit),
         #[cfg(feature = "inference")]
         "RlLevelHold" => Ok(ControllerKind::RlLevelHold),
+        #[cfg(feature = "inference")]
+        "IntMlpLevelHold" => Ok(ControllerKind::IntMlpLevelHold),
         #[cfg(feature = "inference")]
         "RlHeadingHold" => Ok(ControllerKind::RlHeadingHold),
         #[cfg(feature = "inference")]
@@ -505,6 +508,11 @@ mod tests {
         assert_eq!(
             parse_spawnable_controller_kind("InversionLevelHold").unwrap(),
             ControllerKind::InversionLevelHold
+        );
+        #[cfg(feature = "inference")]
+        assert_eq!(
+            parse_spawnable_controller_kind("IntMlpLevelHold").unwrap(),
+            ControllerKind::IntMlpLevelHold
         );
         assert_eq!(
             parse_spawnable_controller_kind("HeadingHold").unwrap(),
