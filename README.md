@@ -116,8 +116,8 @@ mass.
 
 Multi-plane setups are described by `.scenario.ron` files under `assets/scenarios/`
 (e.g. `default`, `wingman_formation`, `orbit`, `fleet_demo`, `mixed_powerplant`,
-`stress_100`, `stress_500`) — per-plane spawn state, config, fuel fraction, and controller. The main
-menu's Scenario Select screen and `examples/observe_state.rs --scenario` both drive off
+`stress_100`, `stress_500`, `stress_1000`, `stress_5000`) — per-plane spawn state,
+config, fuel fraction, and controller. The main menu's Scenario Select screen and `examples/observe_state.rs --scenario` both drive off
 this same model.
 
 ## Controllers

@@ -760,16 +760,31 @@ fn is_rl_kind(kind: ControllerKind) -> bool {
 /// this test until the scenario flies it too.
 #[test]
 fn stress_500_scenario_resolves_to_500_planes_across_every_airframe() {
+    assert_stress_scenario(500);
+}
+
+#[test]
+fn stress_1000_scenario_resolves_to_1000_planes_across_every_airframe() {
+    assert_stress_scenario(1000);
+}
+
+#[test]
+fn stress_5000_scenario_resolves_to_5000_planes_across_every_airframe() {
+    assert_stress_scenario(5000);
+}
+
+fn assert_stress_scenario(count: usize) {
     use std::collections::{BTreeMap, BTreeSet};
 
-    let path = Path::new("assets/scenarios/stress_500.scenario.ron");
-    let scenario = Scenario::from_path(path).expect("load stress_500 scenario");
-    let resolved = scenario.resolve().expect("resolve stress_500 scenario");
+    let path_string = format!("assets/scenarios/stress_{count}.scenario.ron");
+    let path = Path::new(&path_string);
+    let scenario = Scenario::from_path(path).expect("load stress scenario");
+    let resolved = scenario.resolve().expect("resolve stress scenario");
 
     assert_eq!(
         resolved.planes.len(),
-        500,
-        "stress scenario must be 500 planes"
+        count,
+        "stress scenario must be {count} planes"
     );
 
     let rl_count = resolved
@@ -777,7 +792,7 @@ fn stress_500_scenario_resolves_to_500_planes_across_every_airframe() {
         .iter()
         .filter(|p| is_rl_kind(p.spec.kind()))
         .count();
-    assert!(rl_count >= 30, "expected >=30 RL planes, got {rl_count}");
+    assert_eq!(rl_count, 34 * (count / 500), "RL plane count");
 
     // Airframe → the controller kinds it flies in this scenario.
     let mut kinds_by_airframe: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -802,7 +817,7 @@ fn stress_500_scenario_resolves_to_500_planes_across_every_airframe() {
     for airframe in &shipped {
         let kinds = kinds_by_airframe
             .get(airframe)
-            .unwrap_or_else(|| panic!("stress_500 never flies shipped airframe {airframe}"));
+            .unwrap_or_else(|| panic!("stress_{count} never flies shipped airframe {airframe}"));
         assert!(
             kinds.len() >= 5,
             "{airframe} flies only {kinds:?} — expected >=5 controller kinds"
@@ -819,18 +834,20 @@ fn stress_500_scenario_resolves_to_500_planes_across_every_airframe() {
         ControllerKind::Refueling,
         ControllerKind::FlightPlan,
         ControllerKind::Manual,
+        ControllerKind::RlOrbit,
+        ControllerKind::RlLevelHold,
     ] {
         assert!(
             all_kinds.contains(&format!("{kind:?}")),
-            "stress_500 has no {kind:?} plane"
+            "stress_{count} has no {kind:?} plane"
         );
     }
 
     for (idx, plane) in resolved.planes.iter().enumerate() {
         if !is_rl_kind(plane.spec.kind()) {
-            resolved
-                .build_controller(idx)
-                .unwrap_or_else(|e| panic!("build stress_500 plane {idx} ({}): {e}", plane.name));
+            resolved.build_controller(idx).unwrap_or_else(|e| {
+                panic!("build stress_{count} plane {idx} ({}): {e}", plane.name)
+            });
         }
     }
 }
