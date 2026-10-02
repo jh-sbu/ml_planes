@@ -32,6 +32,17 @@ pub trait FlightController: Send + Sync + 'static {
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 
+    /// The split form of this controller's tick, for controllers whose work is a
+    /// policy forward pass that can share a batch with other planes flying the same
+    /// model (see `controllers::policy_batch`). `run_flight_controllers` then calls
+    /// `observe`/`finish` on it **instead of** `update`, so an implementor's `update`
+    /// must be exactly `policy_batch::run_single` over the same split. `None` (the
+    /// default) keeps the controller on the plain `update` path.
+    #[cfg(feature = "inference")]
+    fn batched(&mut self) -> Option<&mut dyn crate::controllers::BatchedPolicy> {
+        None
+    }
+
     #[cfg(feature = "visual")]
     fn poll_input(&mut self, _keys: &bevy::input::ButtonInput<bevy::prelude::KeyCode>, _dt: f32) {}
 }

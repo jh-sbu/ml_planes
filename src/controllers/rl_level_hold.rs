@@ -5,14 +5,11 @@
 
 use std::any::Any;
 
+use burn::backend::NdArray;
+
 #[cfg(not(target_arch = "wasm32"))]
-use burn::record::DefaultFileRecorder;
-use burn::{
-    backend::NdArray,
-    module::Module,
-    record::{FullPrecisionSettings, NamedMpkBytesRecorder, Recorder},
-    tensor::{backend::Backend, Tensor, TensorData},
-};
+use crate::controllers::policy_batch::load_mlp_file;
+use crate::controllers::policy_batch::{load_mlp_bytes, run_single, BatchedPolicy, SharedPolicy};
 
 use crate::controllers::model_load::ModelLoadError;
 use crate::controllers::FlightController;
@@ -38,11 +35,10 @@ fn check_obs_dim(model: &ActorCritic<InfB>) -> Result<(), ModelLoadError> {
 
 /// Trained PPO level-hold controller that runs inference on the CPU.
 ///
-/// `ActorCritic<NdArray>` is not `Sync` (burn's `Param` uses `OnceCell`),
-/// so we wrap in `Mutex` to satisfy `FlightController: Sync`.
+/// The model is shared with every other controller flying the same checkpoint so
+/// the live sim can batch their forward passes (see `controllers::policy_batch`).
 pub struct RlLevelHoldController {
-    model: std::sync::Mutex<ActorCritic<InfB>>,
-    device: <InfB as Backend>::Device,
+    policy: SharedPolicy,
     pub target_altitude: f32,
     pub target_airspeed: f32,
 }
@@ -55,16 +51,10 @@ impl RlLevelHoldController {
         target_altitude: f32,
         target_airspeed: f32,
     ) -> Result<Self, ModelLoadError> {
-        let device: <InfB as Backend>::Device = Default::default();
-        let model = ActorCritic::<InfB>::new(&device, LEVEL_HOLD_OBS_DIM).load_file(
-            path,
-            &DefaultFileRecorder::<FullPrecisionSettings>::default(),
-            &device,
-        )?;
-        check_obs_dim(&model)?;
+        let model = load_mlp_file(path)?;
+        check_obs_dim(&model.lock().unwrap())?;
         Ok(Self {
-            model: std::sync::Mutex::new(model),
-            device,
+            policy: SharedPolicy::Mlp(model),
             target_altitude,
             target_airspeed,
         })
@@ -76,17 +66,42 @@ impl RlLevelHoldController {
         target_altitude: f32,
         target_airspeed: f32,
     ) -> Result<Self, ModelLoadError> {
-        let device: <InfB as Backend>::Device = Default::default();
-        let record = NamedMpkBytesRecorder::<FullPrecisionSettings>::default()
-            .load(bytes.to_vec(), &device)?;
-        let model = ActorCritic::<InfB>::new(&device, LEVEL_HOLD_OBS_DIM).load_record(record);
-        check_obs_dim(&model)?;
+        let model = load_mlp_bytes(bytes)?;
+        check_obs_dim(&model.lock().unwrap())?;
         Ok(Self {
-            model: std::sync::Mutex::new(model),
-            device,
+            policy: SharedPolicy::Mlp(model),
             target_altitude,
             target_airspeed,
         })
+    }
+}
+
+impl BatchedPolicy for RlLevelHoldController {
+    fn policy(&self) -> &SharedPolicy {
+        &self.policy
+    }
+
+    fn observe(
+        &mut self,
+        state: &FlightState,
+        _ctx: &crate::plane::ControllerContext,
+        _dt: f32,
+        obs: &mut Vec<f32>,
+    ) {
+        obs.extend(level_hold_observation(
+            state,
+            self.target_altitude,
+            self.target_airspeed,
+        ));
+    }
+
+    fn finish(
+        &mut self,
+        action: &[f32],
+        _hidden: Option<crate::training::ppo::lstm_model::LstmHiddenState>,
+    ) -> ControlInputs {
+        // action = [elevator, throttle_norm, aileron, rudder]
+        direct_action_to_inputs(action)
     }
 }
 
@@ -94,23 +109,14 @@ impl FlightController for RlLevelHoldController {
     fn update(
         &mut self,
         state: &FlightState,
-        _ctx: &crate::plane::ControllerContext,
-        _dt: f32,
+        ctx: &crate::plane::ControllerContext,
+        dt: f32,
     ) -> ControlInputs {
-        let obs = level_hold_observation(state, self.target_altitude, self.target_airspeed);
-        let obs_t = Tensor::<InfB, 2>::from_data(
-            TensorData::new(obs, vec![1, LEVEL_HOLD_OBS_DIM]),
-            &self.device,
-        );
-        // Deterministic inference: use mean action (no sampling noise).
-        let action_t = self.model.lock().unwrap().mean_action(obs_t);
-        let action = action_t
-            .into_data()
-            .to_vec::<f32>()
-            .expect("rl action data");
+        run_single(self, state, ctx, dt)
+    }
 
-        // action = [elevator, throttle_norm, aileron, rudder]
-        direct_action_to_inputs(&action)
+    fn batched(&mut self) -> Option<&mut dyn BatchedPolicy> {
+        Some(self)
     }
 
     fn name(&self) -> &'static str {

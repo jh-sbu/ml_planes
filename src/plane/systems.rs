@@ -22,20 +22,31 @@ pub fn sync_flight_state(mut query: Query<(&Transform, &Velocity, &mut FlightSta
 
 /// System 2: Tick each plane's FlightController → ControlInputs.
 ///
-/// Two-phase via ParamSet to avoid overlapping queries on the same component set:
+/// Phases, via ParamSet to avoid overlapping queries on the same component set:
 ///   Phase 1 (immutable): build a snapshot of every plane's current state.
-///   Phase 2 (mutable):   call each controller with the full context.
+///   Phase 2 (mutable):   call each controller with the full context — or, for a
+///                        controller exposing a batched policy (`inference`), observe it
+///                        into this tick's `PolicyBatch` instead.
+///   Phase 3/4 (`inference`): one forward pass per shared model, then each batched
+///                        controller turns its row into inputs.
+///
+/// Controllers read only the phase-1 snapshot, never another plane's freshly computed
+/// inputs, so deferring the batched ones to phases 3/4 changes nothing they see. The
+/// batch is rebuilt every tick (see `controllers::policy_batch`), so planes spawning,
+/// despawning, or switching controller need no bookkeeping here.
 pub fn run_flight_controllers(
     time: Res<Time<Fixed>>,
     mut params: ParamSet<(
         Query<(&PlaneId, &FlightState)>,
         Query<(
+            Entity,
             &PlaneId,
             &FlightState,
             &mut ActiveController,
             &mut ControlInputs,
         )>,
     )>,
+    #[cfg(feature = "inference")] mut batch: Local<crate::controllers::PolicyBatch<Entity>>,
 ) {
     let dt = time.delta_secs();
 
@@ -49,14 +60,31 @@ pub fn run_flight_controllers(
         .collect::<Vec<_>>()
         .into();
 
-    for (id, state, mut ctrl, mut inputs) in params.p1().iter_mut() {
+    let mut controllers = params.p1();
+    for (_entity, id, state, mut ctrl, mut inputs) in controllers.iter_mut() {
         let ctx = ControllerContext {
             own_id: *id,
             planes: std::sync::Arc::clone(&snaps),
         };
+        #[cfg(feature = "inference")]
+        if let Some(policy) = ctrl.0.batched() {
+            batch.push(_entity, policy, state, &ctx, dt);
+            continue;
+        }
         *inputs = ctrl.0.update(state, &ctx, dt);
         inputs.clamp();
     }
+
+    #[cfg(feature = "inference")]
+    batch.run(|entity, action, hidden| {
+        let Ok((_, _, _, mut ctrl, mut inputs)) = controllers.get_mut(entity) else {
+            return;
+        };
+        if let Some(policy) = ctrl.0.batched() {
+            *inputs = policy.finish(action, hidden);
+            inputs.clamp();
+        }
+    });
 }
 
 /// Snapshot each controller's read-only telemetry into its replicated

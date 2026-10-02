@@ -51,6 +51,7 @@ src/
                   #   wingman.rs, refueling.rs, l1.rs (L1 flight-plan), + 5 RL variants
                   #   (rl_level_hold, rl_heading_hold, rl_orbit, rl_orbit_residual,
                   #   rl_lstm_orbit), int_mlp_level_hold.rs (trained IntMLP; `inference`)
+                  #   policy_batch.rs — shared-model cache + per-tick batched RL forward
                   #   pid.rs — PidController<T> utility struct (NOT a FlightController)
                   #   guidance.rs — shared L1 + orbit bank-command primitives
                   #   flight_plan.rs — FlightPlan asset; tuning.rs — per-plane gain pools
@@ -898,7 +899,21 @@ All five RL controllers (`RlLevelHoldController`, `RlHeadingHoldController`, `Rl
 
 - Backend: `burn`'s `ActorCritic<NdArray>` (CPU; no GPU required at inference time).
   `RlLstmOrbitController` uses the recurrent `LstmActorCritic` instead.
-- `Param` is not `Sync` → wrap model in `std::sync::Mutex`
+- **Models are shared and inference is batched** (`controllers/policy_batch.rs`). Loaders go
+  through `load_{mlp,lstm}_{bytes,file}`, which dedupe by checkpoint *content* (not path, so a
+  checkpoint retrained in place is a new model) into a `SharedPolicy` — an
+  `Arc<Mutex<…>>`, since burn's `Param` is not `Sync` — held weakly by the cache. Each RL
+  controller implements `BatchedPolicy` (`observe` → one forward per shared model → `finish`)
+  and returns it from `FlightController::batched()`; `run_flight_controllers` routes such
+  controllers through a `PolicyBatch` **instead of** `update()`, so `update()` must be exactly
+  `policy_batch::run_single` over the same split. On stress_500 this took the 34 RL planes
+  from ~333 to ~60 µs/tick (batch-of-1 burn is ~9 µs of mostly per-op overhead; batched rows
+  ~1.7 µs). The batch is **rebuilt every tick and holds nothing between ticks** — that is what
+  keeps spawn/remove/switch/demotion/hot-swap free of bookkeeping; never turn it into a
+  persistent registry. Batched outputs are **bit-identical** to batch-of-1 (ndarray's matmul
+  sums each row in the same order at any row count) — a backend property, not a burn promise,
+  pinned by `tests/rl/rl_batching.rs`; if it breaks, a plane's trajectory starts depending on
+  how many other planes share its model.
 - Deterministic inference: `model.mean_action()` (no sampling noise, reproducible)
 - Action mapping: `throttle = (action[1] + 1.0) / 2.0` converts `[-1, 1]` network output to `[0, 1]`
 - `RlLstmOrbit` additionally threads `LstmHiddenState` from one step into the next, so the
@@ -1019,7 +1034,10 @@ cargo run --release --features training --bin train_ppo -- --task <task> --plain
 13. `kind.rs` — `model_dir()`: return the `models/` subdirectory name (e.g. `"heading_hold"`)
 14. `src/controllers/mod.rs` — `#[cfg(feature = "inference")] pub mod rl_xxx;` + re-export
     `RlXxxController` (and `RlXxxConfig`, if the controller has more than one/two setpoints —
-    mirror `RlOrbitConfig`/`RlHeadingHoldConfig` rather than bare positional args)
+    mirror `RlOrbitConfig`/`RlHeadingHoldConfig` rather than bare positional args). Load the
+    model through `policy_batch::load_*` and implement `BatchedPolicy` + `batched()`, with
+    `update()` = `run_single`; add the kind to `rl_batching.rs`'s `rl_factories`. A controller
+    that skips this still works but runs a batch-of-1 forward per plane per tick.
 15. `controllers/sim_control.rs` — the `inference`-gated import block, `apply_model_switch`
     match arm, `rl_kind_needs_load_on_change` guard, `apply_rl_controller_switch`'s two match
     arms (the "no checkpoint" demotion **and** the load-and-demote-on-error arm — miss the
@@ -1368,6 +1386,11 @@ the binary + a module filter, e.g. `cargo test --no-default-features --test core
   instead of silently replacing it with the PID fallback `ControllerKind::build()` produces
   (`RlLevelHold`/`RlHeadingHold`/`RlOrbit`/`RlOrbitResidual`), plus the load-failure-demotes-kind
   guard for `RlLevelHold`/`RlHeadingHold` (`inference`-gated)
+- `rl_batching` — batched RL inference: content-keyed model sharing (and a rewritten
+  checkpoint being a new model), every RL kind's batched tick matching its own `update()`
+  bitwise, a plane's actions being identical at batch sizes 1–129, an end-to-end sim where
+  a plane's trajectory is unchanged by batchmates sharing its model joining and leaving
+  mid-flight, and the sim routing RL controllers around `update()` (`inference`-gated)
 - `int_mlp` — IntMLP: burn forward vs flat kernel parity, weights round-trip, the init recipe
   and seed determinism, save → `IntMlpLevelHoldController::load` flying the identical network,
   rejection of a 13-input and of an `ActorCritic` checkpoint, and per-target integrator resets

@@ -5,14 +5,11 @@
 
 use std::any::Any;
 
+use burn::backend::NdArray;
+
 #[cfg(not(target_arch = "wasm32"))]
-use burn::record::DefaultFileRecorder;
-use burn::{
-    backend::NdArray,
-    module::Module,
-    record::{FullPrecisionSettings, NamedMpkBytesRecorder, Recorder},
-    tensor::{backend::Backend, Tensor, TensorData},
-};
+use crate::controllers::policy_batch::load_mlp_file;
+use crate::controllers::policy_batch::{load_mlp_bytes, run_single, BatchedPolicy, SharedPolicy};
 
 use crate::controllers::model_load::ModelLoadError;
 use crate::controllers::orbit::{
@@ -68,11 +65,10 @@ impl RlOrbitConfig {
 
 /// Trained PPO orbit controller that runs inference on the CPU.
 ///
-/// `ActorCritic<NdArray>` is not `Sync` (burn's `Param` uses `OnceCell`),
-/// so we wrap in `Mutex` to satisfy `FlightController: Sync`.
+/// The model is shared with every other controller flying the same checkpoint so
+/// the live sim can batch their forward passes (see `controllers::policy_batch`).
 pub struct RlOrbitController {
-    model: std::sync::Mutex<ActorCritic<InfB>>,
-    device: <InfB as Backend>::Device,
+    policy: SharedPolicy,
     pub center_x: f32,
     pub center_z: f32,
     pub target_radius: f32,
@@ -85,16 +81,10 @@ impl RlOrbitController {
     /// Load weights from `path` (without `.mpk` extension) saved by `PpoTrainer::save_policy`.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn load(path: &str, config: RlOrbitConfig) -> Result<Self, ModelLoadError> {
-        let device: <InfB as Backend>::Device = Default::default();
-        let model = ActorCritic::<InfB>::new(&device, ORBIT_OBS_DIM).load_file(
-            path,
-            &DefaultFileRecorder::<FullPrecisionSettings>::default(),
-            &device,
-        )?;
-        check_obs_dim(&model)?;
+        let model = load_mlp_file(path)?;
+        check_obs_dim(&model.lock().unwrap())?;
         Ok(Self {
-            model: std::sync::Mutex::new(model),
-            device,
+            policy: SharedPolicy::Mlp(model),
             center_x: config.center_x,
             center_z: config.center_z,
             target_radius: config.target_radius,
@@ -106,14 +96,10 @@ impl RlOrbitController {
 
     /// Load weights from embedded bytes — for WASM builds where `std::fs` is unavailable.
     pub fn load_bytes(bytes: &[u8], config: RlOrbitConfig) -> Result<Self, ModelLoadError> {
-        let device: <InfB as Backend>::Device = Default::default();
-        let record = NamedMpkBytesRecorder::<FullPrecisionSettings>::default()
-            .load(bytes.to_vec(), &device)?;
-        let model = ActorCritic::<InfB>::new(&device, ORBIT_OBS_DIM).load_record(record);
-        check_obs_dim(&model)?;
+        let model = load_mlp_bytes(bytes)?;
+        check_obs_dim(&model.lock().unwrap())?;
         Ok(Self {
-            model: std::sync::Mutex::new(model),
-            device,
+            policy: SharedPolicy::Mlp(model),
             center_x: config.center_x,
             center_z: config.center_z,
             target_radius: config.target_radius,
@@ -135,14 +121,19 @@ impl RlOrbitController {
     }
 }
 
-impl FlightController for RlOrbitController {
-    fn update(
+impl BatchedPolicy for RlOrbitController {
+    fn policy(&self) -> &SharedPolicy {
+        &self.policy
+    }
+
+    fn observe(
         &mut self,
         state: &FlightState,
         _ctx: &crate::plane::ControllerContext,
         _dt: f32,
-    ) -> ControlInputs {
-        let obs = build_orbit_observation(
+        obs: &mut Vec<f32>,
+    ) {
+        obs.extend(build_orbit_observation(
             state,
             self.center_x,
             self.center_z,
@@ -150,20 +141,31 @@ impl FlightController for RlOrbitController {
             self.target_altitude,
             self.target_airspeed,
             self.direction,
-        );
-        let obs_t = Tensor::<InfB, 2>::from_data(
-            TensorData::new(obs, vec![1, ORBIT_OBS_DIM]),
-            &self.device,
-        );
-        // Deterministic inference: use mean action (no sampling noise).
-        let action_t = self.model.lock().unwrap().mean_action(obs_t);
-        let action = action_t
-            .into_data()
-            .to_vec::<f32>()
-            .expect("rl orbit action data");
+        ));
+    }
 
+    fn finish(
+        &mut self,
+        action: &[f32],
+        _hidden: Option<crate::training::ppo::lstm_model::LstmHiddenState>,
+    ) -> ControlInputs {
         // action = [elevator, throttle_norm, aileron, rudder]
-        direct_action_to_inputs(&action)
+        direct_action_to_inputs(action)
+    }
+}
+
+impl FlightController for RlOrbitController {
+    fn update(
+        &mut self,
+        state: &FlightState,
+        ctx: &crate::plane::ControllerContext,
+        dt: f32,
+    ) -> ControlInputs {
+        run_single(self, state, ctx, dt)
+    }
+
+    fn batched(&mut self) -> Option<&mut dyn BatchedPolicy> {
+        Some(self)
     }
 
     fn name(&self) -> &'static str {
@@ -214,6 +216,7 @@ impl FlightController for RlOrbitController {
 mod tests {
     use super::*;
     use bevy::math::{Quat, Vec3};
+    use burn::tensor::backend::Backend;
     use std::f32::consts::FRAC_PI_2;
 
     fn level_attitude() -> Quat {
@@ -239,16 +242,18 @@ mod tests {
     #[test]
     fn update_outputs_finite_controls_with_finite_observation() {
         let device: <InfB as Backend>::Device = Default::default();
-        let mut ctrl = RlOrbitController {
-            model: std::sync::Mutex::new(ActorCritic::<InfB>::new(&device, ORBIT_OBS_DIM)),
-            device,
-            center_x: 0.0,
-            center_z: 0.0,
-            target_radius: 1000.0,
-            target_altitude: 1000.0,
-            target_airspeed: 100.0,
-            direction: OrbitDirection::CounterClockwise,
-        };
+        let mut ctrl =
+            RlOrbitController {
+                policy: SharedPolicy::Mlp(std::sync::Arc::new(std::sync::Mutex::new(
+                    ActorCritic::<InfB>::new(&device, ORBIT_OBS_DIM),
+                ))),
+                center_x: 0.0,
+                center_z: 0.0,
+                target_radius: 1000.0,
+                target_altitude: 1000.0,
+                target_airspeed: 100.0,
+                direction: OrbitDirection::CounterClockwise,
+            };
         let state = make_state(Vec3::new(0.0, 1000.0, -1000.0), Vec3::new(100.0, 0.0, 0.0));
         let obs = build_orbit_observation(
             &state,

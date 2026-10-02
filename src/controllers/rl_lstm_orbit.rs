@@ -5,15 +5,11 @@
 
 use std::any::Any;
 
+use burn::backend::NdArray;
+
 #[cfg(not(target_arch = "wasm32"))]
-use burn::record::DefaultFileRecorder;
-use burn::{
-    backend::NdArray,
-    module::Module,
-    nn::LstmState,
-    record::{FullPrecisionSettings, NamedMpkBytesRecorder, Recorder},
-    tensor::{backend::Backend, Tensor, TensorData},
-};
+use crate::controllers::policy_batch::load_lstm_file;
+use crate::controllers::policy_batch::{load_lstm_bytes, run_single, BatchedPolicy, SharedPolicy};
 
 use crate::controllers::model_load::ModelLoadError;
 use crate::controllers::orbit::{
@@ -22,7 +18,7 @@ use crate::controllers::orbit::{
 use crate::controllers::FlightController;
 use crate::plane::{ControlInputs, FlightState};
 use crate::training::direct_action_to_inputs;
-use crate::training::ppo::lstm_model::{LstmActorCritic, LstmHiddenState, LSTM_HIDDEN};
+use crate::training::ppo::lstm_model::{LstmActorCritic, LstmHiddenState};
 
 type InfB = NdArray;
 
@@ -77,11 +73,12 @@ impl RlLstmOrbitConfig {
 
 /// Trained Wu et al. LSTM orbit controller.
 ///
-/// Maintains per-step LSTM hidden state between `update()` calls.
-/// Wrap model in `Mutex` because `LstmActorCritic<NdArray>` is not `Sync`.
+/// Maintains per-step LSTM hidden state between ticks. The model is shared with
+/// every other controller flying the same checkpoint so the live sim can batch
+/// their forward passes (see `controllers::policy_batch`); the hidden state stays
+/// per controller and is stacked into the batch each tick.
 pub struct RlLstmOrbitController {
-    model: std::sync::Mutex<LstmActorCritic<InfB>>,
-    device: <InfB as Backend>::Device,
+    policy: SharedPolicy,
     /// Carried LSTM policy state.
     policy_hidden: LstmHiddenState,
     pub center_x: f32,
@@ -96,16 +93,10 @@ impl RlLstmOrbitController {
     /// Load weights from `path` (without `.mpk` extension).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn load(path: &str, config: RlLstmOrbitConfig) -> Result<Self, ModelLoadError> {
-        let device: <InfB as Backend>::Device = Default::default();
-        let model = LstmActorCritic::<InfB>::new(&device, ORBIT_OBS_DIM).load_file(
-            path,
-            &DefaultFileRecorder::<FullPrecisionSettings>::default(),
-            &device,
-        )?;
-        check_obs_dim(&model)?;
+        let model = load_lstm_file(path)?;
+        check_obs_dim(&model.lock().unwrap())?;
         Ok(Self {
-            model: std::sync::Mutex::new(model),
-            device,
+            policy: SharedPolicy::Lstm(model),
             policy_hidden: LstmHiddenState::default(),
             center_x: config.center_x,
             center_z: config.center_z,
@@ -118,14 +109,10 @@ impl RlLstmOrbitController {
 
     /// Load weights from embedded bytes — for WASM builds where `std::fs` is unavailable.
     pub fn load_bytes(bytes: &[u8], config: RlLstmOrbitConfig) -> Result<Self, ModelLoadError> {
-        let device: <InfB as Backend>::Device = Default::default();
-        let record = NamedMpkBytesRecorder::<FullPrecisionSettings>::default()
-            .load(bytes.to_vec(), &device)?;
-        let model = LstmActorCritic::<InfB>::new(&device, ORBIT_OBS_DIM).load_record(record);
-        check_obs_dim(&model)?;
+        let model = load_lstm_bytes(bytes)?;
+        check_obs_dim(&model.lock().unwrap())?;
         Ok(Self {
-            model: std::sync::Mutex::new(model),
-            device,
+            policy: SharedPolicy::Lstm(model),
             policy_hidden: LstmHiddenState::default(),
             center_x: config.center_x,
             center_z: config.center_z,
@@ -153,14 +140,19 @@ impl RlLstmOrbitController {
     }
 }
 
-impl FlightController for RlLstmOrbitController {
-    fn update(
+impl BatchedPolicy for RlLstmOrbitController {
+    fn policy(&self) -> &SharedPolicy {
+        &self.policy
+    }
+
+    fn observe(
         &mut self,
         state: &FlightState,
         _ctx: &crate::plane::ControllerContext,
         _dt: f32,
-    ) -> ControlInputs {
-        let obs = build_orbit_observation(
+        obs: &mut Vec<f32>,
+    ) {
+        obs.extend(build_orbit_observation(
             state,
             self.center_x,
             self.center_z,
@@ -168,41 +160,33 @@ impl FlightController for RlLstmOrbitController {
             self.target_altitude,
             self.target_airspeed,
             self.direction,
-        );
-        let obs_t = Tensor::<InfB, 2>::from_data(
-            TensorData::new(obs, vec![1, ORBIT_OBS_DIM]),
-            &self.device,
-        );
+        ));
+    }
 
-        // Convert stored CPU hidden state → burn LstmState.
-        let lstm_state: LstmState<InfB, 2> = {
-            let h_t = Tensor::<InfB, 2>::from_data(
-                TensorData::new(self.policy_hidden.h.clone(), vec![1, LSTM_HIDDEN]),
-                &self.device,
-            );
-            let c_t = Tensor::<InfB, 2>::from_data(
-                TensorData::new(self.policy_hidden.c.clone(), vec![1, LSTM_HIDDEN]),
-                &self.device,
-            );
-            LstmState::new(c_t, h_t)
-        };
+    fn hidden(&self) -> Option<&LstmHiddenState> {
+        Some(&self.policy_hidden)
+    }
 
-        let (action_t, new_state) = self
-            .model
-            .lock()
-            .unwrap()
-            .mean_action_step(obs_t, Some(lstm_state));
-
-        // Save new hidden state back to CPU.
-        self.policy_hidden = LstmHiddenState::from_burn_state(new_state);
-
-        let action = action_t
-            .into_data()
-            .to_vec::<f32>()
-            .expect("lstm orbit action");
-
+    fn finish(&mut self, action: &[f32], hidden: Option<LstmHiddenState>) -> ControlInputs {
+        // Carry the new hidden state into the next step.
+        self.policy_hidden = hidden.expect("an LSTM policy step returns its new hidden state");
         // action = [elevator, throttle_norm, aileron, rudder]
-        direct_action_to_inputs(&action)
+        direct_action_to_inputs(action)
+    }
+}
+
+impl FlightController for RlLstmOrbitController {
+    fn update(
+        &mut self,
+        state: &FlightState,
+        ctx: &crate::plane::ControllerContext,
+        dt: f32,
+    ) -> ControlInputs {
+        run_single(self, state, ctx, dt)
+    }
+
+    fn batched(&mut self) -> Option<&mut dyn BatchedPolicy> {
+        Some(self)
     }
 
     fn name(&self) -> &'static str {
@@ -256,7 +240,9 @@ impl FlightController for RlLstmOrbitController {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::training::ppo::lstm_model::LSTM_HIDDEN;
     use bevy::math::{Quat, Vec3};
+    use burn::tensor::backend::Backend;
     use std::f32::consts::FRAC_PI_2;
 
     fn level_attitude() -> Quat {
@@ -283,8 +269,9 @@ mod tests {
     fn update_produces_finite_outputs_with_untrained_model() {
         let device: <InfB as Backend>::Device = Default::default();
         let mut ctrl = RlLstmOrbitController {
-            model: std::sync::Mutex::new(LstmActorCritic::<InfB>::new(&device, ORBIT_OBS_DIM)),
-            device,
+            policy: SharedPolicy::Lstm(std::sync::Arc::new(std::sync::Mutex::new(
+                LstmActorCritic::<InfB>::new(&device, ORBIT_OBS_DIM),
+            ))),
             policy_hidden: LstmHiddenState::default(),
             center_x: 0.0,
             center_z: 0.0,
@@ -309,8 +296,9 @@ mod tests {
     fn lstm_state_changes_after_step() {
         let device: <InfB as Backend>::Device = Default::default();
         let mut ctrl = RlLstmOrbitController {
-            model: std::sync::Mutex::new(LstmActorCritic::<InfB>::new(&device, ORBIT_OBS_DIM)),
-            device,
+            policy: SharedPolicy::Lstm(std::sync::Arc::new(std::sync::Mutex::new(
+                LstmActorCritic::<InfB>::new(&device, ORBIT_OBS_DIM),
+            ))),
             policy_hidden: LstmHiddenState::default(),
             center_x: 0.0,
             center_z: 0.0,
@@ -340,8 +328,9 @@ mod tests {
     fn reset_hidden_clears_state() {
         let device: <InfB as Backend>::Device = Default::default();
         let mut ctrl = RlLstmOrbitController {
-            model: std::sync::Mutex::new(LstmActorCritic::<InfB>::new(&device, ORBIT_OBS_DIM)),
-            device,
+            policy: SharedPolicy::Lstm(std::sync::Arc::new(std::sync::Mutex::new(
+                LstmActorCritic::<InfB>::new(&device, ORBIT_OBS_DIM),
+            ))),
             policy_hidden: LstmHiddenState {
                 h: vec![1.0; LSTM_HIDDEN],
                 c: vec![2.0; LSTM_HIDDEN],

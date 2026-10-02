@@ -15,6 +15,8 @@ pub mod model_load;
 pub mod orbit;
 pub mod orbit_marker;
 pub mod pid;
+#[cfg(feature = "inference")]
+pub mod policy_batch;
 pub mod refueling;
 #[cfg(feature = "inference")]
 pub mod rl_heading_hold;
@@ -53,6 +55,8 @@ pub use orbit::{
 };
 pub use orbit_marker::{active_orbit_center, OrbitMarker};
 pub use pid::PidController;
+#[cfg(feature = "inference")]
+pub use policy_batch::{BatchedPolicy, PolicyBatch, SharedPolicy};
 pub use refueling::{RefuelConfig, RefuelController, RefuelDiagnostics, RefuelPhase};
 #[cfg(feature = "inference")]
 pub use rl_heading_hold::{RlHeadingHoldConfig, RlHeadingHoldController};

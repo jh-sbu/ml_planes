@@ -7,6 +7,7 @@
 mod common;
 
 mod int_mlp;
+mod rl_batching;
 mod rl_inference;
 mod rl_sim_control;
 
