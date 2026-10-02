@@ -15,9 +15,9 @@ use bevy::prelude::*;
 
 use crate::controllers::{
     ActiveController, ControllerKind, ControllerTuning, FlightPlan, FormationOffset, L1Controller,
-    LevelHoldController, ModelLibrary, OrbitController, OrbitParams, PidController, PlaneTuning,
-    RefuelConfig, RefuelController, RefuelPhase, RefuelingTuning, SelectedTuningProfile,
-    TuningApplied, WingmanController,
+    LevelHoldController, ModelLibrary, ModelRoot, OrbitController, OrbitParams, PidController,
+    PlaneTuning, RefuelConfig, RefuelController, RefuelPhase, RefuelingTuning,
+    SelectedTuningProfile, TuningApplied, WingmanController,
 };
 use crate::plane::{ControlInputs, FlightPlanHandle, FlightState, PlaneId, PlaneTuningHandle};
 
@@ -45,6 +45,8 @@ impl Plugin for SimControlPlugin {
         // Available headlessly so the RL rebuild systems (and the visual HUD model
         // dropdown) share one model library; populated by `scan_models` at startup.
         app.init_resource::<ModelLibrary>();
+        // Where `SelectedModel` ids resolve on disk; tests point it at `fixtures/models`.
+        app.init_resource::<ModelRoot>();
 
         app.add_systems(
             PostUpdate,
@@ -71,13 +73,15 @@ impl Plugin for SimControlPlugin {
     }
 }
 
-/// Scan `models/<category>/` subdirectories at startup and populate `ModelLibrary`.
+/// Scan `<ModelRoot>/<category>/` subdirectories at startup and populate `ModelLibrary`.
+/// Entries are the logical `models/<category>/<stem>` ids whatever the root, since that is
+/// the form `SelectedModel` carries and `model_path_matches_dir` accepts.
 /// `pub(crate)` so the networked client (which omits `SimControlPlugin`) can run it
 /// too, giving its HUD model dropdown / cycler data to enumerate.
 #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
-pub(crate) fn scan_models(mut commands: Commands) {
+pub(crate) fn scan_models(mut commands: Commands, root: Res<ModelRoot>) {
     let mut lib: std::collections::HashMap<String, Vec<String>> = Default::default();
-    if let Ok(categories) = std::fs::read_dir("models/") {
+    if let Ok(categories) = std::fs::read_dir(&root.0) {
         for cat in categories.flatten() {
             if !cat.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 continue;
@@ -113,42 +117,54 @@ fn apply_model_switch(
             &FlightState,
             &mut ActiveController,
             &ControllerKind,
-            &SelectedModel,
+            Ref<SelectedModel>,
             Option<&PlaneTuningHandle>,
             Option<&SelectedTuningProfile>,
         ),
         Changed<SelectedModel>,
     >,
     tuning_assets: Res<Assets<PlaneTuning>>,
+    root: Res<ModelRoot>,
     mut notes: ResMut<Notifications>,
 ) {
     for (state, mut ctrl, kind, sel, tuning_handle, profile) in query.iter_mut() {
         let Some(dir) = kind.model_dir() else {
             continue;
         };
+        // A `SelectedModel` inserted alongside an already-loaded policy (every scenario
+        // RL plane, and `apply_rl_controller_switch`'s own insert) is bookkeeping, not a
+        // selection change: reloading would only read the checkpoint twice — and reset
+        // any per-plane state, such as IntMLP's integrators, the controller carries.
+        // Replacing an existing `SelectedModel` (the server's `SetModelCommand`) is a
+        // change, not an addition, so it still reloads. Mirrors `apply_controller_switch`'s
+        // spawn-time skip.
+        if sel.is_added() && is_loaded_policy(&mut ctrl, *kind) {
+            continue;
+        }
         if !model_path_matches_dir(&sel.0, dir) {
             warn!("Ignoring model '{}' for controller {}", sel.0, kind.name());
             continue;
         }
+        let file = root.resolve(&sel.0);
 
         match *kind {
             ControllerKind::RlLevelHold => {
                 let (target_alt, target_spd) = level_hold_targets_from_controller(&mut ctrl, state);
-                match RlLevelHoldController::load(&sel.0, target_alt, target_spd) {
+                match RlLevelHoldController::load(&file, target_alt, target_spd) {
                     Ok(new_ctrl) => ctrl.0 = Box::new(new_ctrl),
                     Err(e) => report_skipped_model(&mut notes, &sel.0, &e),
                 }
             }
             ControllerKind::IntMlpLevelHold => {
                 let (target_alt, target_spd) = level_hold_targets_from_controller(&mut ctrl, state);
-                match IntMlpLevelHoldController::load(&sel.0, target_alt, target_spd) {
+                match IntMlpLevelHoldController::load(&file, target_alt, target_spd) {
                     Ok(new_ctrl) => ctrl.0 = Box::new(new_ctrl),
                     Err(e) => report_skipped_model(&mut notes, &sel.0, &e),
                 }
             }
             ControllerKind::RlOrbit => {
                 let config = orbit_config_from_controller(&mut ctrl, state);
-                match RlOrbitController::load(&sel.0, config) {
+                match RlOrbitController::load(&file, config) {
                     Ok(new_ctrl) => ctrl.0 = Box::new(new_ctrl),
                     Err(e) => report_skipped_model(&mut notes, &sel.0, &e),
                 }
@@ -159,14 +175,14 @@ fn apply_model_switch(
                 let orbit_tuning: Option<&OrbitTuning> = tuning_handle
                     .and_then(|h| tuning_assets.get(&h.0))
                     .and_then(|pt| pt.get_orbit(profile_name));
-                match RlOrbitResidualController::load(&sel.0, config, state, orbit_tuning) {
+                match RlOrbitResidualController::load(&file, config, state, orbit_tuning) {
                     Ok(new_ctrl) => ctrl.0 = Box::new(new_ctrl),
                     Err(e) => report_skipped_model(&mut notes, &sel.0, &e),
                 }
             }
             ControllerKind::RlLstmOrbit => {
                 let config = lstm_orbit_config_from_controller(&mut ctrl, state);
-                match RlLstmOrbitController::load(&sel.0, config) {
+                match RlLstmOrbitController::load(&file, config) {
                     Ok(new_ctrl) => ctrl.0 = Box::new(new_ctrl),
                     Err(e) => report_skipped_model(&mut notes, &sel.0, &e),
                 }
@@ -179,7 +195,7 @@ fn apply_model_switch(
                     target_altitude: altitude,
                     target_airspeed: airspeed,
                 };
-                match RlHeadingHoldController::load(&sel.0, config) {
+                match RlHeadingHoldController::load(&file, config) {
                     Ok(new_ctrl) => ctrl.0 = Box::new(new_ctrl),
                     Err(e) => report_skipped_model(&mut notes, &sel.0, &e),
                 }
@@ -251,6 +267,7 @@ fn apply_rl_controller_switch(
     >,
     model_lib: Res<ModelLibrary>,
     tuning_assets: Res<Assets<PlaneTuning>>,
+    root: Res<ModelRoot>,
     mut notes: ResMut<Notifications>,
 ) {
     for (entity, state, mut controller, mut kind, sel, tuning_handle, profile) in query.iter_mut() {
@@ -282,11 +299,12 @@ fn apply_rl_controller_switch(
         if sel.map(|s| s.0.as_str()) != Some(path.as_str()) {
             commands.entity(entity).insert(SelectedModel(path.clone()));
         }
+        let file = root.resolve(&path);
 
         match *kind {
             ControllerKind::RlLevelHold => {
                 let (tgt_alt, tgt_spd) = level_hold_targets_from_controller(&mut controller, state);
-                match RlLevelHoldController::load(&path, tgt_alt, tgt_spd) {
+                match RlLevelHoldController::load(&file, tgt_alt, tgt_spd) {
                     Ok(rl) => controller.0 = Box::new(rl),
                     Err(e) => {
                         report_skipped_model(&mut notes, &path, &e);
@@ -296,7 +314,7 @@ fn apply_rl_controller_switch(
             }
             ControllerKind::IntMlpLevelHold => {
                 let (tgt_alt, tgt_spd) = level_hold_targets_from_controller(&mut controller, state);
-                match IntMlpLevelHoldController::load(&path, tgt_alt, tgt_spd) {
+                match IntMlpLevelHoldController::load(&file, tgt_alt, tgt_spd) {
                     Ok(policy) => controller.0 = Box::new(policy),
                     Err(e) => {
                         report_skipped_model(&mut notes, &path, &e);
@@ -306,7 +324,7 @@ fn apply_rl_controller_switch(
             }
             ControllerKind::RlOrbit => {
                 let config = orbit_config_from_controller(&mut controller, state);
-                match RlOrbitController::load(&path, config) {
+                match RlOrbitController::load(&file, config) {
                     Ok(rl) => controller.0 = Box::new(rl),
                     Err(e) => {
                         report_skipped_model(&mut notes, &path, &e);
@@ -320,7 +338,7 @@ fn apply_rl_controller_switch(
                 let orbit_tuning: Option<&OrbitTuning> = tuning_handle
                     .and_then(|h| tuning_assets.get(&h.0))
                     .and_then(|pt| pt.get_orbit(profile_name));
-                match RlOrbitResidualController::load(&path, config, state, orbit_tuning) {
+                match RlOrbitResidualController::load(&file, config, state, orbit_tuning) {
                     Ok(rl) => controller.0 = Box::new(rl),
                     Err(e) => {
                         report_skipped_model(&mut notes, &path, &e);
@@ -330,7 +348,7 @@ fn apply_rl_controller_switch(
             }
             ControllerKind::RlLstmOrbit => {
                 let config = lstm_orbit_config_from_controller(&mut controller, state);
-                match RlLstmOrbitController::load(&path, config) {
+                match RlLstmOrbitController::load(&file, config) {
                     Ok(rl) => controller.0 = Box::new(rl),
                     Err(e) => {
                         report_skipped_model(&mut notes, &path, &e);
@@ -346,7 +364,7 @@ fn apply_rl_controller_switch(
                     target_altitude: altitude,
                     target_airspeed: airspeed,
                 };
-                match RlHeadingHoldController::load(&path, config) {
+                match RlHeadingHoldController::load(&file, config) {
                     Ok(rl) => controller.0 = Box::new(rl),
                     Err(e) => {
                         report_skipped_model(&mut notes, &path, &e);
@@ -569,46 +587,36 @@ fn preserve_rl_controller(
     state: &FlightState,
     orbit_tuning: Option<&OrbitTuning>,
 ) -> bool {
-    match kind {
-        ControllerKind::RlLevelHold => ctrl
+    if !is_loaded_policy(ctrl, kind) {
+        return false;
+    }
+    if kind == ControllerKind::RlOrbitResidual {
+        if let Some(rl) = ctrl
             .0
             .as_any_mut()
-            .downcast_mut::<RlLevelHoldController>()
-            .is_some(),
-        // Also carries integrator state a rebuild would zero.
-        ControllerKind::IntMlpLevelHold => ctrl
-            .0
-            .as_any_mut()
-            .downcast_mut::<IntMlpLevelHoldController>()
-            .is_some(),
-        ControllerKind::RlOrbit => ctrl
-            .0
-            .as_any_mut()
-            .downcast_mut::<RlOrbitController>()
-            .is_some(),
-        ControllerKind::RlLstmOrbit => ctrl
-            .0
-            .as_any_mut()
-            .downcast_mut::<RlLstmOrbitController>()
-            .is_some(),
-        ControllerKind::RlHeadingHold => ctrl
-            .0
-            .as_any_mut()
-            .downcast_mut::<RlHeadingHoldController>()
-            .is_some(),
-        ControllerKind::RlOrbitResidual => {
-            match ctrl
-                .0
-                .as_any_mut()
-                .downcast_mut::<RlOrbitResidualController>()
-            {
-                Some(rl) => {
-                    rl.retune(orbit_tuning, state);
-                    true
-                }
-                None => false,
-            }
+            .downcast_mut::<RlOrbitResidualController>()
+        {
+            rl.retune(orbit_tuning, state);
         }
+    }
+    true
+}
+
+/// Whether `ctrl` is already the loaded policy controller `kind` names — as opposed to
+/// the PID fallback `ControllerKind::build()` installs for an RL kind before (or instead
+/// of) a model load. Shared by the tuning-rebuild preservation above and
+/// `apply_model_switch`'s spawn-time skip, so the two cannot disagree on what "loaded"
+/// means. IntMLP is included: it also carries integrator state a rebuild would zero.
+#[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
+fn is_loaded_policy(ctrl: &mut ActiveController, kind: ControllerKind) -> bool {
+    let any = ctrl.0.as_any_mut();
+    match kind {
+        ControllerKind::RlLevelHold => any.is::<RlLevelHoldController>(),
+        ControllerKind::IntMlpLevelHold => any.is::<IntMlpLevelHoldController>(),
+        ControllerKind::RlOrbit => any.is::<RlOrbitController>(),
+        ControllerKind::RlLstmOrbit => any.is::<RlLstmOrbitController>(),
+        ControllerKind::RlHeadingHold => any.is::<RlHeadingHoldController>(),
+        ControllerKind::RlOrbitResidual => any.is::<RlOrbitResidualController>(),
         _ => false,
     }
 }

@@ -1378,6 +1378,15 @@ the binary + a module filter, e.g. `cargo test --no-default-features --test core
 > clone. Never point them back there. They are pinned to the current observation dims
 > (level-hold 13, orbit 14) and only need regenerating when a dim changes — which the
 > forward-pass tests in `rl_inference` will tell you loudly.
+>
+> Tests that go through `SimControlPlugin` must not read `models/` at **run** time either:
+> `scan_models` and every model load resolve `SelectedModel`'s logical `models/<dir>/<name>`
+> ids through the `ModelRoot` resource (default `models`), and `rl_sim_control`'s
+> `sim_control_app()` points it at `fixtures/models/`. `fixtures/models/int_mlp_level_hold/
+> int_mlp_level_hold.mpk` (a copy of the promoted 2026-09-15 checkpoint) backs the IntMLP
+> cases. A test that resolved against `models/` passed or failed depending on what the last
+> training run left there — that is how `tuning_rebuilds_preserve_int_mlp_level_hold_controller`
+> came to fail on one machine and pass on a fresh clone.
 
 - `rl_inference` — RL controller load + deterministic inference (`inference`/`training`-gated),
   incl. the level-hold and heading-hold obs-matches-env and stale-dimension guards, and each RL

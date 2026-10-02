@@ -430,7 +430,8 @@ impl Plugin for ClientNetPlugin {
         // the client `SimControlPlugin` (which normally scans) is compiled out, so
         // run the scan here. Only relevant in an inference-enabled client build.
         #[cfg(all(feature = "inference", not(target_arch = "wasm32")))]
-        app.add_systems(Startup, crate::controllers::sim_control::scan_models);
+        app.init_resource::<crate::controllers::ModelRoot>()
+            .add_systems(Startup, crate::controllers::sim_control::scan_models);
     }
 }
 

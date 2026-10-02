@@ -68,7 +68,7 @@ pub use rl_lstm_orbit::{RlLstmOrbitConfig, RlLstmOrbitController};
 pub use rl_orbit::{RlOrbitConfig, RlOrbitController};
 #[cfg(feature = "inference")]
 pub use rl_orbit_residual::{RlOrbitResidualConfig, RlOrbitResidualController};
-pub use selected_model::{ModelLibrary, SelectedModel};
+pub use selected_model::{ModelLibrary, ModelRoot, SelectedModel};
 pub use sim_control::SimControlPlugin;
 pub use targets::ControllerTargets;
 pub use telemetry::ControllerTelemetry;

@@ -3,7 +3,12 @@
 //! policy instead of silently replacing it with the PID fallback `ControllerKind::build()`
 //! produces for RL kinds.
 //!
-//! `RlLstmOrbit` is not covered here: no `models/lstm_orbit/` checkpoint is shipped, and
+//! Every app here resolves models against `fixtures/models/` (via `ModelRoot`), never the
+//! gitignored `models/`: `SelectedModel` values stay the logical `models/<dir>/<name>` ids
+//! production uses, but the files behind them are frozen fixtures. A test that read
+//! `models/` passed or failed depending on what the last training run left there.
+//!
+//! `RlLstmOrbit` is not covered here: there is no `lstm_orbit` fixture, and
 //! `LstmActorCritic` can't load a plain `ActorCritic` `.mpk` (different architecture), so
 //! there's no compatible fixture to embed.
 //!
@@ -19,7 +24,7 @@ use burn::tensor::backend::Backend;
 use ml_planes::controllers::orbit::OrbitDirection;
 use ml_planes::controllers::{
     ActiveController, ControllerKind, HeadingHoldController, IntMlpLevelHoldController,
-    LevelHoldController, LevelHoldTuning, ModelLibrary, OrbitTuning, PlaneTuning,
+    LevelHoldController, LevelHoldTuning, ModelLibrary, ModelRoot, OrbitTuning, PlaneTuning,
     RlHeadingHoldConfig, RlHeadingHoldController, RlLevelHoldController, RlOrbitConfig,
     RlOrbitController, RlOrbitResidualConfig, RlOrbitResidualController, SelectedModel,
     SelectedTuningProfile, SimControlPlugin, TuningApplied,
@@ -66,6 +71,18 @@ const ORBIT_MPK: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/fixtures/models/orbit/ppo_orbit_1.mpk"
 ));
+
+/// The frozen checkpoint tree every app in this file resolves `SelectedModel` against.
+/// Absolute, so the tests do not depend on the working directory either.
+const FIXTURE_MODELS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/models");
+
+/// A headless app with `SimControlPlugin`, reading models from [`FIXTURE_MODELS`].
+fn sim_control_app() -> App {
+    build_headless_app_with(|app| {
+        app.insert_resource(ModelRoot(FIXTURE_MODELS.into()));
+        app.add_plugins(SimControlPlugin);
+    })
+}
 
 fn level_state(altitude: f32, airspeed: f32) -> FlightState {
     let mut state = FlightState {
@@ -139,9 +156,7 @@ fn tuning_asset() -> PlaneTuning {
 /// reload would load a different checkpoint and invalidate the fixture.
 #[test]
 fn initial_tuning_preserves_rl_level_hold_controller() {
-    let mut app = build_headless_app_with(|app| {
-        app.add_plugins(SimControlPlugin);
-    });
+    let mut app = sim_control_app();
 
     let state = level_state(1000.0, 100.0);
     let controller =
@@ -185,9 +200,7 @@ fn initial_tuning_preserves_rl_level_hold_controller() {
 /// A later profile switch (`apply_controller_switch`) has the identical clobber risk.
 #[test]
 fn profile_switch_preserves_rl_level_hold_controller() {
-    let mut app = build_headless_app_with(|app| {
-        app.add_plugins(SimControlPlugin);
-    });
+    let mut app = sim_control_app();
 
     let state = level_state(1000.0, 100.0);
     let controller =
@@ -243,15 +256,12 @@ fn profile_switch_preserves_rl_level_hold_controller() {
 /// `preserve_rl_controller` must intercept before `kind.build()` runs because
 /// `RlHeadingHoldController` has no PID gains for a tuning profile to apply to.
 ///
-/// No checkpoint is shipped under `models/heading_hold/` yet (this feature's smoke
-/// checkpoint lands separately), so this saves a freshly-initialized (untrained but
+/// There is no `heading_hold` fixture, so this saves a freshly-initialized (untrained but
 /// correctly-dimensioned) model to a temp path rather than embedding one via
 /// `include_bytes!`, mirroring `save_stale_model` but at the *current* obs dim.
 #[test]
 fn initial_tuning_preserves_rl_heading_hold_controller() {
-    let mut app = build_headless_app_with(|app| {
-        app.add_plugins(SimControlPlugin);
-    });
+    let mut app = sim_control_app();
 
     let state = level_state(1000.0, 120.0);
     let model_path = save_stale_model(HEADING_HOLD_OBS_DIM, "heading_hold_valid");
@@ -299,9 +309,7 @@ fn initial_tuning_preserves_rl_heading_hold_controller() {
 /// A later profile switch (`apply_controller_switch`) has the identical clobber risk.
 #[test]
 fn profile_switch_preserves_rl_heading_hold_controller() {
-    let mut app = build_headless_app_with(|app| {
-        app.add_plugins(SimControlPlugin);
-    });
+    let mut app = sim_control_app();
 
     let state = level_state(1000.0, 120.0);
     let model_path = save_stale_model(HEADING_HOLD_OBS_DIM, "heading_hold_valid_switch");
@@ -358,9 +366,7 @@ fn profile_switch_preserves_rl_heading_hold_controller() {
 /// while actually flying PID.
 #[test]
 fn rl_heading_hold_load_failure_demotes_kind() {
-    let mut app = build_headless_app_with(|app| {
-        app.add_plugins(SimControlPlugin);
-    });
+    let mut app = sim_control_app();
 
     app.update();
 
@@ -404,9 +410,7 @@ fn rl_heading_hold_load_failure_demotes_kind() {
 /// kinds through `kind.build()`, which returns a PID `OrbitController`.
 #[test]
 fn initial_tuning_preserves_rl_orbit_controller() {
-    let mut app = build_headless_app_with(|app| {
-        app.add_plugins(SimControlPlugin);
-    });
+    let mut app = sim_control_app();
 
     let state = level_state(800.0, 100.0);
     let controller = RlOrbitController::load_bytes(ORBIT_MPK, orbit_config()).expect("load model");
@@ -448,9 +452,7 @@ fn initial_tuning_preserves_rl_orbit_controller() {
 /// wrong behavior here.
 #[test]
 fn initial_tuning_retunes_rl_orbit_residual_baseline() {
-    let mut app = build_headless_app_with(|app| {
-        app.add_plugins(SimControlPlugin);
-    });
+    let mut app = sim_control_app();
 
     let state = level_state(800.0, 100.0);
     // `load_bytes` seeds the inner PID from `tuning: None` (default gains) — the rebuild
@@ -471,9 +473,9 @@ fn initial_tuning_retunes_rl_orbit_residual_baseline() {
             ControlInputs::default(),
             ActiveController(Box::new(controller)),
             ControllerKind::RlOrbitResidual,
-            // No `models/orbit_residual/` checkpoint is shipped; the path just needs to
-            // match the `model_dir()` prefix so `apply_rl_controller_switch` treats this
-            // as "already carries its loaded controller" and doesn't touch it.
+            // No `orbit_residual` fixture exists; the id just needs to match the
+            // `model_dir()` prefix so the plane counts as "already carries its loaded
+            // controller" and nothing reloads it.
             SelectedModel("models/orbit_residual/fake".to_string()),
             PlaneTuningHandle(handle),
             SelectedTuningProfile("normal".to_string()),
@@ -500,20 +502,18 @@ fn initial_tuning_retunes_rl_orbit_residual_baseline() {
 /// `LevelHold`. `ModelLibrary` ensures the load path is attempted.
 #[test]
 fn rl_level_hold_load_failure_demotes_kind() {
-    let mut app = build_headless_app_with(|app| {
-        app.add_plugins(SimControlPlugin);
-    });
+    let mut app = sim_control_app();
 
-    // Flush the `Startup`-scheduled `scan_models` (populates `ModelLibrary` from the real
-    // `models/` dir) before any plane exists, so it can't race the entity spawned below.
+    // Flush the `Startup`-scheduled `scan_models` (populates `ModelLibrary` from the
+    // fixture tree) before any plane exists, so it can't race the entity spawned below.
     app.update();
 
     // A dimensionally-stale checkpoint (wrong obs dim) fails `check_obs_dim` inside `load`.
     let stale_path = save_stale_model(LEVEL_HOLD_OBS_DIM - 2, "level_hold");
 
-    // Replace the real scanned library with just the stale path, so
-    // `selected_or_default_model_path`'s `ModelLibrary` fallback resolves to it instead of a
-    // real (valid) checkpoint on disk.
+    // Replace the scanned library with just the stale path, so
+    // `selected_or_default_model_path`'s `ModelLibrary` fallback resolves to it instead of
+    // the valid fixture checkpoint.
     app.world_mut().insert_resource(ModelLibrary(
         [(
             "level_hold".to_string(),
@@ -560,10 +560,8 @@ fn tuning_rebuilds_preserve_int_mlp_level_hold_controller() {
     use ml_planes::plane::{ControllerContext, PlaneId, PHYSICS_DT};
     use ml_planes::training::int_mlp::IntMlpWeights;
 
-    let mut app = build_headless_app_with(|app| {
-        app.add_plugins(SimControlPlugin);
-    });
-    // Flush `scan_models` so a real `models/` dir cannot race the spawn below.
+    let mut app = sim_control_app();
+    // Flush `scan_models` so it cannot race the spawn below.
     app.update();
 
     let state = level_state(1030.0, 100.0);
@@ -631,9 +629,7 @@ fn int_mlp_level_hold_load_failure_demotes_kind() {
     use ml_planes::training::int_mlp::INT_MLP_HIDDEN;
     use ml_planes::training::int_mlp_model::IntMlpPolicy;
 
-    let mut app = build_headless_app_with(|app| {
-        app.add_plugins(SimControlPlugin);
-    });
+    let mut app = sim_control_app();
     app.update();
 
     let device = <InfB as Backend>::Device::default();
@@ -683,4 +679,131 @@ fn int_mlp_level_hold_load_failure_demotes_kind() {
         "a failed IntMLP load must demote the kind label to LevelHold"
     );
     let _ = std::fs::remove_file(stale_path.with_extension("mpk"));
+}
+
+// ---------------------------------------------------------------------------
+// Model selection: when `apply_model_switch` reloads, and from where
+
+/// An IntMLP plane whose controller has already stepped once, so a reload (which starts
+/// a fresh controller with zeroed integrators) is visible. Returns the entity and the
+/// integrator state it was spawned with.
+fn spawn_warmed_int_mlp(
+    app: &mut App,
+    selected: &str,
+) -> (Entity, ml_planes::training::int_mlp::IntegratorState) {
+    use ml_planes::controllers::FlightController;
+    use ml_planes::plane::{ControllerContext, PlaneId, PHYSICS_DT};
+    use ml_planes::training::int_mlp::IntMlpWeights;
+
+    let state = level_state(1030.0, 100.0);
+    let mut controller =
+        IntMlpLevelHoldController::from_weights(IntMlpWeights::zeros(), 1000.0, 100.0);
+    controller.update(
+        &state,
+        &ControllerContext::empty_for(PlaneId::TEST),
+        PHYSICS_DT,
+    );
+    let integrators = controller.integrators();
+    assert_ne!(integrators.altitude, 0.0);
+    let entity = app
+        .world_mut()
+        .spawn((
+            state,
+            ControlInputs::default(),
+            ActiveController(Box::new(controller)),
+            ControllerKind::IntMlpLevelHold,
+            SelectedModel(selected.to_string()),
+        ))
+        .id();
+    (entity, integrators)
+}
+
+fn int_mlp_integrators(
+    app: &mut App,
+    entity: Entity,
+) -> ml_planes::training::int_mlp::IntegratorState {
+    app.world_mut()
+        .get_mut::<ActiveController>(entity)
+        .unwrap()
+        .0
+        .as_any_mut()
+        .downcast_mut::<IntMlpLevelHoldController>()
+        .expect("still an IntMLP controller")
+        .integrators()
+}
+
+const INT_MLP_ID: &str = "models/int_mlp_level_hold/int_mlp_level_hold";
+
+/// A plane spawned already carrying its loaded policy *and* a `SelectedModel` naming a
+/// checkpoint that exists (every scenario RL plane) must not be reloaded on its first
+/// frame: the insert is not a selection change. Uses a fixture that really exists, so
+/// the reload would succeed if it were attempted.
+#[test]
+fn spawn_time_selected_model_is_not_reloaded() {
+    let mut app = sim_control_app();
+    app.update();
+    let (entity, integrators) = spawn_warmed_int_mlp(&mut app, INT_MLP_ID);
+    app.update();
+    app.update();
+    assert_eq!(int_mlp_integrators(&mut app, entity), integrators);
+}
+
+/// Changing the selection afterwards (HUD dropdown, hotkey, file dialog) still reloads.
+#[test]
+fn changing_selected_model_reloads_the_policy() {
+    let mut app = sim_control_app();
+    app.update();
+    let (entity, _) = spawn_warmed_int_mlp(&mut app, INT_MLP_ID);
+    app.update();
+    app.world_mut().get_mut::<SelectedModel>(entity).unwrap().0 = INT_MLP_ID.to_string();
+    app.update();
+    assert_eq!(
+        int_mlp_integrators(&mut app, entity),
+        Default::default(),
+        "a selection change must load a fresh controller"
+    );
+}
+
+/// The server's `SetModelCommand` handler *re-inserts* `SelectedModel` rather than
+/// mutating it. Bevy treats replacing an existing component as a change, not an
+/// addition, so it must still reload — pinned because the spawn-time skip relies on it.
+#[test]
+fn reinserting_selected_model_reloads_the_policy() {
+    let mut app = sim_control_app();
+    app.update();
+    let (entity, _) = spawn_warmed_int_mlp(&mut app, INT_MLP_ID);
+    app.update();
+    app.world_mut()
+        .entity_mut(entity)
+        .insert(SelectedModel(INT_MLP_ID.to_string()));
+    app.update();
+    assert_eq!(int_mlp_integrators(&mut app, entity), Default::default());
+}
+
+/// `scan_models` enumerates the configured `ModelRoot`, still reporting the logical
+/// `models/<dir>/<name>` ids — so this app sees the fixtures and nothing a training run
+/// left in `models/`.
+#[test]
+fn scan_models_lists_the_configured_model_root() {
+    let mut app = sim_control_app();
+    app.update();
+    let lib = &app.world().resource::<ModelLibrary>().0;
+    assert_eq!(
+        lib.get("level_hold"),
+        Some(&vec!["models/level_hold/ppo_level_hold".to_string()])
+    );
+    assert_eq!(
+        lib.get("orbit"),
+        Some(&vec!["models/orbit/ppo_orbit_1".to_string()])
+    );
+    assert_eq!(
+        lib.get("int_mlp_level_hold"),
+        Some(&vec![INT_MLP_ID.to_string()])
+    );
+    assert_eq!(
+        lib.len(),
+        3,
+        "only the fixture categories: {:?}",
+        lib.keys()
+    );
 }
